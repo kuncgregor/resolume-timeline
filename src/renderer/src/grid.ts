@@ -1,7 +1,7 @@
 // Musical grid (tempo, bars, beats). Pure helpers shared by the canvas ruler/grid, the
 // transport bar position and keyframe snapping. Everything is frame-based: grid positions
 // may be fractional frames; callers round only where a whole frame is needed (snapping).
-import type { Show } from '../../shared/show'
+import type { Show, SnapGrid } from '../../shared/show'
 import { smpteToFrames } from './components/timeUtils'
 
 export const BPM_MIN = 20
@@ -124,4 +124,107 @@ export function forEachGridLine(t: Tempo, step: number, f0: number, f1: number, 
 export function snapFrame(frame: number, t: Tempo, step = 1): number {
   const stepF = step * beatFrames(t.bpm, t.fps)
   return Math.round(t.downbeatF + Math.round((frame - t.downbeatF) / stepF) * stepF)
+}
+
+// ── Timecode ruler steps ─────────────────────────────────────────────────────
+
+/** TC ruler: major interval = first rung ≥ 80px apart; minor = first listed subdivision ≥ 10px
+ *  apart (sub-second minors must land on whole frames). In frames. */
+export function rulerSteps(fps: number, ppf: number): { major: number; minor: number; showFrames: boolean } {
+  const ladder: [number, number[]][] = [
+    [1, []], [5, [5]],
+    [fps, [10, 5, 4, 2]], [2 * fps, [10, 4, 2]], [5 * fps, [10, 5]], [10 * fps, [10, 5, 2]],
+    [15 * fps, [15, 5, 3]], [30 * fps, [30, 6, 3]], [60 * fps, [12, 6, 4, 2]],
+    [120 * fps, [8, 4, 2]], [300 * fps, [10, 5]], [600 * fps, [10, 5, 2]],
+    [1800 * fps, [6, 3]], [3600 * fps, [6, 4, 2]],
+  ]
+  const rungs = ladder.filter(([f], i) => i < 2 ? f < fps : true)
+  const [major, divs] = rungs.find(([f]) => f * ppf >= 80) ?? rungs[rungs.length - 1]
+  const n = divs.find(d => (major / d) * ppf >= 10 && (major / d >= fps || Number.isInteger(major / d)))
+  return { major, minor: n ? major / n : major, showFrames: major < fps }
+}
+
+// ── Snap to grid ─────────────────────────────────────────────────────────────
+
+export type { SnapGrid }
+export interface SnapSettings { on: boolean; grid: SnapGrid }
+
+/** Grid sizes offered with a BPM / without one. */
+export const MUSICAL_SNAP_GRIDS: readonly SnapGrid[] = ['auto', 'bar', 'beat', '1/2', '1/4', '1/8']
+export const TC_SNAP_GRIDS: readonly SnapGrid[] = ['auto', 'second', 'frame']
+export const SNAP_GRID_LABEL: Record<SnapGrid, string> = {
+  auto: 'Auto', bar: 'Bar', beat: 'Beat', '1/2': '1/2 beat', '1/4': '1/4 beat', '1/8': '1/8 beat', second: '1 s', frame: 'Frame',
+}
+const GRID_BEATS: Partial<Record<SnapGrid, number>> = { beat: 1, '1/2': 0.5, '1/4': 0.25, '1/8': 0.125 }
+
+/** Snap setting in effect: on / 'auto' when unset; a grid size the show cannot offer right now
+ *  (musical without a BPM, 1 s / frame with one) behaves as 'auto'. */
+/** Grid sizes offered: musical in BARS mode, timecode otherwise (snap to the lines you see). */
+export function snapGridsFor(show: Pick<Show, 'bpm' | 'rulerMode'>): readonly SnapGrid[] {
+  return rulerModeOf(show) === 'bars' ? MUSICAL_SNAP_GRIDS : TC_SNAP_GRIDS
+}
+
+export function snapOf(show: Pick<Show, 'snap' | 'bpm' | 'rulerMode'>): SnapSettings {
+  const s = show.snap
+  const list = snapGridsFor(show)
+  return { on: typeof s?.on === 'boolean' ? s.on : true, grid: s && list.includes(s.grid) ? s.grid : 'auto' }
+}
+
+/** True when the grid counts from the downbeat (musical), false when from frame 0 (timecode). */
+export function isMusicalSnap(grid: SnapGrid, tempo: Tempo | null, rulerMode: 'timecode' | 'bars'): boolean {
+  if (!tempo) return false
+  return grid === 'bar' || GRID_BEATS[grid] !== undefined || (grid === 'auto' && rulerMode === 'bars')
+}
+
+/** Frames per snap step (may be fractional for musical grids). 'auto' = the minor grid drawn at
+ *  this zoom: musicalSteps minor in BARS mode, the TC ruler's minor ticks otherwise. */
+export function snapStep(grid: SnapGrid, tempo: Tempo | null, rulerMode: 'timecode' | 'bars', ppf: number, fps: number): number {
+  if (tempo && grid === 'bar') return barFrames(tempo.bpm, tempo.fps, tempo.beatsPerBar)
+  const beats = GRID_BEATS[grid]
+  if (tempo && beats !== undefined) return beats * beatFrames(tempo.bpm, tempo.fps)
+  if (grid === 'second') return fps
+  if (grid === 'frame') return 1
+  if (tempo && rulerMode === 'bars') {
+    // Keys and clips sit on whole frames: Auto never picks a step finer than 2 frames, where
+    // a snapped position could not sit on its (fractional) grid line
+    let beats = musicalSteps(ppf, tempo).minor
+    while (beats * beatFrames(tempo.bpm, tempo.fps) < 2 && beats < 1) beats *= 2
+    return beats * beatFrames(tempo.bpm, tempo.fps)
+  }
+  return rulerSteps(fps, ppf).minor
+}
+
+/** Nearest grid line to a frame, as a whole frame (never negative). Musical grids (tempo given)
+ *  count from the downbeat, timecode grids (tempo null) from frame 0. */
+export function snapToGrid(frame: number, step: number, tempo: Tempo | null): number {
+  if (!(step > 0)) return Math.max(0, Math.round(frame))
+  const o = tempo ? tempo.downbeatF : 0
+  let f = o + Math.round((frame - o) / step) * step
+  if (f < -EPS) f = o + Math.ceil((0 - o) / step - EPS) * step   // first line at or after frame 0
+  return Math.max(0, Math.round(f))
+}
+
+/** The grid a drag snaps to, or null when snap is off. */
+export interface GridSnap { stepF: number; tempo: Tempo | null; musical: boolean }
+export function gridSnapOf(snap: SnapSettings, tempo: Tempo | null, rulerMode: 'timecode' | 'bars', ppf: number, fps: number): GridSnap | null {
+  if (!snap.on) return null
+  const musical = isMusicalSnap(snap.grid, tempo, rulerMode)
+  return { stepF: snapStep(snap.grid, tempo, rulerMode, ppf, fps), tempo: musical ? tempo : null, musical }
+}
+
+/** "1/4 beat", "2 bars", "1 s", "5 frames": a snap step for tooltips. */
+export function formatSnapStep(g: GridSnap, fps: number): string {
+  if (g.musical && g.tempo) {
+    const beats = g.stepF / beatFrames(g.tempo.bpm, g.tempo.fps)
+    const bars = beats / g.tempo.beatsPerBar
+    if (bars >= 1 - EPS && Math.abs(bars - Math.round(bars)) < EPS) return Math.round(bars) === 1 ? '1 bar' : `${Math.round(bars)} bars`
+    if (Math.abs(beats - 1) < EPS) return '1 beat'
+    if (beats < 1) return `1/${Math.round(1 / beats)} beat`
+    return `${+beats.toFixed(2)} beats`
+  }
+  if (g.stepF >= fps && Math.abs(g.stepF / fps - Math.round(g.stepF / fps)) < EPS) {
+    const s = Math.round(g.stepF / fps)
+    return s % 60 === 0 ? `${s / 60} min` : `${s} s`
+  }
+  return g.stepF === 1 ? '1 frame' : `${+g.stepF.toFixed(2)} frames`
 }

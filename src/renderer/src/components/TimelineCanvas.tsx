@@ -10,7 +10,7 @@ import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { T, TAG_COLORS } from '../theme'
 import { deckOfCue, type DeckInfo } from '../decks'
 import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
-import { type Tempo, musicalSteps, forEachGridLine, frameToBarBeat, formatBarBeat, isBarLine, isBeatLine, isOnStep, snapFrame } from '../grid'
+import { type Tempo, type SnapSettings, musicalSteps, forEachGridLine, frameToBarBeat, formatBarBeat, isBarLine, isBeatLine, isOnStep, snapFrame, rulerSteps, gridSnapOf, snapToGrid } from '../grid'
 
 // Picker offers the muted tags first; saturated ones stay for shows that already use them
 const SATURATED_COLORS = ['#E74C3C', '#E2934A', '#F1C40F', '#2ECC71', '#1ABC9C', '#3498DB', '#9B59B6', '#E91E63']
@@ -24,7 +24,8 @@ const TRACKS_TOP = RULER_H + AUDIO_LANE_H
 const KF_R = 4                  // keyframe glyph: 8px, 10px on hover
 const KF_HIT = 6                // half of the 12px keyframe hit area
 const MAX_CHOICE_BANDS = 12     // more options than this: no band separators
-const SNAP_PX = 6               // keyframe drag snaps to targets this close
+const SNAP_PX = 6               // drags snap to markers / playhead (/ clip edges, keys) this close
+const DRAG_START_PX = 3         // a clip moves only after this much mouse travel (a click must not nudge it)
 const AXIS_LOCK_PX = 4          // Shift-drag picks its axis after this much movement
 const FINE = 0.1                // Cmd/Ctrl drag: movement scale
 
@@ -292,6 +293,7 @@ interface KfDrag {
   accX: number; accY: number           // movement in px, already scaled by fine mode
   axis: 'x' | 'y' | null; moved: boolean
   click: 'remove' | 'collapse' | null  // what a click without movement does to the selection
+  altDelete: boolean                   // Alt-click (no movement) deletes; Alt+drag = free drag
   snapTargets: number[]; snapF: number | null
 }
 interface Marquee {
@@ -311,6 +313,7 @@ interface Props {
   tempo: Tempo | null                 // musical grid (null = no BPM)
   onSetDownbeat: (frame: number) => void   // ruler right-click: where bar 1 beat 1 is
   rulerMode: 'timecode' | 'bars'      // in effect; 'bars' only with a tempo
+  snap: SnapSettings                  // snap to grid in effect (Alt during a drag = free)
   frame: number
   pxPerFrame: number
   scrollFrame: number
@@ -359,7 +362,7 @@ interface Props {
 interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number }
 
 export function TimelineCanvas({
-  tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, frame, pxPerFrame, scrollFrame, draggingClip,
+  tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
@@ -369,6 +372,8 @@ export function TimelineCanvas({
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
   const bars = rulerModeProp === 'bars' && tempo ? tempo : null   // musical ruler + grid in effect
+  // Snap to grid: null when off. 'auto' follows the zoom, so it is recomputed every render.
+  const gridSnap = gridSnapOf(snap, tempo, rulerModeProp, pxPerFrame, fps)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
@@ -408,8 +413,11 @@ export function TimelineCanvas({
 
   // Drag state refs
   const isDraggingPlayhead = useRef(false)
-  const moveClipRef = useRef<{ trackIdx: number; cueIdx: number; anchorMouseFrame: number; anchorCueFrame: number } | null>(null)
-  const resizeClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; startDurF: number } | null>(null)
+  // anchorMouseFrame: fractional frame under the cursor at mousedown (cursor-to-start offset)
+  const moveClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; moved: boolean; anchorMouseFrame: number; anchorCueFrame: number } | null>(null)
+  const resizeClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; moved: boolean; startF: number; startDurF: number } | null>(null)
+  // Snap guide of a clip move / resize / clip-browser drop (keyframe drags keep theirs in KfDrag)
+  const snapGuideRef = useRef<number | null>(null)
   const kfDragRef = useRef<KfDrag | null>(null)
   const marqueeRef = useRef<Marquee | null>(null)
   const autoResizeRef = useRef<{ autoId: string; startY: number; startH: number } | null>(null)
@@ -418,6 +426,22 @@ export function TimelineCanvas({
 
   const frameToX = (f: number) => (f - scrollFrame) * pxPerFrame
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
+
+  /** Where a dragged clip edge / dropped clip / new key lands. Snap on: the nearest grid line, or a
+   *  marker / the playhead within SNAP_PX when that is nearer. Snap off or free (Alt): the whole
+   *  frame under the cursor, no snapping. guide = the frame to draw the snap line at. */
+  const snapDrag = (rawF: number, free: boolean): { f: number; guide: number | null } => {
+    if (free || !gridSnap) return { f: Math.max(0, Math.round(rawF)), guide: null }
+    let best = snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo)
+    let bestD = Math.abs(best - rawF)
+    const near = SNAP_PX / pxPerFrame
+    for (const c of [...markers.map(m => smpteToFrames(m.time, fps)), Math.round(frameRef.current)]) {
+      const d = Math.abs(c - rawF)
+      if (d <= near && d < bestD) { best = c; bestD = d }
+    }
+    best = Math.max(0, best)
+    return { f: best, guide: best }
+  }
 
   useEffect(() => {
     if (readOnly) { setContextMenu(null); setClipColorPicker(null); updateSel([]) }
@@ -913,9 +937,11 @@ export function TimelineCanvas({
       })
     })
 
-    // Snap guide while a keyframe drag sits on a snap target
-    if (kd?.moved && kd.snapF != null) {
-      const gx = Math.round(frameToX(kd.snapF))
+    // Snap guide while a keyframe / clip drag (or a clip-browser drop) sits on a snap target
+    const guideF = kd?.moved && kd.snapF != null ? kd.snapF
+      : (moveClipRef.current?.moved || resizeClipRef.current?.moved || draggingClip) ? snapGuideRef.current : null
+    if (guideF != null) {
+      const gx = Math.round(frameToX(guideF))
       ctx.fillStyle = T.select; ctx.fillRect(gx, TRACKS_TOP, 1, H - TRACKS_TOP)
     }
 
@@ -1052,11 +1078,6 @@ export function TimelineCanvas({
     if (kfHit && kfEditable) {
       setHoverKf(null)
       const cur = selRef.current
-      if (e.altKey) {  // Alt-click deletes
-        onDeleteKeyframe(kfHit.trackIdx, kfHit.autoIdx, kfHit.kfIdx)
-        updateSel(selAfterDelete(cur, [kfHit]))
-        return
-      }
       // Shift toggles; a click on a selected key keeps the selection so the drag moves it all.
       // Deselecting waits for mouse-up, a drag never drops the key it started on.
       const already = selHas(cur, kfHit)
@@ -1087,7 +1108,7 @@ export function TimelineCanvas({
         primary, items, lane: layout[kfHit.trackIdx].autoLanes[kfHit.autoIdx],
         startX: x, startY: y, lastX: x, lastY: y, accX: 0, accY: 0, axis: null, moved: false,
         click: e.shiftKey ? (already ? 'remove' : null) : (already && cur.length > 1 ? 'collapse' : null),
-        snapTargets, snapF: null,
+        altDelete: e.altKey, snapTargets, snapF: null,
       }
       return
     }
@@ -1112,13 +1133,13 @@ export function TimelineCanvas({
       const clip = lt.clips[clipHit.cueIdx]
       if (clipHit.isResize) {
         resizeClipRef.current = {
-          trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx,
-          startX: x, startDurF: smpteToFrames(clip.duration, fps),
+          trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, startX: x, moved: false,
+          startF: smpteToFrames(clip.time, fps), startDurF: smpteToFrames(clip.duration, fps),
         }
       } else {
         moveClipRef.current = {
-          trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx,
-          anchorMouseFrame: xToFrame(x),
+          trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, startX: x, moved: false,
+          anchorMouseFrame: x / pxPerFrame + scrollFrame,
           anchorCueFrame: smpteToFrames(clip.time, fps),
         }
       }
@@ -1127,7 +1148,7 @@ export function TimelineCanvas({
 
   // ── Mouse move ─────────────────────────────────────────────────────────────
 
-  const handleMouseMove = useCallback((e: { clientX: number; clientY: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+  const handleMouseMove = useCallback((e: { clientX: number; clientY: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => {
     const { x, y } = localXY(e)
     const setCursor = (c: string) => { if (canvasRef.current) canvasRef.current.style.cursor = c }
 
@@ -1155,16 +1176,24 @@ export function TimelineCanvas({
       const lock = e.shiftKey ? kd.axis : null
       const p = kd.primary
 
-      // Time: whole frames; the dragged key snaps to nearby targets unless fine
+      // Time: whole frames. Snap on: the dragged key goes to the nearest grid line, or to a nearby
+      // target (marker, clip edge, other key, playhead) when that is nearer. Snap off: nearby targets
+      // only. Fine (Cmd/Ctrl) and Alt drag freely.
       const rawF = p.f0 + (lock === 'y' ? 0 : kd.accX / pxPerFrame)
       let tf = Math.round(rawF)
       let snapF: number | null = null
-      if (!fine && lock !== 'y') {
+      if (!fine && !e.altKey && lock !== 'y') {
         const cands = [...kd.snapTargets, Math.round(frameRef.current)]
-        // Beats of the visible bar grid (from the downbeat); none in TC mode, where no beat grid is drawn
-        if (bars) cands.push(snapFrame(rawF, bars))
         let best = SNAP_PX / pxPerFrame
-        for (const c of cands) { const d = Math.abs(c - rawF); if (d <= best) { best = d; snapF = c } }
+        if (gridSnap) {
+          snapF = snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo)
+          best = Math.min(best, Math.abs(snapF - rawF))
+          for (const c of cands) { const d = Math.abs(c - rawF); if (d < best) { best = d; snapF = c } }
+        } else {
+          // Beats of the visible bar grid (from the downbeat); none in TC mode, where no beat grid is drawn
+          if (bars) cands.push(snapFrame(rawF, bars))
+          for (const c of cands) { const d = Math.abs(c - rawF); if (d <= best) { best = d; snapF = c } }
+        }
         if (snapF != null) tf = snapF
       }
       const df = Math.max(-Math.min(...kd.items.map(i => i.f0)), tf - p.f0)
@@ -1208,8 +1237,13 @@ export function TimelineCanvas({
 
     if (moveClipRef.current) {
       const mc = moveClipRef.current
-      const newFrame = Math.max(0, mc.anchorCueFrame + (xToFrame(x) - mc.anchorMouseFrame))
-      ghostClipRef.current = { trackIdx: mc.trackIdx, cueIdx: mc.cueIdx, frame: newFrame }
+      if (!mc.moved && Math.abs(x - mc.startX) < DRAG_START_PX) return
+      mc.moved = true
+      // The clip start keeps its offset to the cursor; the start is what snaps
+      const rawStart = mc.anchorCueFrame + (x / pxPerFrame + scrollFrame - mc.anchorMouseFrame)
+      const { f, guide } = snapDrag(rawStart, e.altKey)
+      snapGuideRef.current = guide
+      ghostClipRef.current = { trackIdx: mc.trackIdx, cueIdx: mc.cueIdx, frame: f }
       draw()
       setCursor('grabbing')
       return
@@ -1217,7 +1251,12 @@ export function TimelineCanvas({
 
     if (resizeClipRef.current) {
       const rs = resizeClipRef.current
-      const newDur = Math.max(1, rs.startDurF + Math.round((x - rs.startX) / pxPerFrame))
+      if (!rs.moved && Math.abs(x - rs.startX) < DRAG_START_PX) return
+      rs.moved = true
+      // The right edge (clip end) is what snaps; never shorter than one frame
+      const { f, guide } = snapDrag(rs.startF + rs.startDurF + (x - rs.startX) / pxPerFrame, e.altKey)
+      const newDur = Math.max(1, f - rs.startF)
+      snapGuideRef.current = guide != null && rs.startF + newDur === guide ? guide : null
       ghostDurRef.current = { trackIdx: rs.trackIdx, cueIdx: rs.cueIdx, durF: newDur }
       draw()
       setCursor('ew-resize')
@@ -1240,7 +1279,7 @@ export function TimelineCanvas({
       autoLane ? (canEditLane(autoLane.trackIdx, autoLane.autoIdx) ? 'crosshair' : 'not-allowed') :
       canEdit(ti) ? 'crosshair' : 'not-allowed'
     )
-  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, bars, pxPerFrame, scrollFrame, readOnly, laneStatus])
+  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, markers, fps, bars, gridSnap?.stepF, gridSnap?.tempo, pxPerFrame, scrollFrame, readOnly, laneStatus])
 
   // ── Mouse up ───────────────────────────────────────────────────────────────
 
@@ -1266,6 +1305,11 @@ export function TimelineCanvas({
         onUpdateKeyframes(ups)
         // The App re-sorts the lanes by time: keep the moved keys selected
         updateSel(selAfterUpdates(selRef.current, ups, tracks, fps))
+      } else if (!kd.moved && kd.altDelete) {
+        // Alt-click deletes only when the key didn't move: holding Alt to place freely
+        // (snap off for that drag) must never delete
+        onDeleteKeyframe(kd.primary.trackIdx, kd.primary.autoIdx, kd.primary.kfIdx)
+        updateSel(selAfterDelete(selRef.current, [kd.primary]))
       } else {
         if (!kd.moved && kd.click === 'remove') updateSel(selRef.current.filter(s => !sameKf(s, kd.primary)))
         else if (!kd.moved && kd.click === 'collapse') updateSel([kfRef(kd.primary)])
@@ -1274,20 +1318,24 @@ export function TimelineCanvas({
     }
     if (marqueeRef.current) { marqueeRef.current = null; draw() }
 
-    if (moveClipRef.current && ghostClipRef.current) {
-      onUpdateCue(moveClipRef.current.trackIdx, moveClipRef.current.cueIdx, {
+    const mc = moveClipRef.current, rs = resizeClipRef.current
+    if (mc && ghostClipRef.current && ghostClipRef.current.frame !== mc.anchorCueFrame) {
+      onUpdateCue(mc.trackIdx, mc.cueIdx, {
         time: framesToSmpte(ghostClipRef.current.frame, fps),
       })
     }
-    if (resizeClipRef.current && ghostDurRef.current) {
-      onUpdateCue(resizeClipRef.current.trackIdx, resizeClipRef.current.cueIdx, {
+    if (rs && ghostDurRef.current && ghostDurRef.current.durF !== rs.startDurF) {
+      onUpdateCue(rs.trackIdx, rs.cueIdx, {
         duration: framesToSmpte(ghostDurRef.current.durF, fps),
       })
     }
+    const hadGhost = !!(ghostClipRef.current || ghostDurRef.current)
     moveClipRef.current = null
     ghostClipRef.current = null
     resizeClipRef.current = null
     ghostDurRef.current = null
+    snapGuideRef.current = null
+    if (hadGhost) draw()
     if (canvasRef.current) canvasRef.current.style.cursor = 'default'
   }, [onUpdateCue, onUpdateKeyframes, fps, tracks, draw])
 
@@ -1323,15 +1371,17 @@ export function TimelineCanvas({
     const kind = laneKind(auto)
     const opts = laneRange(auto, laneStatus[auto.id]).options ?? []
     const raw = kfFromY(info.lane, y)
+    // Time snaps to the grid (Alt = exactly under the cursor)
+    const at = snapDrag(x / pxPerFrame + scrollFrame, e.altKey).f
     if (kind === 'range') {
-      onAddKeyframe(info.trackIdx, info.autoIdx, xToFrame(x), parseFloat(raw.toFixed(3)))
+      onAddKeyframe(info.trackIdx, info.autoIdx, at, parseFloat(raw.toFixed(3)))
     } else {
       // Choice: nearest option step (and its name); boolean: upper half = On
       const value = snapValue(kind, raw, opts.length)
-      onAddKeyframe(info.trackIdx, info.autoIdx, xToFrame(x), parseFloat(value.toFixed(6)),
+      onAddKeyframe(info.trackIdx, info.autoIdx, at, parseFloat(value.toFixed(6)),
         kind === 'choice' ? optionAt(value, opts) : undefined)
     }
-  }, [getLayout, onAddKeyframe, fps, pxPerFrame, scrollFrame, readOnly, tracks, laneStatus])
+  }, [getLayout, onAddKeyframe, fps, markers, gridSnap?.stepF, gridSnap?.tempo, pxPerFrame, scrollFrame, readOnly, tracks, laneStatus])
 
   // ── Right click → context menu ─────────────────────────────────────────────
 
@@ -1465,24 +1515,40 @@ export function TimelineCanvas({
 
   const dropTrackAt = (e: React.DragEvent) => getTrackAtY(getLayout(), localXY(e).y)
 
+  // Drop position: the clip starts at the cursor, snapped like a clip move (Alt = free)
+  const dropFrameAt = (e: React.DragEvent) => snapDrag(localXY(e).x / pxPerFrame + scrollFrame, e.altKey)
+  const setDropGuide = (f: number | null) => {
+    if (snapGuideRef.current === f) return
+    snapGuideRef.current = f
+    draw()
+  }
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (readOnly || !e.dataTransfer.types.includes('application/timeline-clip')) return
     const ti = dropTrackAt(e)
-    if (ti != null && !canEdit(ti)) return  // not preventing default = "no drop" cursor
+    if (ti != null && !canEdit(ti)) { setDropGuide(null); return }  // not preventing default = "no drop" cursor
     e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
-  }, [readOnly, tracks, getLayout])
+    setDropGuide(ti != null ? dropFrameAt(e).guide : null)
+  }, [readOnly, tracks, getLayout, draw, markers, gridSnap?.stepF, gridSnap?.tempo, scrollFrame, pxPerFrame])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Leaving the canvas (not just crossing onto an overlay inside it)
+    if (containerRef.current && e.relatedTarget instanceof Node && containerRef.current.contains(e.relatedTarget)) return
+    setDropGuide(null)
+  }, [draw])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    setDropGuide(null)
     if (readOnly) return
     const raw = e.dataTransfer.getData('application/timeline-clip')
     if (!raw) return
     try {
       const data: DragClipData = JSON.parse(raw)
       const ti = dropTrackAt(e)
-      if (ti != null && canEdit(ti)) onDropClip(ti, Math.max(0, xToFrame(localXY(e).x)), data)
+      if (ti != null && canEdit(ti)) onDropClip(ti, dropFrameAt(e).f, data)
     } catch {}
-  }, [readOnly, tracks, getLayout, onDropClip, scrollFrame, pxPerFrame])
+  }, [readOnly, tracks, getLayout, onDropClip, draw, markers, gridSnap?.stepF, gridSnap?.tempo, scrollFrame, pxPerFrame])
 
   // Keep overlays inside the canvas area
   const clampPos = (x: number, y: number, w: number, h: number) => {
@@ -1511,7 +1577,7 @@ export function TimelineCanvas({
 
   return (
     <div ref={containerRef} className="timeline-canvas-container"
-      onDragOver={handleDragOver} onDrop={handleDrop}
+      onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
     >
       <canvas
         ref={canvasRef}
@@ -1898,23 +1964,11 @@ function fitText(ctx: CanvasRenderingContext2D, s: string, maxW: number): string
   return lo > 0 ? s.slice(0, lo) + '…' : ''
 }
 
-// ── Ruler / grid ──────────────────────────────────────────────────────────────
+// Musical lines fall between frames, but clips and keys sit on whole frames: when a frame is
+// wide enough to see the difference, draw the line on the frame things snap to
+const gridX = (f: number, sf: number, ppf: number) => Math.round(((ppf >= 3 ? Math.round(f) : f) - sf) * ppf)
 
-// Major interval = first rung ≥ 80px apart; minor = first listed subdivision ≥ 10px apart
-// (sub-second minors must land on whole frames).
-function rulerSteps(fps: number, ppf: number): { major: number; minor: number; showFrames: boolean } {
-  const ladder: [number, number[]][] = [
-    [1, []], [5, [5]],
-    [fps, [10, 5, 4, 2]], [2 * fps, [10, 4, 2]], [5 * fps, [10, 5]], [10 * fps, [10, 5, 2]],
-    [15 * fps, [15, 5, 3]], [30 * fps, [30, 6, 3]], [60 * fps, [12, 6, 4, 2]],
-    [120 * fps, [8, 4, 2]], [300 * fps, [10, 5]], [600 * fps, [10, 5, 2]],
-    [1800 * fps, [6, 3]], [3600 * fps, [6, 4, 2]],
-  ]
-  const rungs = ladder.filter(([f], i) => i < 2 ? f < fps : true)
-  const [major, divs] = rungs.find(([f]) => f * ppf >= 80) ?? rungs[rungs.length - 1]
-  const n = divs.find(d => (major / d) * ppf >= 10 && (major / d >= fps || Number.isInteger(major / d)))
-  return { major, minor: n ? major / n : major, showFrames: major < fps }
-}
+// ── Ruler / grid ──────────────────────────────────────────────────────────────
 
 function forEachStep(step: number, sf: number, W: number, ppf: number, fn: (x: number, f: number) => void) {
   if (step <= 0 || ppf <= 0) return
@@ -1965,12 +2019,12 @@ function drawBarsBand(ctx: CanvasRenderingContext2D, W: number, ppf: number, sf:
     forEachGridLine(t, minor, f0, f1, (f, beats) => {
       if (isOnStep(beats, major)) return
       const h = isBarLine(beats, t) ? 8 : isBeatLine(beats) ? 5 : 3
-      ctx.fillRect(Math.round((f - sf) * ppf), TC_BAND_H - h, 1, h)
+      ctx.fillRect(gridX(f, sf, ppf), TC_BAND_H - h, 1, h)
     })
   }
   ctx.font = `11px ${T.fontTc}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'
   forEachGridLine(t, major, f0, f1, (f, beats) => {
-    const rx = Math.round((f - sf) * ppf)
+    const rx = gridX(f, sf, ppf)
     const bar = isBarLine(beats, t)
     const pre = beats < 0
     ctx.fillStyle = bar ? T.textFaint : T.field; ctx.fillRect(rx, 2, 1, TC_BAND_H - 2)
@@ -2025,7 +2079,7 @@ function drawBarGrid(
     if (barsOnly) a *= 0.7
     if (beats < 0) a *= 0.5
     ctx.fillStyle = `rgba(255,255,255,${a})`
-    ctx.fillRect(Math.round((f - sf) * ppf), top, 1, h)
+    ctx.fillRect(gridX(f, sf, ppf), top, 1, h)
   })
 }
 

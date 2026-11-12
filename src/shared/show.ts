@@ -1,3 +1,6 @@
+/** Snap grid size. Musical sizes (bar … 1/8 beat) need a BPM; 'auto' = the finest grid lines drawn. */
+export type SnapGrid = 'auto' | 'bar' | 'beat' | '1/2' | '1/4' | '1/8' | 'second' | 'frame'
+
 export interface Show {
   version: number
   name: string
@@ -7,6 +10,7 @@ export interface Show {
   beatsPerBar?: number      // time signature numerator (default 4)
   downbeat?: string         // SMPTE, timeline position of bar 1 beat 1 (timeline-relative, default 00:00:00:00)
   rulerMode?: 'timecode' | 'bars'  // ruler/grid view (default: 'bars' when bpm is set, else 'timecode')
+  snap?: { on: boolean; grid: SnapGrid }  // snap to grid (default: on, 'auto')
   resolume: {
     host: string
     oscPort: number

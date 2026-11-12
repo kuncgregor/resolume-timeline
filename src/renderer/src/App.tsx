@@ -23,7 +23,7 @@ import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
 import { PPF_MIN, PPF_MAX } from './layout'
-import { tempoOf, rulerModeOf } from './grid'
+import { tempoOf, rulerModeOf, snapOf, gridSnapOf, formatSnapStep, type SnapGrid } from './grid'
 import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
@@ -290,6 +290,7 @@ export default function App() {
   const offsetFrames = smpteToFrames(show.clock.offset || '00:00:00:00', fps)
   const tempo = useMemo(() => tempoOf(show), [show.bpm, show.beatsPerBar, show.downbeat, show.frameRate])
   const rulerMode = rulerModeOf(show)
+  const snap = useMemo(() => snapOf(show), [show.snap, show.bpm, show.rulerMode])
 
   const [engineState, setEngineState] = useState<EngineState>({
     frame: 0, playing: false, fps: 25, showName: '', resolumeConnected: false,
@@ -589,6 +590,17 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ltcShouldRun, ltcDeviceId, ltcChannelIdx])
 
+  // ── Snap to grid (per show, like rulerMode) ────────────────────────────────
+
+  // The stored grid is kept as is: a musical grid survives removing and re-setting the BPM
+  const setSnap = useCallback((patch: { on?: boolean; grid?: SnapGrid }) => {
+    setShow(prev => ({ ...prev, snap: { on: snapOf(prev).on, grid: prev.snap?.grid ?? 'auto', ...patch } }))
+  }, [setShow])
+  const toggleSnapRef = useRef(() => {})
+  toggleSnapRef.current = () => {
+    if (activeShowEntry) setShow(prev => ({ ...prev, snap: { on: !snapOf(prev).on, grid: prev.snap?.grid ?? 'auto' } }))
+  }
+
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -616,6 +628,11 @@ export default function App() {
       if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault()
         if (!e.repeat) goRef.current(1)
+      }
+      // N: snap to grid on / off (as in DaVinci Resolve); an edit setting, so not in SHOW mode
+      if (e.code === 'KeyN' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !showModeRef.current) {
+        e.preventDefault()
+        toggleSnapRef.current()
       }
       if ((e.code === 'Delete' || e.code === 'Backspace') && !showModeRef.current) {
         if (selectedTrackIdx != null && selectedCueIdx != null) {
@@ -1556,6 +1573,9 @@ export default function App() {
         onToggleBrowser={() => setShowBrowser(b => !b)}
         browserOpen={showBrowser}
         onSetBpm={bpm => setShow(prev => ({ ...prev, bpm }))}
+        snap={snap}
+        snapAuto={formatSnapStep(gridSnapOf({ on: true, grid: 'auto' }, tempo, rulerMode, pxPerFrame, fps)!, fps)}
+        onSetSnap={setSnap}
       />
 
       <div className="main-area">
@@ -1611,7 +1631,7 @@ export default function App() {
               onSetRulerMode={m => setShow(prev => ({ ...prev, rulerMode: m }))}
             />
             <TimelineCanvas
-              tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode}
+              tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode} snap={snap}
               onSetDownbeat={f => setShow(prev => ({ ...prev, downbeat: f > 0 ? framesToSmpte(f, prev.frameRate) : undefined }))}
               readOnly={showMode} laneStatus={laneStatus} overrides={overrides} decks={decks}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}

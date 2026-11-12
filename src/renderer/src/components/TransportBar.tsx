@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
-import { BPM_MIN, BPM_MAX, formatBarBeat, formatBpm, frameToBarBeat, roundBpm, tempoOf, validBpm } from '../grid'
+import {
+  BPM_MIN, BPM_MAX, formatBarBeat, formatBpm, frameToBarBeat, roundBpm, tempoOf, validBpm,
+  TC_SNAP_GRIDS, SNAP_GRID_LABEL, snapGridsFor, type SnapGrid, type SnapSettings,
+} from '../grid'
 
 interface Props {
   engineState: EngineState
@@ -26,6 +29,9 @@ interface Props {
   onToggleBrowser: () => void
   browserOpen: boolean
   onSetBpm: (bpm: number | undefined) => void   // undefined = no BPM
+  snap: SnapSettings                             // in effect (see snapOf)
+  snapAuto: string                               // what 'auto' snaps to at the current zoom ("1/4 beat")
+  onSetSnap: (patch: { on?: boolean; grid?: SnapGrid }) => void
 }
 
 const TAP_RESET_MS = 2000   // idle time after which tapping starts over
@@ -39,6 +45,7 @@ const DANGER_S = 10
 export function TransportBar({
   engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord,
   overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm,
+  snap, snapAuto, onSetSnap,
 }: Props) {
   const { frame, playing, fps } = engineState
   const tc = framesToSmpte(frame + offsetFrames, fps)
@@ -108,6 +115,8 @@ export function TransportBar({
       </div>
 
       <BpmBlock show={show} readOnly={readOnly} onSetBpm={onSetBpm} />
+
+      <SnapBlock snap={snap} hasTempo={!!tempo} grids={show ? snapGridsFor(show) : TC_SNAP_GRIDS} autoText={snapAuto} disabled={readOnly || !show} readOnly={readOnly} onSetSnap={onSetSnap} />
 
       <div className="spacer" />
 
@@ -221,6 +230,89 @@ function BpmBlock({ show, readOnly, onSetBpm }: { show: Show | null; readOnly: b
           title={readOnly ? 'Tap tempo (locked in SHOW mode)' : 'Tap tempo: tap 4 or more times on the beat (whole BPM; Shift+tap for decimals; resets after 2 s)'}
         >{tapCount > 0 && tapCount < TAP_MIN_TAPS ? `TAP ${tapCount}` : 'TAP'}</button>
       </div>
+    </div>
+  )
+}
+
+// Snap to grid: on/off toggle + grid size menu. Neither control ever takes keyboard focus
+// (Enter must stay GO, Space play/stop); the menu is a flat popup, not a native <select>.
+/** "1/2 beat" → "1/2", "1 beat" → "BEAT", "4 bars" → "4BAR", "15 s" → "15S", "5 frames" → "5F". */
+function shortStep(t: string): string {
+  const m = /^([\d./]+) (bars?|beats?|s|min|frames?)$/.exec(t)
+  if (!m) return t
+  const [, n, unit] = m
+  if (unit.startsWith('bar')) return n === '1' ? 'BAR' : `${n}BAR`
+  if (unit.startsWith('beat')) return n === '1' ? 'BEAT' : n.includes('/') ? n : `${n}BT`
+  if (unit === 's') return `${n}S`
+  if (unit === 'min') return `${n}M`
+  return `${n}F`
+}
+
+function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetSnap }: {
+  snap: SnapSettings; hasTempo: boolean; grids: readonly SnapGrid[]; autoText: string; disabled: boolean; readOnly: boolean
+  onSetSnap: (patch: { on?: boolean; grid?: SnapGrid }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const musical = grids.includes('beat')
+  // Auto shows what it snaps to right now, short enough for the button: A·1/2, A·BEAT, A·4BAR, A·15S, A·5F
+  const autoShort = shortStep(autoText)
+
+  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+  // Close on any mousedown outside the block and on Escape
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey, true)
+    return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
+  }, [open])
+
+  const label = (g: SnapGrid) => SNAP_GRID_LABEL[g]
+  const toggleTitle = readOnly ? 'Snap to grid (locked in SHOW mode)'
+    : `Snap to grid (N) — hold Alt to place freely. ${snap.on ? 'On' : 'Off'}`
+  const gridTitle = readOnly ? 'Snap grid size (locked in SHOW mode)'
+    : `Snap grid size${snap.grid === 'auto' ? ` — Auto follows the zoom (now ${autoText})` : ''}${musical ? '' : hasTempo ? '. BARS ruler for bar and beat grids' : '. Set a BPM for bar and beat grids'}`
+
+  return (
+    <div ref={rootRef} className={`snap-block ${snap.on ? '' : 'off'}`}>
+      <div className="bpm-head">
+        <span className="remain-label">Snap</span>
+        <span className="snap-key mono" title="Keyboard shortcut">N</span>
+      </div>
+      <div className="bpm-row">
+        <button className={`snap-toggle ${snap.on ? 'on' : ''}`} tabIndex={-1} disabled={disabled}
+          onMouseDown={e => e.preventDefault()}
+          onClick={() => onSetSnap({ on: !snap.on })}
+          aria-pressed={snap.on} title={toggleTitle}
+        >{snap.on ? 'ON' : 'OFF'}</button>
+        <button className={`snap-grid ${open ? 'open' : ''}`} tabIndex={-1} disabled={disabled}
+          onMouseDown={e => e.preventDefault()}
+          onClick={() => setOpen(o => !o)}
+          aria-haspopup="menu" aria-expanded={open} title={gridTitle}
+        >
+          <span className="snap-grid-label">{snap.grid === 'auto' ? <>A<span className="snap-grid-auto">·{autoShort}</span></> : label(snap.grid)}</span>
+          <span className="snap-grid-caret">▾</span>
+        </button>
+      </div>
+      {open && (
+        <div className="ctx-menu snap-menu" role="menu">
+          <div className="ctx-title">Snap grid</div>
+          {grids.map(g => (
+            <button key={g} role="menuitemradio" aria-checked={snap.grid === g} tabIndex={-1}
+              className={`ctx-btn snap-item ${snap.grid === g ? 'on' : ''}`}
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => { onSetSnap({ grid: g, on: true }); setOpen(false) }}   // picking a grid means snapping to it
+            >
+              <span className="snap-check">{snap.grid === g ? '✓' : ''}</span>
+              <span className="snap-item-label">{label(g)}</span>
+              {g === 'auto' && <span className="snap-item-hint mono">{autoText}</span>}
+            </button>
+          ))}
+          {!musical && <div className="ctx-note">{hasTempo ? 'Switch the ruler to BARS for bar and beat grids.' : 'Set a BPM for bar and beat grids.'}</div>}
+        </div>
+      )}
     </div>
   )
 }

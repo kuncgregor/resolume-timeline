@@ -230,6 +230,39 @@
 .bpm-tap:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
 .bpm-tap:active:not(:disabled), .bpm-tap.on { color: var(--text-hi); box-shadow: inset 0 -2px 0 var(--select); }
 .bpm-tap:disabled { color: var(--text-faint); background: var(--bg-track); cursor: default; }
+/* Snap to grid: fixed width, so neither it nor its neighbours move when the label changes */
+.snap-block {
+  position: relative; width: 152px; flex-shrink: 0;
+  display: flex; flex-direction: column; justify-content: center; padding: 0 12px; gap: 3px;
+}
+.snap-key {
+  height: 14px; min-width: 14px; padding: 0 3px; display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: inset 0 0 0 1px var(--border-field); font-size: 10px; font-weight: 700; color: var(--text-dim);
+}
+.snap-toggle, .snap-grid {
+  height: 22px; padding: 0 6px; border: none; cursor: pointer; background: var(--bg-control);
+  color: var(--text-dim); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; white-space: nowrap;
+}
+.snap-toggle { width: 40px; }
+.snap-toggle.on { background: var(--select); color: var(--text-on-live); }   /* filled: readable at a glance */
+.snap-block.off .remain-label { color: var(--text-faint); }
+.snap-grid-auto { color: var(--text-dim); }
+.snap-grid {
+  width: 82px; display: inline-flex; align-items: center; justify-content: space-between; gap: 4px;
+  text-transform: uppercase; color: var(--text);
+}
+.snap-grid-label { overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.02em; }
+.snap-grid-caret { font-size: 9px; color: var(--text-dim); }
+.snap-block.off .snap-grid { color: var(--text-dim); }
+.snap-toggle:hover:not(:disabled), .snap-grid:hover:not(:disabled), .snap-grid.open { background: var(--bg-hover); color: var(--text-hi); }
+.snap-toggle:disabled, .snap-grid:disabled { color: var(--text-faint); background: var(--bg-track); box-shadow: none; cursor: default; }
+.snap-toggle.on:disabled { background: var(--select-dim); color: var(--text-on-live); }
+.ctx-menu.snap-menu { top: calc(100% - 6px); left: 62px; min-width: 156px; }
+.snap-item { gap: 6px; }
+.snap-item.on { color: var(--text-hi); }
+.snap-check { width: 10px; color: var(--select); }
+.snap-item-label { flex: 1; }
+.snap-item-hint { font-size: var(--fs-meta); color: var(--text-dim); }
 .bar-pos {
   height: 18px; min-width: 64px; padding: 0 2px; display: inline-flex; align-items: center;
   font-size: 15px; font-weight: 700; color: var(--text); white-space: nowrap;
