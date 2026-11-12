@@ -113,10 +113,12 @@ export function laneCue(lt: LayerTrack, auto: AutomationSubTrack): ClipCue | nul
     ?? null
 }
 
-function ClipThumb({ layerId, cue, color }: { layerId: number; cue: ClipCue; color: string }) {
+// Full lane height, so the clip is recognisable (4:3 crop, at most 84 px wide)
+function ClipThumb({ layerId, cue, color, height }: { layerId: number; cue: ClipCue; color: string; height: number }) {
   const thumb = useClipThumb(layerId, cue.clipId)
   return (
-    <span className="auto-thumb" style={{ ['--clip-color' as any]: color }} title={`Clip: ${cue.clipName}`}>
+    <span className="auto-thumb" title={`Clip: ${cue.clipName}`}
+      style={{ ['--clip-color' as any]: color, width: Math.min(84, Math.round(height * 4 / 3)) }}>
       {thumb ? <img src={thumb} alt="" draggable={false} /> : <span className="auto-thumb-ph">▶</span>}
     </span>
   )
@@ -304,9 +306,7 @@ export function LaneHeaders({
                           />
                         ) : (
                           <div className="auto-title">
-                            {cue
-                              ? <ClipThumb layerId={lt.resolumeLayerId} cue={cue} color={cueColor} />
-                              : <span className="auto-glyph">{KIND_GLYPH[kind]}</span>}
+                            {!cue && <span className="auto-glyph">{KIND_GLYPH[kind]}</span>}
                             <button
                               className={`auto-label ${picker?.key === retargetKey ? 'open' : ''}`}
                               title={labelTip}
