@@ -123,7 +123,7 @@ export function TransportBar({
       {overrideCount > 0 && (
         <button className="btn reenable-btn" onClick={onReenable}
           title="The operator moved automated parameters in Resolume, so those lanes are not sending. Click to hand them back to the timeline.">
-          ↺ Re-enable {overrideCount}
+          ↺ Back to timeline · {overrideCount}
         </button>
       )}
 

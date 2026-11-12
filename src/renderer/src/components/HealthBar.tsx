@@ -10,6 +10,9 @@ interface Props {
   ltcActive: boolean
   ltcNotHere: string | null    // LTC arrives but belongs to another timeline / none
   brokenLanes: number
+  // Automated parameters the operator took over live in Resolume (lane id + readable name)
+  manual: { id: string; name: string }[]
+  onReenable: (ids?: string[]) => void
   onReconnect: () => void
 }
 
@@ -25,7 +28,7 @@ const ago = (since: number, now: number) => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
 }
 
-export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, onReconnect }: Props) {
+export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, manual, onReenable, onReconnect }: Props) {
   const offline = !resolumeConnected
   const noLtc = ltcSelected && !ltcActive
   const offSince = useSince(offline)
@@ -40,10 +43,12 @@ export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, l
     return () => { if (timer.current) clearInterval(timer.current) }
   }, [alarm])
 
-  if (!active || (!offline && !noLtc && !ltcNotHere && brokenLanes === 0)) return null
+  // Manual takeover is shown in SETUP too: a parameter that silently stopped following the
+  // timeline is the easiest thing to forget after live VJing
+  if (!manual.length && (!active || (!offline && !noLtc && !ltcNotHere && brokenLanes === 0))) return null
   return (
     <div className="health-bar" role="alert">
-      {offline && (
+      {active && offline && (
         <div className="health-item danger">
           <span className="health-dot" />
           <b>RESOLUME OFFLINE</b>
@@ -51,20 +56,34 @@ export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, l
           <button className="btn-sm" onClick={onReconnect}>Reconnect</button>
         </div>
       )}
-      {noLtc && (
+      {active && noLtc && (
         <div className="health-item danger">
           <span className="health-dot" />
           <b>NO LTC</b>
           <span>the timeline is not following timecode{ltcSince ? ` · ${ago(ltcSince, now)}` : ''}</span>
         </div>
       )}
-      {ltcNotHere && !noLtc && (
+      {active && ltcNotHere && !noLtc && (
         <div className="health-item warn">
           <b>TIMELINE NOT RUNNING</b>
           <span>{ltcNotHere}</span>
         </div>
       )}
-      {brokenLanes > 0 && (
+      {manual.length > 0 && (
+        <div className="health-item manual">
+          <b>MANUAL · {manual.length}</b>
+          <span className="health-manual-list">
+            {manual.slice(0, 4).map(m => (
+              <button key={m.id} className="health-manual-param" title={`${m.name}: you moved it in Resolume, so its automation is paused. Click to give it back to the timeline.`}
+                onClick={() => onReenable([m.id])}>{m.name} ↺</button>
+            ))}
+            {manual.length > 4 && <span className="health-more">+{manual.length - 4} more</span>}
+          </span>
+          <button className="btn-sm health-back" onClick={() => onReenable()}
+            title="Give every taken-over parameter back to the timeline (it follows the timecode again)">↺ Back to timeline</button>
+        </div>
+      )}
+      {active && brokenLanes > 0 && (
         <div className="health-item warn">
           <b>{brokenLanes} {brokenLanes === 1 ? 'LANE' : 'LANES'} WITHOUT TARGET</b>
           <span>their parameter no longer exists in Resolume — they send nothing</span>

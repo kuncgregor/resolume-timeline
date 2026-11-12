@@ -452,6 +452,20 @@ export default function App() {
   }), [])
   const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
 
+  // Taken-over lanes with a name an operator recognises: "Layer 2 › Rotation Y"
+  const manualLanes = useMemo(() => {
+    const out: { id: string; name: string }[] = []
+    for (const t of show.tracks) {
+      if (t.type !== 'layer' && t.type !== 'group') continue
+      for (const a of (t as LayerTrack).automations) {
+        if (!(a.id in overrides)) continue
+        const label = a.ref?.label ?? a.name
+        out.push({ id: a.id, name: `${t.name} › ${label.includes(' › ') ? label.split(' › ').pop() : label}` })
+      }
+    }
+    return out
+  }, [show.tracks, overrides])
+
   const decks = decksOf(composition)
   const selectedDeck = decks.find(d => d.selected)
 
@@ -1547,6 +1561,8 @@ export default function App() {
         ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
           ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}
         brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
+        manual={manualLanes}
+        onReenable={handleReenable}
         onReconnect={handleReconnect}
       />
 

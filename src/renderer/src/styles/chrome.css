@@ -627,3 +627,15 @@
 @keyframes stop-pulse { to { opacity: 0.6; } }
 .chip.follow-chip { cursor: pointer; border: none; background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--bg-splitter); }
 .chip.follow-chip.on { color: var(--live); box-shadow: inset 0 0 0 1px var(--live); }
+
+/* Manual takeover (live VJing): amber, with one-click return per parameter and for all */
+.health-item.manual { background: color-mix(in srgb, var(--loop) 26%, var(--bg-lane)); }
+.health-item.manual b { color: var(--loop); }
+.health-manual-list { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.health-manual-param {
+  height: 20px; padding: 0 6px; border: none; cursor: pointer; white-space: nowrap;
+  background: color-mix(in srgb, var(--loop) 18%, var(--bg-control)); color: var(--text-hi); font-size: var(--fs-meta);
+}
+.health-manual-param:hover { background: var(--loop); color: var(--text-on-live); }
+.health-more { color: var(--text-dim); font-size: var(--fs-meta); white-space: nowrap; }
+.health-item .btn-sm.health-back { background: var(--loop); color: var(--text-on-live); font-weight: 800; border: none; }
