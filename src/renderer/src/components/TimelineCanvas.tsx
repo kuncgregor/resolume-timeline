@@ -3,16 +3,18 @@ import type { Track, LayerTrack, ClipCue, Keyframe, Show, AutomationSubTrack } f
 import type { WaveformInfo } from '../audio-engine'
 import type { DragClipData } from '../App'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
+import { T, TAG_COLORS } from '../theme'
+import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
 
-const AUDIO_LANE_H = 72
-const CLIP_COLORS = ['#E74C3C','#E2934A','#F1C40F','#2ECC71','#1ABC9C','#3498DB','#9B59B6','#E91E63','#ffffff','#888888','#ff6600','#00ddff']
+// Picker offers the muted tags first; saturated ones stay for shows that already use them
+const SATURATED_COLORS = ['#E74C3C', '#E2934A', '#F1C40F', '#2ECC71', '#1ABC9C', '#3498DB', '#9B59B6', '#E91E63']
 
-const DEFAULT_CLIP_LANE_H = 52
-const RULER_H = 28
-const CLIP_BLOCK_H = 36
+const TC_BAND_H = 19            // ruler: timecode band on top, marker strip below
+const CLIP_PAD = 2              // gap between block and lane edge (room for the state halo)
+const CLIP_TITLE_H = 16
 const RESIZE_HANDLE_W = 10
-const DEFAULT_AUTO_H = 72
-const AUTO_RESIZE_ZONE = 6  // px at bottom of auto lane to start resize
+const AUTO_RESIZE_ZONE = 6      // px at bottom of auto lane to start resize
+const TRACKS_TOP = RULER_H + AUDIO_LANE_H
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -24,7 +26,7 @@ function buildLayout(
   autoH: (id: string) => number, scrollY = 0
 ): TrackLayout[] {
   // Start below ruler + pinned audio lane, offset by vertical scroll
-  let y = RULER_H + AUDIO_LANE_H - scrollY
+  let y = TRACKS_TOP - scrollY
   return tracks.map(track => {
     const curClipH = clipH(track.id)
     const autoLanes: AutoLaneLayout[] = []
@@ -62,9 +64,9 @@ function getAutoLaneAt(layout: TrackLayout[], y: number): { trackIdx: number; au
 
 // Convert value [0,1] to canvas Y within a lane, and back
 const kfToY = (lane: AutoLaneLayout) => (v: number) =>
-  lane.y + 4 + (lane.h - 8) * (1 - Math.max(0, Math.min(1, v)))
+  lane.y + 6 + (lane.h - 13) * (1 - Math.max(0, Math.min(1, v)))
 const kfFromY = (lane: AutoLaneLayout, y: number) =>
-  Math.max(0, Math.min(1, 1 - (y - lane.y - 4) / (lane.h - 8)))
+  Math.max(0, Math.min(1, 1 - (y - lane.y - 6) / (lane.h - 13)))
 
 // ── Hit tests ─────────────────────────────────────────────────────────────────
 
@@ -125,6 +127,7 @@ interface Props {
   audioDuration: number
   waveformInfo?: WaveformInfo | null
   scrollY: number
+  readOnly: boolean   // SHOW mode: selection and seeking only
   onScrollY: (delta: number) => void
   onScrollFrame: (f: number) => void
   onSeek: (frame: number) => void
@@ -145,7 +148,7 @@ interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: numb
 export function TimelineCanvas({
   tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
-  scrollY, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
+  scrollY, readOnly, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
@@ -156,8 +159,8 @@ export function TimelineCanvas({
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
 
   const autoH = (id: string) => autoLaneHeights[id] ?? DEFAULT_AUTO_H
-  const clipH = (id: string) => layerRowHeights[id] ?? DEFAULT_CLIP_LANE_H
-  const getScrollY = () => scrollY
+  const clipH = (id: string) => layerRowHeights[id] ?? DEFAULT_LANE_H
+  const canEdit = (ti: number) => !readOnly && !(tracks[ti] as LayerTrack | undefined)?.locked
 
   // Drag state refs
   const isDraggingPlayhead = useRef(false)
@@ -171,268 +174,324 @@ export function TimelineCanvas({
   const frameToX = (f: number) => (f - scrollFrame) * pxPerFrame
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
 
+  useEffect(() => {
+    if (readOnly) { setContextMenu(null); setClipColorPicker(null) }
+  }, [readOnly])
+
   // ── Draw ──────────────────────────────────────────────────────────────────
 
   const draw = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+    const canvas = canvasRef.current, container = containerRef.current
+    if (!canvas || !container) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const W = canvas.width, H = canvas.height
+    // Backing store in device pixels, all drawing and hit-testing in CSS pixels
+    const W = container.clientWidth, H = container.clientHeight
     if (W === 0 || H === 0) return
+    const dpr = window.devicePixelRatio || 1
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr)
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw; canvas.height = bh
+      canvas.style.width = `${W}px`; canvas.style.height = `${H}px`
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     const layout = buildLayout(tracks, clipH, autoH, scrollY)
+    const last = layout[layout.length - 1]
+    const tracksBottom = Math.min(H, last ? last.y + last.totalH : TRACKS_TOP)
 
-    ctx.fillStyle = '#080808'
+    ctx.fillStyle = T.well
     ctx.fillRect(0, 0, W, H)
 
-    drawRuler(ctx, W, fps, bpm, pxPerFrame, scrollFrame)
-
-    // ── Pinned audio lane (fixed below ruler) ──────────────────────
+    drawRuler(ctx, W, fps, pxPerFrame, scrollFrame, markers)
     drawAudioLane(ctx, W, audioTrack, fps, pxPerFrame, scrollFrame, audioDuration, waveformInfo ?? null)
 
-    // Clip drawing to track area (below ruler + audio lane)
+    // Track area (below ruler + audio lane)
     ctx.save()
     ctx.beginPath()
-    ctx.rect(0, RULER_H + AUDIO_LANE_H, W, H - RULER_H - AUDIO_LANE_H)
+    ctx.rect(0, TRACKS_TOP, W, H - TRACKS_TOP)
     ctx.clip()
 
     // Lane backgrounds
     tracks.forEach((track, i) => {
       const { y, autoLanes } = layout[i]
       const curClipH = clipH(track.id)
-      ctx.fillStyle = i === selectedTrackIdx ? '#1c1c1c' : (i % 2 === 0 ? '#0f0f0f' : '#141414')
-      ctx.fillRect(0, y, W, curClipH)
-      // Thick separator between layers
-      ctx.fillStyle = '#252525'; ctx.fillRect(0, y + curClipH - 2, W, 2)
+      const base = i % 2 === 0 ? T.lane : T.laneAlt
+      ctx.fillStyle = base
+      ctx.fillRect(0, y, W, curClipH - 1)
+      if (i === selectedTrackIdx) { ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(0, y, W, curClipH - 1) }
+      ctx.fillStyle = T.gutter; ctx.fillRect(0, y + curClipH - 1, W, 1)
 
       if (track.type === 'layer' && (track as LayerTrack).expanded) {
         const lt = track as LayerTrack
         autoLanes.forEach((lane, ai) => {
           const auto = lt.automations[ai]
-          const c = auto?.color ?? '#2ECC71'
-          const isLayerBound = !!auto?.layerBound
-          // Layer-bound: warm amber-dark; clip-bound (default): cool dark
-          ctx.fillStyle = isLayerBound ? '#100e08' : '#0a0a0a'
-          ctx.fillRect(0, lane.y, W, lane.h)
-          // Left accent strip (colored)
-          ctx.fillStyle = c + '66'
-          ctx.fillRect(0, lane.y, isLayerBound ? 4 : 2, lane.h)
-          // Bottom resize handle
-          ctx.fillStyle = '#2a2a2a'
-          ctx.fillRect(0, lane.y + lane.h - 2, W, 2)
-          // Grid lines at 0.25/0.5/0.75
-          ctx.strokeStyle = isLayerBound ? '#1e1b14' : '#1e1e1e'; ctx.lineWidth = 1; ctx.setLineDash([2, 6])
-          ;[0.25, 0.5, 0.75].forEach(v => {
-            const gy = kfToY(lane)(v)
-            ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke()
-          })
-          ctx.setLineDash([])
+          ctx.fillStyle = base; ctx.fillRect(0, lane.y, W, lane.h - 1)
+          ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(0, lane.y, W, lane.h - 1)
+          ctx.fillStyle = 'rgba(255,255,255,0.05)'
+          ;[0.25, 0.5, 0.75].forEach(v => ctx.fillRect(0, Math.round(kfToY(lane)(v)), W, 1))
+          // Layer-bound automation (never moves with clips) gets the wider accent
+          ctx.fillStyle = rgba(auto?.color ?? T.text, 0.6)
+          ctx.fillRect(0, lane.y, auto?.layerBound ? 4 : 2, lane.h - 1)
+          ctx.fillStyle = T.gutter; ctx.fillRect(0, lane.y + lane.h - 1, W, 1)
         })
       }
     })
 
-    // BPM beat grid
-    if (bpm && bpm > 0) {
-      drawBpmGrid(ctx, W, H, fps, bpm, pxPerFrame, scrollFrame)
+    // Time / beat grid over the tracks
+    if (tracksBottom > TRACKS_TOP) {
+      const gh = tracksBottom - TRACKS_TOP
+      if (bpm && bpm > 0) drawBpmGrid(ctx, W, TRACKS_TOP, gh, fps, bpm, pxPerFrame, scrollFrame)
+      else {
+        const { major } = rulerSteps(fps, pxPerFrame)
+        ctx.fillStyle = 'rgba(255,255,255,0.04)'
+        forEachStep(major, scrollFrame, W, pxPerFrame, x => ctx.fillRect(Math.round(x), TRACKS_TOP, 1, gh))
+      }
     }
 
     // Drag drop highlight
-    if (draggingClip) {
+    if (draggingClip && !readOnly) {
       tracks.forEach((track, i) => {
         if (track.type !== 'layer') return
-        if ((track as LayerTrack).resolumeLayerId === draggingClip.layerId) {
-          const { y } = layout[i]
-          const ch = clipH(track.id)
-          ctx.fillStyle = 'rgba(0,85,221,0.12)'
-          ctx.strokeStyle = 'rgba(34,119,255,0.6)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
-          ctx.strokeRect(1, y + 1, W - 2, ch - 2)
-          ctx.fillRect(1, y + 1, W - 2, ch - 2)
-          ctx.setLineDash([])
-        }
+        const lt = track as LayerTrack
+        if (lt.resolumeLayerId !== draggingClip.layerId || lt.locked) return
+        const { y } = layout[i]
+        const ch = clipH(track.id) - 1
+        ctx.fillStyle = rgba(T.select, 0.08); ctx.fillRect(0, y, W, ch)
+        ctx.strokeStyle = T.select; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
+        ctx.strokeRect(0.5, y + 0.5, W - 1, ch - 1)
+        ctx.setLineDash([])
       })
     }
 
-    // Markers
+    ctx.restore()
+
+    // Marker lines through audio lane and tracks (labels live in the ruler)
     markers.forEach(mk => {
-      const x = frameToX(smpteToFrames(mk.time, fps))
-      if (x < -2 || x > W + 2) return
-      ctx.strokeStyle = mk.color; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3])
-      ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke()
-      ctx.setLineDash([])
-      ctx.fillStyle = mk.color; ctx.font = '10px monospace'
-      ctx.fillText(mk.name, x + 3, RULER_H + 11)
+      const x = Math.round(frameToX(smpteToFrames(mk.time, fps)))
+      if (x < -1 || x > W + 1) return
+      ctx.fillStyle = rgba(mk.color || T.loop, 0.35)
+      ctx.fillRect(x, RULER_H, 1, H - RULER_H)
     })
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, TRACKS_TOP, W, H - TRACKS_TOP)
+    ctx.clip()
 
     // Clips
     tracks.forEach((track, trackIdx) => {
       if (track.type !== 'layer') return
       const lt = track as LayerTrack
-      const { y, autoLanes } = layout[trackIdx]
-      const color = lt.color ?? '#5599ff'
+      const { y, totalH, autoLanes } = layout[trackIdx]
+      if (y > H || y + totalH < TRACKS_TOP) return
+      const trackColor = lt.color ?? TAG_COLORS[0]
+      const muted = !!lt.muted
+      const curClipH = clipH(lt.id)
+      const by = y + CLIP_PAD, bh = curClipH - 1 - CLIP_PAD * 2
+      const titleH = Math.min(CLIP_TITLE_H, bh)
 
       const ghostMove = ghostClipRef.current?.trackIdx === trackIdx ? ghostClipRef.current : null
       const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
       const spans = clipSpans(lt, fps, ghostMove, ghostDur)
-      const cutOutlines: { x: number; w: number; blockY: number }[] = []
+      const cutOutlines: { x: number; w: number }[] = []
 
       lt.clips.forEach((clip, cueIdx) => {
         const isGhost = ghostMove?.cueIdx === cueIdx
         const { sf, durF, shownF } = spans[cueIdx]
-        const x = frameToX(sf)
-        const blockW = spanWidth(shownF, pxPerFrame)
-        const fullW = spanWidth(durF, pxPerFrame)
-        const curClipH = clipH(lt.id)
-        const blockY = y + (curClipH - CLIP_BLOCK_H) / 2
-        if (x + blockW < -2 || x > W + 2) return
+        const x = Math.round(frameToX(sf))
+        const blockW = Math.round(spanWidth(shownF, pxPerFrame))
+        const fullW = Math.round(spanWidth(durF, pxPerFrame))
+        if (x + blockW < -4 || x > W + 4) return
         const isSel = trackIdx === selectedTrackIdx && cueIdx === selectedCueIdx
-        const clipColor = clip.color ?? color
-
-        ctx.globalAlpha = isGhost ? 0.65 : 0.9
-        ctx.fillStyle = isSel ? lighten(clipColor, 0.2) : clipColor
-        roundRect(ctx, x, blockY, blockW, CLIP_BLOCK_H, 4); ctx.fill()
-        ctx.globalAlpha = 1
-
-        if (isSel || isGhost) {
-          ctx.strokeStyle = isSel ? '#ffffffbb' : '#fff'
-          ctx.lineWidth = 1.5
-          roundRect(ctx, x, blockY, blockW, CLIP_BLOCK_H, 4); ctx.stroke()
-        }
-        ctx.fillStyle = lighten(clipColor, 0.4)
-        ctx.fillRect(Math.max(0, x), blockY, Math.min(blockW, W - Math.max(0, x)), 3)
-
-        if (blockW > 14) {
-          ctx.save()
-          ctx.beginPath()
-          ctx.rect(Math.max(0, x) + 3, blockY + 4, Math.min(blockW - 6, W - Math.max(0, x) - 3), CLIP_BLOCK_H - 6)
-          ctx.clip()
-          ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.92; ctx.font = 'bold 10px monospace'
-          ctx.fillText(clip.clipName || `Clip ${clip.clipIndex}`, Math.max(0, x) + 4, blockY + 18)
-          if (durF > 0 && blockW > 60) {
-            ctx.font = '9px monospace'; ctx.globalAlpha = 0.5
-            ctx.fillText(framesToSmpte(durF, fps), Math.max(0, x) + 4, blockY + 29)
-          }
-          ctx.restore(); ctx.globalAlpha = 1
-        }
+        const isLive = !muted && !isGhost && shownF > 0 && frame >= sf && frame < sf + shownF
         const isCut = shownF < durF
+        const color = clip.color ?? trackColor
+
+        ctx.globalAlpha = (muted ? 0.4 : 1) * (isGhost ? 0.6 : 1)
+        // Body at 55% over the lane, title strip opaque; both capped in luminance so
+        // saturated legacy colours keep white text readable without touching stored data
+        ctx.fillStyle = capLum(color, 0.12, 0.55)
+        ctx.fillRect(x, by + titleH, blockW, bh - titleH)
+        ctx.fillStyle = capLum(color, 0.18)
+        ctx.fillRect(x, by, blockW, titleH)
+
+        const tx = Math.max(0, x) + 4
+        const textW = Math.min(x + blockW, W) - tx - 4
+        if (textW > 6) {
+          ctx.save()
+          ctx.beginPath(); ctx.rect(x, by, blockW, bh); ctx.clip()
+          ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+          ctx.fillStyle = T.textHi; ctx.font = `bold 12px ${T.fontCond}`
+          ctx.fillText(fitText(ctx, clip.clipName || `Clip ${clip.clipIndex}`, textW), tx, by + titleH / 2 + 0.5)
+          if (bh - titleH >= 13) {
+            ctx.font = `10px ${T.fontTc}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'
+            ctx.textBaseline = 'top'
+            const slot = `#${clip.clipIndex}`
+            const slotW = ctx.measureText(slot).width
+            if (slotW <= textW) ctx.fillText(slot, tx, by + titleH + 3)
+            if (durF > 0) {
+              const dur = framesToSmpte(durF, fps)
+              if (slotW + 8 + ctx.measureText(dur).width <= textW) ctx.fillText(dur, tx + slotW + 8, by + titleH + 3)
+            }
+          }
+          ctx.restore()
+        }
+
         if (isCut) {
           // Cut by the next clip on this layer: hatched edge marks where it stops showing
           ctx.save()
-          ctx.beginPath(); ctx.rect(x + blockW - 7, blockY, 7, CLIP_BLOCK_H); ctx.clip()
-          ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 2
-          for (let hy = -8; hy < CLIP_BLOCK_H + 8; hy += 5) {
-            ctx.beginPath(); ctx.moveTo(x + blockW - 8, blockY + hy + 8); ctx.lineTo(x + blockW, blockY + hy); ctx.stroke()
-          }
+          ctx.beginPath(); ctx.rect(x + blockW - 7, by, 7, bh); ctx.clip()
+          ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.5
+          ctx.beginPath()
+          for (let hy = -8; hy < bh + 8; hy += 4) { ctx.moveTo(x + blockW - 8, by + hy + 8); ctx.lineTo(x + blockW, by + hy) }
+          ctx.stroke()
           ctx.restore()
-          if (isSel) cutOutlines.push({ x: x + blockW, w: fullW - blockW, blockY })
+          if (isSel) cutOutlines.push({ x: x + blockW, w: fullW - blockW })
         }
-        // Resize handle (only where hitTestClip offers one)
-        if (resizeZoneW(isCut ? 0 : durF, blockW) > 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.22)'
-          ctx.fillRect(x + blockW - RESIZE_HANDLE_W, blockY + 5, 3, CLIP_BLOCK_H - 10)
+
+        // Trim grip (only where hitTestClip offers one)
+        if (!isGhost && resizeZoneW(isCut ? 0 : durF, blockW) > 0 && bh - titleH >= 10) {
+          ctx.fillStyle = 'rgba(255,255,255,0.3)'
+          const gy = by + titleH + 3, gh = bh - titleH - 6
+          ctx.fillRect(x + blockW - 7, gy, 1, gh)
+          ctx.fillRect(x + blockW - 5, gy, 1, gh)
         }
+
+        if (isLive) {
+          const p = Math.max(0, Math.min(1, (frame - sf) / shownF))
+          ctx.fillStyle = T.liveFill
+          ctx.fillRect(x + 2, by + bh - 4, Math.max(1, (blockW - 4) * p), 2)
+        }
+
+        // State outlines: 2px inside the block, 1px black halo outside
+        if (isGhost) {
+          ctx.globalAlpha = 1
+          ctx.strokeStyle = T.textHi; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
+          ctx.strokeRect(x + 0.5, by + 0.5, blockW - 1, bh - 1)
+          ctx.setLineDash([])
+        } else if (isLive || isSel) {
+          ctx.globalAlpha = 1
+          ctx.strokeStyle = T.gutter; ctx.lineWidth = 1
+          ctx.strokeRect(x - 0.5, by - 0.5, blockW + 1, bh + 1)
+          ctx.strokeStyle = isLive ? T.live : T.select; ctx.lineWidth = 2
+          ctx.strokeRect(x + 1, by + 1, blockW - 2, bh - 2)
+          if (isLive && isSel) {
+            ctx.strokeStyle = T.select; ctx.lineWidth = 1
+            ctx.strokeRect(x + 2.5, by + 2.5, blockW - 5, bh - 5)
+          }
+        }
+        ctx.globalAlpha = 1
       })
 
       // Full length of a selected clip that the next clip cuts off, drawn over the other clips
       cutOutlines.forEach(o => {
-        ctx.strokeStyle = '#ffffffaa'; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
-        ctx.strokeRect(o.x, o.blockY + 0.5, o.w, CLIP_BLOCK_H - 1)
+        ctx.strokeStyle = rgba(T.select, 0.7); ctx.lineWidth = 1; ctx.setLineDash([4, 3])
+        ctx.strokeRect(o.x + 0.5, by + 0.5, o.w - 1, bh - 1)
         ctx.setLineDash([])
       })
+
+      if (lt.locked) hatch(ctx, 0, y, W, totalH - 1, 'rgba(255,255,255,0.05)')
 
       // Automation lines
       autoLanes.forEach((lane, ai) => {
         const auto = lt.automations[ai]
         if (!auto || !auto.keyframes.length) return
-        const c = auto.color ?? '#2ECC71'
+        const c = auto.color ?? T.text
         const toY = kfToY(lane)
 
         const kfs = auto.keyframes
           .map(k => ({ frame: smpteToFrames(k.time, fps), v: k.value }))
           .sort((a, b) => a.frame - b.frame)
 
-        // Draw the automation line
-        ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.globalAlpha = 0.9; ctx.setLineDash([])
+        ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.setLineDash([])
         ctx.beginPath()
         kfs.forEach((k, i) => {
           const kx = frameToX(k.frame)
-          if (kx < -200 || kx > W + 200) return
           if (i === 0) ctx.moveTo(kx, toY(k.v)); else ctx.lineTo(kx, toY(k.v))
         })
-        ctx.stroke(); ctx.globalAlpha = 1
+        ctx.stroke()
 
-        // Extend line to edges
-        if (kfs.length > 0) {
-          const first = kfs[0], last = kfs[kfs.length - 1]
-          ctx.strokeStyle = c + '44'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 4])
-          ctx.beginPath()
-          ctx.moveTo(0, toY(first.v)); ctx.lineTo(frameToX(first.frame), toY(first.v))
-          ctx.moveTo(frameToX(last.frame), toY(last.v)); ctx.lineTo(W, toY(last.v))
-          ctx.stroke(); ctx.setLineDash([])
-        }
+        // Hold value before the first and after the last keyframe
+        const first = kfs[0], lastKf = kfs[kfs.length - 1]
+        ctx.strokeStyle = rgba(c, 0.35); ctx.lineWidth = 1; ctx.setLineDash([3, 4])
+        ctx.beginPath()
+        ctx.moveTo(0, toY(first.v)); ctx.lineTo(frameToX(first.frame), toY(first.v))
+        ctx.moveTo(frameToX(lastKf.frame), toY(lastKf.v)); ctx.lineTo(W, toY(lastKf.v))
+        ctx.stroke(); ctx.setLineDash([])
 
-        // Playhead live value dot
-        const currV = interpolate(auto.keyframes, frame, fps)
-        if (currV !== null) {
-          const lx = frameToX(frame), ly = toY(currV)
-          ctx.fillStyle = '#fff'
-          ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2); ctx.fill()
-          ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.stroke()
-        }
-
-        // Keyframe dots (larger for interaction)
         auto.keyframes.forEach((kf, ki) => {
-          const kfDragging = kfDragRef.current?.trackIdx === trackIdx &&
-            kfDragRef.current?.autoIdx === ai && kfDragRef.current?.kfIdx === ki
+          const kd = kfDragRef.current
+          const kfDragging = kd?.trackIdx === trackIdx && kd.autoIdx === ai && kd.kfIdx === ki
+          const kfMenu = contextMenu?.trackIdx === trackIdx && contextMenu.autoIdx === ai && contextMenu.kfIdx === ki
           let kx = frameToX(smpteToFrames(kf.time, fps))
           let ky = toY(kf.value)
-          if (kfDragging && kfDragRef.current) {
-            // Show ghost at drag position
-            kx = frameToX(kfDragRef.current.anchorKfFrame)
-            ky = toY(kfDragRef.current.anchorValue)
-          }
+          if (kfDragging && kd) { kx = frameToX(kd.anchorKfFrame); ky = toY(kd.anchorValue) }
           if (kx < -20 || kx > W + 20) return
 
-          ctx.fillStyle = c
-          ctx.beginPath(); ctx.arc(kx, ky, 5, 0, Math.PI * 2); ctx.fill()
-          ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke()
+          diamond(ctx, kx, ky, 4.5)
+          ctx.fillStyle = c; ctx.fill()
+          ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
+          if (kfDragging || kfMenu) {
+            diamond(ctx, kx, ky, 6.5)
+            ctx.strokeStyle = T.select; ctx.lineWidth = 1.5; ctx.stroke()
+          }
 
-          // Value label on hover / drag
-          if (kfDragging) {
-            ctx.fillStyle = '#ffffffcc'; ctx.font = '9px monospace'
-            ctx.fillText(formatAutoValue(auto, kfDragRef.current!.anchorValue), kx + 8, ky - 4)
+          if (kfDragging && kd) {
+            ctx.font = `11px ${T.fontTc}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+            const label = formatAutoValue(auto, kd.anchorValue)
+            const lw = ctx.measureText(label).width
+            const ly = Math.max(lane.y + 8, ky - 10)
+            ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(kx + 9, ly - 8, lw + 8, 16)
+            ctx.fillStyle = T.textHi; ctx.fillText(label, kx + 13, ly)
           }
         })
+
+        // Live value at the playhead
+        const currV = interpolate(auto.keyframes, frame, fps)
+        const lx = frameToX(frame)
+        if (currV !== null && lx >= -4 && lx <= W + 4) {
+          ctx.beginPath(); ctx.arc(lx, toY(currV), 3.5, 0, Math.PI * 2)
+          ctx.fillStyle = T.live; ctx.fill()
+          ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
+        }
       })
     })
 
     ctx.restore() // end track clip region
 
-    // Playhead drawn OVER everything (not clipped)
-    const px = frameToX(frame)
-    if (px >= -1 && px <= W + 1) {
-      ctx.setLineDash([])
-      ctx.strokeStyle = '#ff3333'; ctx.lineWidth = 1.5
-      ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke()
-      ctx.fillStyle = '#ff3333'
-      ctx.beginPath(); ctx.moveTo(px - 6, 0); ctx.lineTo(px + 6, 0); ctx.lineTo(px, 10); ctx.fill()
+    // Playhead over everything, cap in the ruler
+    const px = Math.round(frameToX(frame))
+    if (px >= -6 && px <= W + 6) {
+      ctx.fillStyle = T.live
+      ctx.fillRect(px - 1, 0, 2, H)
+      ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo])
+  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu])
 
-  // ── ResizeObserver ─────────────────────────────────────────────────────────
+  // ── Resize / DPR ───────────────────────────────────────────────────────────
+
+  const drawRef = useRef(draw)
+  drawRef.current = draw
+  useEffect(() => { draw() }, [draw])
 
   useEffect(() => {
-    const container = containerRef.current, canvas = canvasRef.current
-    if (!container || !canvas) return
-    const ro = new ResizeObserver(() => {
-      canvas.width = container.clientWidth
-      canvas.height = container.clientHeight
-      draw()
-    })
+    const container = containerRef.current
+    if (!container) return
+    const ro = new ResizeObserver(() => drawRef.current())
     ro.observe(container)
-    canvas.width = container.clientWidth; canvas.height = container.clientHeight; draw()
-    return () => ro.disconnect()
-  }, [draw])
+    // Moving the window to a display with another pixel ratio; the query is re-armed
+    // for the new ratio after each change
+    let mq: MediaQueryList | null = null
+    const onDpr = () => { drawRef.current(); watch() }
+    const watch = () => {
+      mq?.removeEventListener('change', onDpr)
+      mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+      mq.addEventListener('change', onDpr)
+    }
+    watch()
+    return () => { ro.disconnect(); mq?.removeEventListener('change', onDpr) }
+  }, [])
 
   // ── Non-passive wheel ──────────────────────────────────────────────────────
 
@@ -442,14 +501,11 @@ export function TimelineCanvas({
     const fn = (e: WheelEvent) => {
       e.preventDefault()
       if (e.metaKey || e.ctrlKey) {
-        // Zoom
         onZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15)
       } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        // Horizontal scroll
         const d = e.deltaX || e.deltaY
         onScrollFrame(Math.max(0, scrollFrame + d / pxPerFrame))
       } else {
-        // Vertical scroll (tracks)
         onScrollY(e.deltaY)
       }
     }
@@ -467,6 +523,8 @@ export function TimelineCanvas({
     const ti = getTrackAtY(layout, y)
     if (ti == null || tracks[ti].type !== 'layer') return null
     const lt = tracks[ti] as LayerTrack
+    // Only the clip row: the automation lanes below belong to keyframes
+    if (y >= layout[ti].y + clipH(lt.id)) return null
     const SLOP = 3
     const spans = clipSpans(lt, fps, null, null)
     // Later clips are drawn on top, so test them first
@@ -480,7 +538,12 @@ export function TimelineCanvas({
       }
     }
     return null
-  }, [tracks, fps, pxPerFrame, scrollFrame])
+  }, [tracks, fps, pxPerFrame, scrollFrame, getLayout])
+
+  const localXY = (e: { clientX: number; clientY: number }) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
 
   // ── Mouse down ─────────────────────────────────────────────────────────────
 
@@ -488,22 +551,20 @@ export function TimelineCanvas({
     if (e.button !== 0) return
     setContextMenu(null)
     setClipColorPicker(null)
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left, y = e.clientY - rect.top
+    const { x, y } = localXY(e)
     const layout = getLayout()
 
-    if (y < RULER_H + AUDIO_LANE_H) { isDraggingPlayhead.current = true; onSeek(xToFrame(x)); return }
+    if (y < TRACKS_TOP) { isDraggingPlayhead.current = true; onSeek(xToFrame(x)); return }
 
-    // Auto lane resize?
+    // Auto lane height is view state, not show data, so it stays adjustable in SHOW mode
     const resizeTarget = hitTestAutoResize(layout, y)
     if (resizeTarget) {
       autoResizeRef.current = { autoId: resizeTarget.autoId, startY: y, startH: autoH(resizeTarget.autoId) }
       return
     }
 
-    // Keyframe drag?
     const kfHit = hitTestKeyframe(x, y, layout, tracks, fps, frameToX)
-    if (kfHit) {
+    if (kfHit && canEdit(kfHit.trackIdx)) {
       const lt = tracks[kfHit.trackIdx] as LayerTrack
       const kf = lt.automations[kfHit.autoIdx].keyframes[kfHit.kfIdx]
       const lane = layout[kfHit.trackIdx].autoLanes[kfHit.autoIdx]
@@ -516,10 +577,10 @@ export function TimelineCanvas({
       return
     }
 
-    // Clip drag/resize?
     const clipHit = hitTestClip(x, y)
     if (clipHit) {
       onSelectCue(clipHit.trackIdx, clipHit.cueIdx)
+      if (!canEdit(clipHit.trackIdx)) return
       const lt = tracks[clipHit.trackIdx] as LayerTrack
       const clip = lt.clips[clipHit.cueIdx]
       if (clipHit.isResize) {
@@ -535,21 +596,20 @@ export function TimelineCanvas({
         }
       }
     }
-  }, [tracks, fps, pxPerFrame, scrollFrame, getLayout, hitTestClip, onSelectCue, onSeek])
+  }, [tracks, fps, pxPerFrame, scrollFrame, readOnly, getLayout, hitTestClip, onSelectCue, onSeek])
 
   // ── Mouse move ─────────────────────────────────────────────────────────────
 
   const handleMouseMove = useCallback((e: { clientX: number; clientY: number }) => {
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left, y = e.clientY - rect.top
+    const { x, y } = localXY(e)
+    const setCursor = (c: string) => { if (canvasRef.current) canvasRef.current.style.cursor = c }
 
     if (isDraggingPlayhead.current) { onSeek(xToFrame(x)); return }
 
     if (autoResizeRef.current) {
       const rs = autoResizeRef.current
-      const newH = Math.max(40, rs.startH + (y - rs.startY))
-      onResizeAutoLane(rs.autoId, newH)
-      if (canvasRef.current) canvasRef.current.style.cursor = 'ns-resize'
+      onResizeAutoLane(rs.autoId, Math.max(MIN_AUTO_H, rs.startH + (y - rs.startY)))
+      setCursor('ns-resize')
       return
     }
 
@@ -560,7 +620,7 @@ export function TimelineCanvas({
       kd.anchorFrame = xToFrame(x)
       kd.anchorValue = kfFromY(kd.lane, y)
       draw()
-      if (canvasRef.current) canvasRef.current.style.cursor = 'crosshair'
+      setCursor('crosshair')
       return
     }
 
@@ -569,7 +629,7 @@ export function TimelineCanvas({
       const newFrame = Math.max(0, mc.anchorCueFrame + (xToFrame(x) - mc.anchorMouseFrame))
       ghostClipRef.current = { trackIdx: mc.trackIdx, cueIdx: mc.cueIdx, frame: newFrame }
       draw()
-      if (canvasRef.current) canvasRef.current.style.cursor = 'grabbing'
+      setCursor('grabbing')
       return
     }
 
@@ -578,24 +638,24 @@ export function TimelineCanvas({
       const newDur = Math.max(1, rs.startDurF + Math.round((x - rs.startX) / pxPerFrame))
       ghostDurRef.current = { trackIdx: rs.trackIdx, cueIdx: rs.cueIdx, durF: newDur }
       draw()
-      if (canvasRef.current) canvasRef.current.style.cursor = 'ew-resize'
+      setCursor('ew-resize')
       return
     }
 
     // Cursor feedback
+    if (y < TRACKS_TOP) { setCursor('pointer'); return }
     const layout = getLayout()
     const kfHit = hitTestKeyframe(x, y, layout, tracks, fps, frameToX)
-    const resizeTarget = hitTestAutoResize(layout, y)
     const clipHit = hitTestClip(x, y)
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor =
-        y < RULER_H + AUDIO_LANE_H ? 'pointer' :
-        kfHit ? 'move' :
-        resizeTarget ? 'ns-resize' :
-        clipHit?.isResize ? 'ew-resize' :
-        clipHit ? 'grab' : 'crosshair'
-    }
-  }, [draw, onSeek, onUpdateCue, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, pxPerFrame, scrollFrame])
+    const ti = getTrackAtY(layout, y)
+    setCursor(
+      kfHit ? (canEdit(kfHit.trackIdx) ? 'move' : 'not-allowed') :
+      hitTestAutoResize(layout, y) ? 'ns-resize' :
+      clipHit ? (!canEdit(clipHit.trackIdx) ? 'not-allowed' : clipHit.isResize ? 'ew-resize' : 'grab') :
+      ti == null || readOnly ? 'default' :
+      canEdit(ti) ? 'crosshair' : 'not-allowed'
+    )
+  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, pxPerFrame, scrollFrame, readOnly])
 
   // ── Mouse up ───────────────────────────────────────────────────────────────
 
@@ -626,7 +686,7 @@ export function TimelineCanvas({
     ghostClipRef.current = null
     resizeClipRef.current = null
     ghostDurRef.current = null
-    if (canvasRef.current) canvasRef.current.style.cursor = 'crosshair'
+    if (canvasRef.current) canvasRef.current.style.cursor = 'default'
   }, [onUpdateCue, onUpdateKeyframe, fps])
 
   // While a drag is active, follow the mouse on the window so leaving the canvas
@@ -652,25 +712,21 @@ export function TimelineCanvas({
   // ── Double click → add keyframe ────────────────────────────────────────────
 
   const handleDblClick = useCallback((e: React.MouseEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left, y = e.clientY - rect.top
-    const layout = getLayout()
-    const info = getAutoLaneAt(layout, y)
-    if (!info) return
-    const frame = xToFrame(x)
+    const { x, y } = localXY(e)
+    const info = getAutoLaneAt(getLayout(), y)
+    if (!info || !canEdit(info.trackIdx)) return
     const value = parseFloat(kfFromY(info.lane, y).toFixed(3))
-    onAddKeyframe(info.trackIdx, info.autoIdx, frame, value)
-  }, [getLayout, onAddKeyframe, fps, pxPerFrame, scrollFrame])
+    onAddKeyframe(info.trackIdx, info.autoIdx, xToFrame(x), value)
+  }, [getLayout, onAddKeyframe, fps, pxPerFrame, scrollFrame, readOnly, tracks])
 
   // ── Right click → context menu ─────────────────────────────────────────────
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left, y = e.clientY - rect.top
-    const layout = getLayout()
-    const kfHit = hitTestKeyframe(x, y, layout, tracks, fps, frameToX)
-    if (kfHit) {
+    if (readOnly) return
+    const { x, y } = localXY(e)
+    const kfHit = hitTestKeyframe(x, y, getLayout(), tracks, fps, frameToX)
+    if (kfHit && canEdit(kfHit.trackIdx)) {
       const lt = tracks[kfHit.trackIdx] as LayerTrack
       const kf = lt.automations[kfHit.autoIdx].keyframes[kfHit.kfIdx]
       setCtxInputVal(kf.value.toFixed(4))
@@ -679,37 +735,63 @@ export function TimelineCanvas({
       return
     }
     const clipHit = hitTestClip(x, y)
-    if (clipHit) {
+    if (clipHit && canEdit(clipHit.trackIdx)) {
       setClipColorPicker({ x, y, trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx })
       setContextMenu(null)
     }
-  }, [tracks, fps, getLayout, hitTestClip])
+  }, [tracks, fps, readOnly, getLayout, hitTestClip])
 
   // ── Drag & drop ────────────────────────────────────────────────────────────
 
+  const dropTrackAt = (e: React.DragEvent) => getTrackAtY(getLayout(), localXY(e).y)
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes('application/timeline-clip')) return
+    if (readOnly || !e.dataTransfer.types.includes('application/timeline-clip')) return
+    const ti = dropTrackAt(e)
+    if (ti != null && !canEdit(ti)) return  // not preventing default = "no drop" cursor
     e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
-  }, [])
+  }, [readOnly, tracks, getLayout])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    if (readOnly) return
     const raw = e.dataTransfer.getData('application/timeline-clip')
     if (!raw) return
     try {
       const data: DragClipData = JSON.parse(raw)
-      const rect = canvasRef.current!.getBoundingClientRect()
-      const x = e.clientX - rect.left, y = e.clientY - rect.top
-      const layout = getLayout()
-      const ti = getTrackAtY(layout, y)
-      if (ti != null) onDropClip(ti, Math.max(0, xToFrame(x)), data)
+      const ti = dropTrackAt(e)
+      if (ti != null && canEdit(ti)) onDropClip(ti, Math.max(0, xToFrame(localXY(e).x)), data)
     } catch {}
-  }, [getLayout, onDropClip, scrollFrame, pxPerFrame])
+  }, [readOnly, tracks, getLayout, onDropClip, scrollFrame, pxPerFrame])
+
+  // Keep overlays inside the canvas area
+  const clampPos = (x: number, y: number, w: number, h: number) => {
+    const c = containerRef.current
+    return {
+      left: Math.max(0, Math.min(x, (c?.clientWidth ?? x + w) - w)),
+      top: Math.max(0, Math.min(y, (c?.clientHeight ?? y + h) - h)),
+    }
+  }
+
+  const pickerClip = clipColorPicker
+    ? (tracks[clipColorPicker.trackIdx] as LayerTrack | undefined)?.clips[clipColorPicker.cueIdx]
+    : undefined
+  const swatch = (c: string) => (
+    <button
+      key={c}
+      className={`ccp-swatch${pickerClip?.color?.toLowerCase() === c.toLowerCase() ? ' on' : ''}`}
+      style={{ background: c }}
+      title={c}
+      onClick={() => {
+        onUpdateCue(clipColorPicker!.trackIdx, clipColorPicker!.cueIdx, { color: c })
+        setClipColorPicker(null)
+      }}
+    />
+  )
 
   return (
     <div ref={containerRef} className="timeline-canvas-container"
       onDragOver={handleDragOver} onDrop={handleDrop}
-      style={{ position: 'relative' }}
     >
       <canvas
         ref={canvasRef}
@@ -717,14 +799,12 @@ export function TimelineCanvas({
         onMouseMove={e => { if (!isDragging()) handleMouseMove(e) }}
         onDoubleClick={handleDblClick}
         onContextMenu={handleContextMenu}
-        style={{ display: 'block' }}
       />
 
-      {/* Context menu */}
       {contextMenu && (
         <div
           className="ctx-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={clampPos(contextMenu.x, contextMenu.y, 220, 150)}
           onMouseDown={e => e.stopPropagation()}
         >
           <div className="ctx-title">Keyframe</div>
@@ -756,46 +836,34 @@ export function TimelineCanvas({
             const v = Math.max(0, Math.min(1, parseFloat(ctxInputVal) || 0))
             onUpdateKeyframe(contextMenu.trackIdx, contextMenu.autoIdx, contextMenu.kfIdx, { value: v })
             setContextMenu(null)
-          }}>✓ Potrdi</button>
+          }}>Potrdi</button>
           <div className="ctx-divider" />
           <button className="ctx-btn danger" onClick={() => {
             onDeleteKeyframe(contextMenu.trackIdx, contextMenu.autoIdx, contextMenu.kfIdx)
             setContextMenu(null)
-          }}>✕ Izbriši keyframe</button>
+          }}>Izbriši keyframe</button>
           <button className="ctx-btn dim" onClick={() => setContextMenu(null)}>Prekliči</button>
         </div>
       )}
 
-      {/* Clip color picker */}
       {clipColorPicker && (
         <div
           className="clip-color-picker"
-          style={{ left: clipColorPicker.x, top: clipColorPicker.y }}
+          style={clampPos(clipColorPicker.x, clipColorPicker.y, 220, 190)}
           onMouseDown={e => e.stopPropagation()}
         >
           <div className="ctx-title">Barva clipa</div>
-          <div className="ccp-grid">
-            {CLIP_COLORS.map(c => (
-              <button
-                key={c}
-                className="ccp-swatch"
-                style={{ background: c }}
-                title={c}
-                onClick={() => {
-                  onUpdateCue(clipColorPicker.trackIdx, clipColorPicker.cueIdx, { color: c })
-                  setClipColorPicker(null)
-                }}
-              />
-            ))}
-          </div>
+          <div className="ccp-grid">{TAG_COLORS.map(swatch)}</div>
+          <div className="ccp-label">Nasičene</div>
+          <div className="ccp-grid">{SATURATED_COLORS.map(swatch)}</div>
           <div className="ctx-divider" />
           <button
-            className="ctx-btn dim"
+            className="ctx-btn"
             onClick={() => {
               onUpdateCue(clipColorPicker.trackIdx, clipColorPicker.cueIdx, { color: undefined })
               setClipColorPicker(null)
             }}
-          >↺ Ponastavi (barva layerja)</button>
+          >Ponastavi (barva layerja)</button>
           <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Prekliči</button>
         </div>
       )}
@@ -860,81 +928,150 @@ function interpolate(keyframes: Keyframe[], frame: number, fps: number): number 
   return null
 }
 
-function drawRuler(ctx: CanvasRenderingContext2D, W: number, fps: number, bpm: number | undefined, ppf: number, sf: number) {
-  ctx.fillStyle = '#050505'; ctx.fillRect(0, 0, W, RULER_H)
-  ctx.fillStyle = '#252525'; ctx.fillRect(0, RULER_H - 1, W, 1)
-  if (fps <= 0 || ppf <= 0) return
+// ── Colour ────────────────────────────────────────────────────────────────────
 
-  // BPM beat ticks on ruler
-  if (bpm && bpm > 0) {
-    const beatF = (fps * 60) / bpm
-    const barF = beatF * 4
-    const minPxPerBeat = 8
-    const beatStep = beatF * ppf >= minPxPerBeat ? beatF : barF
-    const startBeat = Math.floor(sf / beatStep) * beatStep
-    for (let f = startBeat; f <= sf + W / ppf + beatStep; f += beatStep) {
-      const x = (f - sf) * ppf
-      if (x < -1 || x > W + 1) continue
-      const isBar = Math.abs(f % barF) < 0.5
-      ctx.fillStyle = isBar ? '#3a3a3a' : '#222222'
-      ctx.fillRect(x, RULER_H - (isBar ? 8 : 4), 1, isBar ? 8 : 4)
-    }
+const rgbCache = new Map<string, [number, number, number] | null>()
+function toRgb(c: string): [number, number, number] | null {
+  let v = rgbCache.get(c)
+  if (v !== undefined) return v
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(c.trim())
+  v = null
+  if (m) {
+    const h = m[1].length === 3 ? m[1].split('').map(ch => ch + ch).join('') : m[1].slice(0, 6)
+    const n = parseInt(h, 16)
+    v = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
   }
-
-  const iv = [1, 2, 5, 10, 30, 60, 120, 300, 600].map(s => s * fps).find(iv => iv * ppf >= 90) ?? 600 * fps
-  const start = Math.floor(sf / iv) * iv
-  ctx.font = '9px monospace'; ctx.textBaseline = 'middle'
-  for (let f = start; f <= sf + W / ppf + iv; f += iv) {
-    const x = (f - sf) * ppf
-    if (x < -1 || x > W + 1) continue
-    ctx.fillStyle = '#2e2e2e'; ctx.fillRect(x, 0, 1, RULER_H)
-    ctx.fillStyle = '#666666'; ctx.fillText(framesToSmpte(f, fps), x + 3, RULER_H / 2)
-  }
+  rgbCache.set(c, v)
+  return v
 }
 
-function drawBpmGrid(ctx: CanvasRenderingContext2D, W: number, H: number, fps: number, bpm: number, ppf: number, sf: number) {
-  if (fps <= 0 || ppf <= 0 || bpm <= 0) return
-  const beatF = (fps * 60) / bpm
-  const barF = beatF * 4
-  // Skip rendering if beats are too dense (< 3px apart)
-  if (beatF * ppf < 3) return
+function rgba(c: string, a: number): string {
+  const v = toRgb(c)
+  return v ? `rgba(${v[0]},${v[1]},${v[2]},${a})` : c
+}
 
-  const gridTop = RULER_H + AUDIO_LANE_H
-  const gridH = H - gridTop
-  if (gridH <= 0) return
+const toLinear = (u: number) => { u /= 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4 }
 
-  const start = Math.floor(sf / beatF) * beatF
+// Scale toward black until relative luminance ≤ maxL (0.18 keeps white text ≥ 4.5:1).
+// Muted tag colours pass through unchanged.
+function capLum(c: string, maxL: number, a = 1): string {
+  const v = toRgb(c)
+  if (!v) return c
+  const L = 0.2126 * toLinear(v[0]) + 0.7152 * toLinear(v[1]) + 0.0722 * toLinear(v[2])
+  const k = L > maxL ? (maxL / L) ** (1 / 2.4) : 1
+  return `rgba(${Math.round(v[0] * k)},${Math.round(v[1] * k)},${Math.round(v[2] * k)},${a})`
+}
+
+// ── Shapes / text ─────────────────────────────────────────────────────────────
+
+function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
+  ctx.beginPath()
+  ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y)
+  ctx.closePath()
+}
+
+function hatch(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, step = 8) {
   ctx.save()
-  ctx.beginPath(); ctx.rect(0, gridTop, W, gridH); ctx.clip()
-
-  for (let f = start; f <= sf + W / ppf + beatF; f += beatF) {
-    const x = (f - sf) * ppf
-    if (x < -1 || x > W + 1) continue
-    const isBar = Math.abs(f % barF) < 0.5
-    ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.025)'
-    ctx.lineWidth = isBar ? 1 : 0.5
-    ctx.setLineDash(isBar ? [] : [2, 4])
-    ctx.beginPath()
-    ctx.moveTo(x + 0.5, gridTop)
-    ctx.lineTo(x + 0.5, gridTop + gridH)
-    ctx.stroke()
-  }
-  ctx.setLineDash([])
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip()
+  ctx.strokeStyle = color; ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let s = -h; s < w; s += step) { ctx.moveTo(x + s, y + h); ctx.lineTo(x + s + h, y) }
+  ctx.stroke()
   ctx.restore()
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const rr = Math.min(r, w / 2, h / 2); ctx.beginPath()
-  ctx.moveTo(x + rr, y); ctx.lineTo(x + w - rr, y); ctx.quadraticCurveTo(x + w, y, x + w, y + rr)
-  ctx.lineTo(x + w, y + h - rr); ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h)
-  ctx.lineTo(x + rr, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - rr)
-  ctx.lineTo(x, y + rr); ctx.quadraticCurveTo(x, y, x + rr, y); ctx.closePath()
+function fitText(ctx: CanvasRenderingContext2D, s: string, maxW: number): string {
+  if (ctx.measureText(s).width <= maxW) return s
+  let lo = 0, hi = s.length
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1
+    if (ctx.measureText(s.slice(0, m) + '…').width <= maxW) lo = m; else hi = m - 1
+  }
+  return lo > 0 ? s.slice(0, lo) + '…' : ''
 }
 
-function lighten(hex: string, a: number) {
-  const n = parseInt(hex.replace('#', ''), 16)
-  return `rgb(${Math.min(255, ((n >> 16) & 255) + Math.round(a * 255))},${Math.min(255, ((n >> 8) & 255) + Math.round(a * 255))},${Math.min(255, (n & 255) + Math.round(a * 255))})`
+// ── Ruler / grid ──────────────────────────────────────────────────────────────
+
+// Major interval = first rung ≥ 80px apart; minor = first listed subdivision ≥ 10px apart
+// (sub-second minors must land on whole frames).
+function rulerSteps(fps: number, ppf: number): { major: number; minor: number; showFrames: boolean } {
+  const ladder: [number, number[]][] = [
+    [1, []], [5, [5]],
+    [fps, [10, 5, 4, 2]], [2 * fps, [10, 4, 2]], [5 * fps, [10, 5]], [10 * fps, [10, 5, 2]],
+    [15 * fps, [15, 5, 3]], [30 * fps, [30, 6, 3]], [60 * fps, [12, 6, 4, 2]],
+    [120 * fps, [8, 4, 2]], [300 * fps, [10, 5]], [600 * fps, [10, 5, 2]],
+  ]
+  const rungs = ladder.filter(([f], i) => i < 2 ? f < fps : true)
+  const [major, divs] = rungs.find(([f]) => f * ppf >= 80) ?? rungs[rungs.length - 1]
+  const n = divs.find(d => (major / d) * ppf >= 10 && (major / d >= fps || Number.isInteger(major / d)))
+  return { major, minor: n ? major / n : major, showFrames: major < fps }
 }
+
+function forEachStep(step: number, sf: number, W: number, ppf: number, fn: (x: number, f: number) => void) {
+  if (step <= 0 || ppf <= 0) return
+  const endF = sf + W / ppf
+  for (let i = Math.floor(sf / step); i * step <= endF + step; i++) {
+    const f = i * step
+    const x = (f - sf) * ppf
+    if (x >= -1 && x <= W + 1) fn(x, f)
+  }
+}
+
+function drawRuler(
+  ctx: CanvasRenderingContext2D, W: number, fps: number, ppf: number, sf: number,
+  markers: { time: string; name: string; color: string }[],
+) {
+  ctx.fillStyle = T.header; ctx.fillRect(0, 0, W, RULER_H)
+  ctx.fillStyle = T.track; ctx.fillRect(0, TC_BAND_H, W, RULER_H - 1 - TC_BAND_H)
+  ctx.fillStyle = T.gutter; ctx.fillRect(0, RULER_H - 1, W, 1)
+  if (fps <= 0 || ppf <= 0) return
+
+  const { major, minor, showFrames } = rulerSteps(fps, ppf)
+  ctx.fillStyle = T.field
+  if (minor < major) forEachStep(minor, sf, W, ppf, x => ctx.fillRect(Math.round(x), TC_BAND_H - 4, 1, 4))
+
+  ctx.font = `11px ${T.fontTc}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'
+  forEachStep(major, sf, W, ppf, (x, f) => {
+    const rx = Math.round(x)
+    ctx.fillStyle = T.textFaint; ctx.fillRect(rx, 2, 1, TC_BAND_H - 2)
+    const tc = framesToSmpte(Math.round(f), fps)
+    ctx.fillStyle = T.textDim; ctx.fillText(showFrames ? tc : tc.slice(0, 8), rx + 4, 9)
+  })
+
+  // Marker strip: diamond + name, name clipped at the next marker
+  const my = TC_BAND_H + (RULER_H - 1 - TC_BAND_H) / 2
+  const mks = markers
+    .map(m => ({ ...m, x: Math.round((smpteToFrames(m.time, fps) - sf) * ppf) }))
+    .sort((a, b) => a.x - b.x)
+  ctx.font = `11px ${T.fontUi}`
+  mks.forEach((mk, i) => {
+    if (mk.x < -200 || mk.x > W + 6) return
+    const c = mk.color || T.loop
+    diamond(ctx, mk.x + 0.5, my, 4)
+    ctx.fillStyle = c; ctx.fill()
+    ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
+    const maxW = (i + 1 < mks.length ? mks[i + 1].x - 6 : W) - (mk.x + 7)
+    if (mk.name && maxW > 10) {
+      ctx.fillStyle = T.text
+      ctx.fillText(fitText(ctx, mk.name, maxW), mk.x + 7, my + 0.5)
+    }
+  })
+}
+
+function drawBpmGrid(ctx: CanvasRenderingContext2D, W: number, top: number, h: number, fps: number, bpm: number, ppf: number, sf: number) {
+  if (fps <= 0 || ppf <= 0 || bpm <= 0) return
+  const beatF = (fps * 60) / bpm
+  const barF = beatF * 4
+  if (barF * ppf < 6) return
+  const showBeats = beatF * ppf >= 6
+  forEachStep(showBeats ? beatF : barF, sf, W, ppf, (x, f) => {
+    const isBar = Math.abs(f / barF - Math.round(f / barF)) < 1e-6
+    ctx.fillStyle = isBar ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'
+    ctx.fillRect(Math.round(x), top, 1, h)
+  })
+}
+
+// ── Audio lane ────────────────────────────────────────────────────────────────
 
 function drawAudioLane(
   ctx: CanvasRenderingContext2D, W: number,
@@ -944,22 +1081,19 @@ function drawAudioLane(
   waveformInfo: WaveformInfo | null,
 ) {
   const laneY = RULER_H
-  const laneH = AUDIO_LANE_H
-  const color = audioTrack?.color ?? '#1ABC9C'
+  const laneH = AUDIO_LANE_H - 1  // last px is the gutter
 
-  ctx.fillStyle = '#080c0b'
+  ctx.fillStyle = T.lane
   ctx.fillRect(0, laneY, W, laneH)
+  ctx.fillStyle = T.gutter
+  ctx.fillRect(0, laneY + laneH, W, 1)
 
   if (!audioTrack || audioDuration === 0) {
-    ctx.fillStyle = '#1a2420'
-    ctx.fillRect(0, laneY, W, laneH)
-    ctx.fillStyle = '#2a3830'
-    ctx.font = '10px monospace'
+    ctx.fillStyle = T.textFaint
+    ctx.font = `11px ${T.fontUi}`
     ctx.textBaseline = 'middle'
     ctx.textAlign = 'left'
-    ctx.fillText('♪  Naloži avdio — klikni gumb v levem panelu', 14, laneY + laneH / 2)
-    ctx.fillStyle = '#1e2e28'
-    ctx.fillRect(0, laneY + laneH - 1, W, 1)
+    ctx.fillText('♪  Naloži avdio — klikni gumb v levem panelu', 12, laneY + laneH / 2)
     return
   }
 
@@ -970,23 +1104,21 @@ function drawAudioLane(
   const x0 = Math.max(0, ax)
   const x1 = Math.min(ax + aw, W)
 
-  // Subtle tinted bg for entire audio block
   if (x1 > x0) {
-    ctx.fillStyle = color + '0e'
+    ctx.fillStyle = rgba(T.liveDeep, 0.35)
     ctx.fillRect(x0, laneY, x1 - x0, laneH)
   }
 
   if (waveformInfo && waveformInfo.data.length > 0 && x1 > x0) {
     const { data, samplesPerPeak, sampleRate } = waveformInfo
     const centerY = laneY + laneH / 2
-    const amplitude = laneH / 2 - 6
+    const amplitude = laneH / 2 - 5
 
     ctx.save()
     ctx.beginPath()
-    ctx.rect(x0, laneY + 1, x1 - x0, laneH - 2)
+    ctx.rect(x0, laneY, x1 - x0, laneH)
     ctx.clip()
 
-    // Build top and bottom paths pixel by pixel
     const tops: number[] = []
     const bots: number[] = []
     const xs: number[] = []
@@ -1012,14 +1144,7 @@ function drawAudioLane(
     }
 
     if (xs.length > 0) {
-      // Filled body — gradient top→center→bottom
-      const grad = ctx.createLinearGradient(0, laneY, 0, laneY + laneH)
-      grad.addColorStop(0,    color + '18')
-      grad.addColorStop(0.3,  color + '66')
-      grad.addColorStop(0.5,  color + '99')
-      grad.addColorStop(0.7,  color + '66')
-      grad.addColorStop(1,    color + '18')
-      ctx.fillStyle = grad
+      ctx.fillStyle = T.liveFill
       ctx.beginPath()
       ctx.moveTo(xs[0], tops[0])
       for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], tops[i])
@@ -1027,63 +1152,32 @@ function drawAudioLane(
       ctx.closePath()
       ctx.fill()
 
-      // Top outline with glow
-      ctx.strokeStyle = color + 'cc'
-      ctx.lineWidth = 1.2
-      ctx.shadowColor = color
-      ctx.shadowBlur = 5
-      ctx.beginPath()
-      ctx.moveTo(xs[0], tops[0])
-      for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], tops[i])
-      ctx.stroke()
-
-      // Bottom outline with glow
-      ctx.beginPath()
-      ctx.moveTo(xs[0], bots[0])
-      for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], bots[i])
-      ctx.stroke()
-      ctx.shadowBlur = 0
-
-      // Center line
-      ctx.strokeStyle = color + '28'
-      ctx.lineWidth = 1
-      ctx.setLineDash([3, 5])
-      ctx.beginPath()
-      ctx.moveTo(xs[0], centerY); ctx.lineTo(xs[xs.length - 1], centerY)
-      ctx.stroke()
-      ctx.setLineDash([])
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'
+      ctx.fillRect(xs[0], Math.round(centerY), xs[xs.length - 1] - xs[0], 1)
     }
 
     ctx.restore()
   }
 
-  // Left accent bar at audio start
+  // Start edge
   if (ax >= -1 && ax <= W) {
-    ctx.fillStyle = color
-    ctx.fillRect(Math.max(0, ax), laneY, 2, laneH)
+    ctx.fillStyle = T.liveFill
+    ctx.fillRect(Math.max(0, Math.round(ax)), laneY, 2, laneH)
   }
 
-  // Filename label
-  if (aw > 40) {
-    const labelX = Math.max(ax + 6, 6)
-    const labelW = Math.min(x1 - labelX - 4, W - labelX - 4)
-    if (labelW > 10) {
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(labelX, laneY + 3, labelW, 14)
-      ctx.clip()
-      ctx.fillStyle = '#ffffff'
-      ctx.globalAlpha = 0.75
-      ctx.font = 'bold 10px monospace'
-      ctx.textBaseline = 'top'
-      ctx.textAlign = 'left'
-      ctx.fillText(audioTrack.name, labelX, laneY + 4)
-      ctx.restore()
-      ctx.globalAlpha = 1
-    }
+  // File name
+  const labelX = Math.max(ax + 6, 6)
+  const labelW = Math.min(x1, W) - labelX - 4
+  if (labelW > 12) {
+    ctx.font = `bold 12px ${T.fontCond}`
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'left'
+    const name = fitText(ctx, audioTrack.name, labelW)
+    const tw = ctx.measureText(name).width
+    // Dark backing keeps the name readable over the waveform peaks
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'
+    ctx.fillRect(labelX - 3, laneY + 3, tw + 6, 16)
+    ctx.fillStyle = T.text
+    ctx.fillText(name, labelX, laneY + 5)
   }
-
-  // Bottom separator
-  ctx.fillStyle = '#1e2e28'
-  ctx.fillRect(0, laneY + laneH - 1, W, 1)
 }

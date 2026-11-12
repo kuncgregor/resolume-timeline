@@ -22,6 +22,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
   const [error, setError] = useState<string | null>(null)
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set<number>([999999]))
+  const [query, setQuery] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true); setError(null)
@@ -78,43 +79,59 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
     })
   }
 
+  const q = query.trim().toLowerCase()
+
   return (
     <div className="clip-browser">
       <div className="browser-header">
         <span className="browser-title">Clips</span>
-        <button className="btn-sm" onClick={refresh} disabled={loading}>{loading ? '…' : '↺'}</button>
-        <button className="btn-icon" onClick={onClose}>✕</button>
+        <button className="btn ghost browser-icon" onClick={refresh} disabled={loading} title="Osveži iz Resolume">
+          {loading ? '…' : '↺'}
+        </button>
+        <button className="btn ghost browser-icon" onClick={onClose} title="Zapri">✕</button>
+      </div>
+
+      <div className="browser-search">
+        <input
+          className="browser-search-inp" type="search" placeholder="Išči clip…"
+          value={query} onChange={e => setQuery(e.target.value)}
+        />
       </div>
 
       <div className="browser-body">
-        {loading && <div className="bp-empty">Nalagam…</div>}
-        {!loading && error && <div className="browser-error" style={{ whiteSpace: 'pre-line' }}>{error}</div>}
+        {loading && <div className="browser-msg">Nalagam…</div>}
+        {!loading && error && <div className="browser-msg error">{error}</div>}
 
         {!loading && !error && composition && (composition.layers ?? []).map((layer, li) => {
           if (!layer) return null
           const layerName = layerDisplayName(rv(layer.name, `Layer ${li + 1}`), li + 1)
           const hasTrack = trackedIds.has(layer.id)
-          const isCollapsed = collapsed.has(layer.id)
           // Keep the original slot index: it is the clip number Resolume expects over OSC
           const clips = (layer.clips ?? [])
             .map((clip, ci) => ({ clip, ci }))
             .filter(({ clip }) => clip && !isEmptySlot(clip))
+            .filter(({ clip, ci }) => !q || rv(clip.name, `Slot ${ci + 1}`).toLowerCase().includes(q))
+          if (q && clips.length === 0) return null
+          // A search shows every match, regardless of collapsed layers
+          const isCollapsed = !q && collapsed.has(layer.id)
 
           return (
-            <div key={layer.id} className="browser-layer-section">
-              <div
-                className={`browser-layer-row ${hasTrack ? 'tracked' : 'untracked'}`}
+            <div key={layer.id}>
+              <button
+                className="browser-layer-row"
                 onClick={() => toggleCollapse(layer.id)}
+                title={hasTrack ? 'Layer je v timelineu' : 'Layer ni v timelineu'}
               >
-                <span className="layer-collapse-arrow">{isCollapsed ? '▶' : '▼'}</span>
-                <span className={`layer-track-dot ${hasTrack ? 'ok' : ''}`} />
-                <span className="browser-layer-name">L{li + 1}: {layerName}</span>
+                <span className="browser-arrow">{isCollapsed ? '▸' : '▾'}</span>
+                <span className="browser-layer-num">L{li + 1}</span>
+                <span className="browser-layer-name">{layerName}</span>
                 <span className="browser-layer-count">{clips.length}</span>
-              </div>
+                <span className={`browser-track-dot ${hasTrack ? 'on' : ''}`} />
+              </button>
 
               {!isCollapsed && (
-                <div className="browser-clips-list">
-                  {clips.length === 0 && <div className="bp-empty">Ni clipov</div>}
+                <div>
+                  {clips.length === 0 && <div className="browser-msg">Ni clipov</div>}
                   {clips.map(({ clip, ci }) => {
                     const clipName = rv(clip.name, '')
                     const thumb = thumbnails[`${layer.id}-${clip.id}`]
@@ -127,16 +144,18 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
                         draggable={canDrag}
                         onDragStart={e => handleDragStart(e, layer, clip, li, ci)}
                         onDragEnd={onDragEnd}
-                        title={canDrag ? `Povleci na L${li+1} v timelineu` : 'Layer ni v timelineu'}
+                        title={canDrag ? `Povleci na L${li + 1} v timelineu` : `Layer L${li + 1} ni v timelineu — najprej dodaj stezo za ta layer`}
                       >
                         <div className="clip-row-thumb">
                           {thumb
-                            ? <img src={thumb} alt="" />
-                            : <div className="clip-row-num">{ci + 1}</div>
+                            ? <img src={thumb} alt="" draggable={false} />
+                            : <span className="clip-row-num">{ci + 1}</span>
                           }
                         </div>
-                        <span className="clip-row-name">{clipName || `Slot ${ci + 1}`}</span>
-                        {canDrag && <span className="clip-row-drag">⠿</span>}
+                        <div className="clip-row-text">
+                          <span className="clip-row-name">{clipName || `Slot ${ci + 1}`}</span>
+                          <span className="clip-row-meta">slot {ci + 1}</span>
+                        </div>
                       </div>
                     )
                   })}

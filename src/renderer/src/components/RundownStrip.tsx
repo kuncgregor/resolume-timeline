@@ -1,21 +1,18 @@
 import { useState, useRef } from 'react'
 import type { RundownEntry, ShowEntry, BreakEntry } from '../../../shared/concert'
 
-const PRESET_COLORS = [
-  '#4A7CE2', '#E2934A', '#2ECC71', '#9B59B6', '#E74C3C',
-  '#1ABC9C', '#F39C12', '#3498DB', '#E91E63', '#00BCD4',
-  '#FF6B6B', '#555555',
-]
-
 interface Props {
   rundown: RundownEntry[]
   activeId: string
-  ltcActive: boolean
-  ltcDisplay: string
+  playing: boolean
+  showMode: boolean
   concertDirty: boolean
   activeShowDirty: boolean
   concertFilePath: string | null
+  resolumeConnected: boolean
+  resolumeHost: string
   onSelect: (id: string) => void
+  onGo: (direction: 1 | -1) => void
   onReorder: (newOrder: RundownEntry[]) => void
   onAddShow: () => void
   onAddBreak: () => void
@@ -26,15 +23,21 @@ interface Props {
   onOpenShowFile: () => void
   onSaveActiveShow: () => void
   onSettings: () => void
+  onToggleShowMode: () => void
+  onReconnect: () => void
 }
 
+const entryName = (e: RundownEntry) =>
+  e.type === 'show' ? ((e as ShowEntry).show.name || 'Brez imena') : ((e as BreakEntry).label || 'Odmor')
+
 export function RundownStrip({
-  rundown, activeId, ltcActive, ltcDisplay, concertDirty, activeShowDirty, concertFilePath,
-  onSelect, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
+  rundown, activeId, playing, showMode, concertDirty, activeShowDirty, concertFilePath,
+  resolumeConnected, resolumeHost,
+  onSelect, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
   onOpenConcert, onSaveConcert, onOpenShowFile, onSaveActiveShow, onSettings,
+  onToggleShowMode, onReconnect,
 }: Props) {
-  const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const [fileMenuOpen, setFileMenuOpen] = useState(false)
+  const [menu, setMenu] = useState<'add' | 'file' | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropSide, setDropSide] = useState<'before' | 'after'>('after')
@@ -46,14 +49,14 @@ export function RundownStrip({
     ? concertFilePath.split('/').pop()?.replace(/\.concert\.json$|\.json$/, '') ?? 'Concert'
     : 'Concert'
 
-  // ── Drag & drop ──────────────────────────────────────────────────────────────
+  const activeIdx = rundown.findIndex(e => e.id === activeId)
+  const active = rundown[activeIdx]
+  const next = rundown[activeIdx + 1]
 
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    setDragId(id)
-    e.dataTransfer.effectAllowed = 'move'
-  }
+  // ── Drag & drop reordering (SETUP only) ──────────────────────────────────
 
   const handleDragOver = (e: React.DragEvent, targetId: string) => {
+    if (!dragId) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     setDropTargetId(targetId)
@@ -61,209 +64,169 @@ export function RundownStrip({
     setDropSide(e.clientX < rect.left + rect.width / 2 ? 'before' : 'after')
   }
 
+  const clearDrag = () => { setDragId(null); setDropTargetId(null) }
+
   const handleDrop = (e: React.DragEvent, targetId: string) => {
     e.preventDefault()
     if (!dragId || dragId === targetId) { clearDrag(); return }
-    const from = rundown.findIndex(e => e.id === dragId)
-    const toIdx = rundown.findIndex(e => e.id === targetId)
+    const from = rundown.findIndex(x => x.id === dragId)
+    const toIdx = rundown.findIndex(x => x.id === targetId)
     if (from < 0 || toIdx < 0) { clearDrag(); return }
-
-    const next = [...rundown]
-    const [item] = next.splice(from, 1)
+    const reordered = [...rundown]
+    const [item] = reordered.splice(from, 1)
     const insertAt = dropSide === 'before' ? toIdx : toIdx + 1
-    next.splice(Math.max(0, from < toIdx ? insertAt - 1 : insertAt), 0, item)
-    onReorder(next)
+    reordered.splice(Math.max(0, from < toIdx ? insertAt - 1 : insertAt), 0, item)
+    onReorder(reordered)
     clearDrag()
   }
 
-  const handleDragEnd = () => clearDrag()
-  const clearDrag = () => { setDragId(null); setDropTargetId(null) }
-
   return (
-    <div className="rundown-strip" onClick={() => { setAddMenuOpen(false); setFileMenuOpen(false) }}>
+    <div className="rundown" onClick={() => setMenu(null)}>
 
-      {/* ── Toolbar ── */}
-      <div className="rundown-toolbar">
-        <div className="ptb-mac-spacer" style={{ width: 72, flexShrink: 0, WebkitAppRegion: 'drag' } as any} />
-
-        {/* Concert title */}
-        <span className="rd-concert-name" title={concertFilePath ?? undefined}>
-          {concertName}{concertDirty ? ' ·' : ''}
+      {/* ── Top bar: file actions · mode · connection ── */}
+      <div className="topbar">
+        <div className="topbar-mac-spacer" />
+        <span className="topbar-title" title={concertFilePath ?? undefined}>
+          {concertName}{concertDirty && <span className="dirty-dot" title="Neshranjene spremembe">●</span>}
         </span>
 
-        <div className="rd-toolbar-sep" />
+        <div className="topbar-group">
+          <div className="menu-anchor">
+            <button className="btn ghost" disabled={showMode}
+              onClick={e => { e.stopPropagation(); setMenu(m => m === 'add' ? null : 'add') }}>
+              + Dodaj ▾
+            </button>
+            {menu === 'add' && (
+              <div className="dropdown" onClick={e => e.stopPropagation()}>
+                <button className="dropdown-item" onClick={() => { onAddShow(); setMenu(null) }}>Nov show</button>
+                <button className="dropdown-item" onClick={() => { onOpenShowFile(); setMenu(null) }}>Odpri show iz datoteke…</button>
+                <div className="dropdown-sep" />
+                <button className="dropdown-item" onClick={() => { onAddBreak(); setMenu(null) }}>Odmor</button>
+              </div>
+            )}
+          </div>
 
-        {/* Add button */}
-        <div style={{ position: 'relative' }}>
-          <button className="ptb-action-btn" onClick={e => { e.stopPropagation(); setAddMenuOpen(o => !o); setFileMenuOpen(false) }}>
-            + Dodaj
+          <div className="menu-anchor">
+            <button className="btn ghost"
+              onClick={e => { e.stopPropagation(); setMenu(m => m === 'file' ? null : 'file') }}>
+              Concert ▾
+            </button>
+            {menu === 'file' && (
+              <div className="dropdown" onClick={e => e.stopPropagation()}>
+                <button className="dropdown-item" disabled={showMode}
+                  onClick={() => { onOpenConcert(); setMenu(null) }}>Odpri concert…</button>
+                <button className="dropdown-item" onClick={() => { onSaveConcert(); setMenu(null) }}>
+                  Shrani concert{concertDirty ? ' ●' : ''}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button className={`btn ${activeShowDirty ? '' : 'ghost'}`} onClick={onSaveActiveShow}
+            title="Shrani aktivni show v datoteko">
+            Shrani show{activeShowDirty && <span className="dirty-dot">●</span>}
           </button>
-          {addMenuOpen && (
-            <div className="rd-dropdown" onClick={e => e.stopPropagation()}>
-              <button className="rd-dropdown-item" onClick={() => { onAddShow(); setAddMenuOpen(false) }}>
-                ♪ Nov show
-              </button>
-              <button className="rd-dropdown-item" onClick={() => { onOpenShowFile(); setAddMenuOpen(false) }}>
-                📁 Odpri show iz datoteke
-              </button>
-              <div className="rd-dropdown-sep" />
-              <button className="rd-dropdown-item" onClick={() => { onAddBreak(); setAddMenuOpen(false) }}>
-                ⏸ Break / odmor
-              </button>
-            </div>
-          )}
+
+          <button className="btn ghost" onClick={onSettings} disabled={showMode} title="Nastavitve projekta">⚙</button>
         </div>
 
-        {/* File menu */}
-        <div style={{ position: 'relative' }}>
-          <button className="ptb-action-btn" onClick={e => { e.stopPropagation(); setFileMenuOpen(o => !o); setAddMenuOpen(false) }}>
-            Concert ▾
-          </button>
-          {fileMenuOpen && (
-            <div className="rd-dropdown" onClick={e => e.stopPropagation()}>
-              <button className="rd-dropdown-item" onClick={() => { onOpenConcert(); setFileMenuOpen(false) }}>
-                📁 Odpri concert
-              </button>
-              <button className="rd-dropdown-item" onClick={() => { onSaveConcert(); setFileMenuOpen(false) }}>
-                💾 Shrani concert{concertDirty ? ' ·' : ''}
-              </button>
-            </div>
-          )}
-        </div>
+        <div className="spacer" />
 
         <button
-          className="ptb-action-btn"
-          onClick={onSaveActiveShow}
-          title="Shrani aktivni show"
-          style={{ opacity: activeShowDirty ? 1 : 0.5 }}
+          className={`mode-switch ${showMode ? 'show' : 'setup'}`}
+          onClick={onToggleShowMode}
+          title={showMode
+            ? 'SHOW: urejanje je zaklenjeno. Klikni za SETUP.'
+            : 'SETUP: urejanje dovoljeno. Klikni za SHOW (zaklene urejanje).'}
         >
-          Shrani show{activeShowDirty ? ' ·' : ''}
+          <span className={showMode ? '' : 'active'}>Setup</span>
+          <span className={showMode ? 'active' : ''}>Show</span>
         </button>
 
-        <div className="rd-toolbar-sep" />
-
-        <button className="ptb-action-btn" onClick={onSettings}>⚙</button>
-
-        <div style={{ flex: 1 }} />
-
-        {ltcActive && (
-          <div className="ptb-ltc-status">
-            <span className="ptb-ltc-dot live" />
-            <span className="ptb-ltc-label">LTC</span>
-            <span className="ptb-ltc-tc">{ltcDisplay}</span>
-          </div>
-        )}
+        <button className={`chip ${resolumeConnected ? 'live' : 'danger blink'} conn-chip`} onClick={onReconnect}
+          title={resolumeConnected ? `Povezano z Resolume (${resolumeHost}). Klikni za ponovno povezavo.` : 'Resolume ni dosegljiv. Klikni za ponovni poskus.'}>
+          {resolumeConnected ? `● Resolume ${resolumeHost}` : '✕ Resolume ni povezan'}
+        </button>
       </div>
 
-      {/* ── Blocks ── */}
-      <div className="rundown-scroll" ref={scrollRef}>
-        {rundown.map((entry) => {
-          const isActive = entry.id === activeId
-          const isDragging = entry.id === dragId
-          const isDropTarget = entry.id === dropTargetId
-
-          return (
-            <div key={entry.id} style={{ position: 'relative', display: 'flex', alignItems: 'stretch' }}>
-              {/* Drop indicator: before */}
-              {isDropTarget && dropSide === 'before' && (
-                <div className="rd-drop-indicator" />
-              )}
-
-              <div
-                className={`rundown-block${isActive ? ' active' : ''}${entry.type === 'break' ? ' break-type' : ''}`}
-                style={{ opacity: isDragging ? 0.35 : 1 }}
-                draggable
-                onDragStart={e => handleDragStart(e, entry.id)}
-                onDragOver={e => handleDragOver(e, entry.id)}
-                onDrop={e => handleDrop(e, entry.id)}
-                onDragEnd={handleDragEnd}
-                onClick={() => onSelect(entry.id)}
-                onDoubleClick={() => onEdit(entry.id)}
-                onMouseLeave={() => { if (confirmDeleteId === entry.id) setConfirmDeleteId(null) }}
-              >
-                <div className="rundown-block-stripe" style={{ background: entry.color }} />
-                <div className="rundown-block-body">
-                  {entry.type === 'show' ? (
-                    <ShowBlock entry={entry as ShowEntry} dirty={(entry as ShowEntry).dirty} />
-                  ) : (
-                    <BreakBlock entry={entry as BreakEntry} />
+      {/* ── Rundown row + NOW/NEXT/GO ── */}
+      <div className="rundown-row">
+        <div className="rundown-scroll" ref={scrollRef}>
+          {rundown.map((entry, idx) => {
+            const isActive = entry.id === activeId
+            const isNext = next?.id === entry.id
+            const isLive = isActive && playing && entry.type === 'show'
+            const dirty = entry.type === 'show' && (entry as ShowEntry).dirty
+            return (
+              <div key={entry.id} className="rd-slot">
+                {dropTargetId === entry.id && dropSide === 'before' && <div className="rd-drop-indicator" />}
+                <div
+                  className={`rd-block${isActive ? ' active' : ''}${isLive ? ' live' : ''}${isNext ? ' next' : ''}${entry.type === 'break' ? ' break' : ''}`}
+                  style={{ opacity: entry.id === dragId ? 0.35 : 1 }}
+                  draggable={!showMode}
+                  onDragStart={e => { setDragId(entry.id); e.dataTransfer.effectAllowed = 'move' }}
+                  onDragOver={e => handleDragOver(e, entry.id)}
+                  onDrop={e => handleDrop(e, entry.id)}
+                  onDragEnd={clearDrag}
+                  onClick={() => onSelect(entry.id)}
+                  onDoubleClick={() => { if (!showMode) onEdit(entry.id) }}
+                  onMouseLeave={() => { if (confirmDeleteId === entry.id) setConfirmDeleteId(null) }}
+                >
+                  <div className="rd-stripe" style={{ background: entry.color }} />
+                  <div className="rd-body">
+                    <div className="rd-head">
+                      <span className="rd-num mono">{String(idx + 1).padStart(2, '0')}{dirty ? '*' : ''}</span>
+                      {isLive && <span className="chip live">▶ Live</span>}
+                      {isActive && !isLive && <span className="chip">Now</span>}
+                      {isNext && <span className="chip next">▷ Next</span>}
+                    </div>
+                    <div className="rd-name" title={entryName(entry)}>{entryName(entry)}</div>
+                    <div className="rd-meta mono">
+                      {entry.type === 'show'
+                        ? <>{(entry as ShowEntry).show.clock.offset || '00:00:00:00'}{(entry as ShowEntry).show.bpm ? ` · ${(entry as ShowEntry).show.bpm} BPM` : ''}</>
+                        : <>⏸ {(entry as BreakEntry).duration}</>}
+                    </div>
+                  </div>
+                  {!showMode && (
+                    <div className={`rd-controls${confirmDeleteId === entry.id ? ' confirming' : ''}`}>
+                      <button className="rd-ctl" title="Uredi" onClick={e => { e.stopPropagation(); onEdit(entry.id) }}>✎</button>
+                      {confirmDeleteId === entry.id ? (
+                        <button className="rd-ctl armed"
+                          title={dirty ? 'Show ima neshranjene spremembe' : 'Odstrani iz rundowna'}
+                          onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); onDelete(entry.id) }}>
+                          {dirty ? 'Izbriši (neshranjeno)?' : 'Izbriši?'}
+                        </button>
+                      ) : (
+                        <button className="rd-ctl" title="Odstrani" onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}>✕</button>
+                      )}
+                    </div>
                   )}
                 </div>
-                {/* Hover controls */}
-                <div className={`rd-block-controls${confirmDeleteId === entry.id ? ' confirming' : ''}`}>
-                  <button
-                    className="rd-block-btn"
-                    title="Uredi"
-                    onClick={e => { e.stopPropagation(); onEdit(entry.id) }}
-                  >✎</button>
-                  {confirmDeleteId === entry.id ? (
-                    <button
-                      className="rd-block-btn rd-block-btn-del confirm"
-                      title={entry.type === 'show' && (entry as ShowEntry).dirty
-                        ? 'Show ima neshranjene spremembe' : 'Odstrani iz rundowna'}
-                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); onDelete(entry.id) }}
-                    >{entry.type === 'show' && (entry as ShowEntry).dirty ? 'Izbriši (neshranjeno)?' : 'Izbriši?'}</button>
-                  ) : (
-                    <button
-                      className="rd-block-btn rd-block-btn-del"
-                      title="Odstrani"
-                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}
-                    >×</button>
-                  )}
-                </div>
+                {dropTargetId === entry.id && dropSide === 'after' && <div className="rd-drop-indicator" />}
               </div>
+            )
+          })}
+        </div>
 
-              {/* Drop indicator: after */}
-              {isDropTarget && dropSide === 'after' && (
-                <div className="rd-drop-indicator" />
-              )}
+        <div className="now-next">
+          <div className="nn-lines">
+            <div className="nn-line">
+              <span className="nn-label">Now</span>
+              <span className="nn-name now" title={active ? entryName(active) : ''}>{active ? entryName(active) : '—'}</span>
             </div>
-          )
-        })}
-
-        {rundown.length === 0 && (
-          <div className="rd-empty">Klikni "+ Dodaj" za dodajanje skladbe ali breaka</div>
-        )}
+            <div className="nn-line">
+              <span className="nn-label next">Next</span>
+              <span className="nn-name next" title={next ? entryName(next) : ''}>{next ? entryName(next) : 'konec rundowna'}</span>
+            </div>
+          </div>
+          <button className="nn-prev" onClick={() => onGo(-1)} disabled={activeIdx <= 0}
+            title="Nazaj na prejšnji vnos">◀</button>
+          <button className="go-btn" onClick={() => onGo(1)} disabled={!next}
+            title="GO: preklopi na naslednji vnos (Enter)">
+            GO <span className="go-arrow">▶</span>
+          </button>
+        </div>
       </div>
     </div>
   )
 }
-
-function ShowBlock({ entry, dirty }: { entry: ShowEntry; dirty: boolean }) {
-  const tc = entry.show.clock.offset || '00:00:00:00'
-  const bpm = entry.show.bpm
-  const name = entry.show.name || 'Brez imena'
-  return (
-    <>
-      <div className="rundown-block-name">
-        {dirty && <span style={{ color: '#5599ff', marginRight: 3 }}>·</span>}
-        {name}
-      </div>
-      {bpm != null && (
-        <div className="rundown-block-meta">{bpm} BPM</div>
-      )}
-      <div className="rundown-block-tc">{tc}</div>
-      {entry.notes && (
-        <div className="rundown-block-notes">{entry.notes}</div>
-      )}
-    </>
-  )
-}
-
-function BreakBlock({ entry }: { entry: BreakEntry }) {
-  return (
-    <>
-      <div className="rundown-block-name" style={{ letterSpacing: '0.04em' }}>
-        {entry.label || 'Break'}
-      </div>
-      <div className="rundown-block-meta" style={{ color: '#555' }}>
-        {entry.duration}
-      </div>
-      {entry.notes && (
-        <div className="rundown-block-notes">{entry.notes}</div>
-      )}
-    </>
-  )
-}
-
-export { PRESET_COLORS }

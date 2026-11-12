@@ -56,10 +56,22 @@ const newId = () => `auto-${Date.now()}-${uid++}`
 const ACOLS = ['#E74C3C','#3498DB','#2ECC71','#F39C12','#9B59B6','#1ABC9C','#E91E63']
 let ci = 0
 
+// Section name for a param: the path segment right before its name ("…/video/opacity" → "video")
+function groupOf(addr: string) {
+  const segs = addr.split('/')
+  const g = segs[segs.length - 2]
+  return !g || /^\d+$/.test(g) ? 'general' : g
+}
+
+// Slider fill: CSS reads the percentage from --pct
+const pct = (v: number, min: number, max: number) =>
+  ({ '--pct': `${max > min ? ((v - min) / (max - min)) * 100 : 0}%` }) as React.CSSProperties
+
 interface Props {
   track: LayerTrack | null; cue: ClipCue | null
   cueIdx: number | null; trackIdx: number | null; fps: number
   height: number
+  readOnly: boolean
   onResize: (h: number) => void
   onUpdateCue: (ti: number, ci: number, u: Partial<ClipCue>) => void
   onDeleteCue: (ti: number, ci: number) => void
@@ -69,13 +81,14 @@ interface Props {
 }
 
 export function BottomPanel({
-  track, cue, cueIdx, trackIdx, fps, height, onResize,
+  track, cue, cueIdx, trackIdx, fps, height, readOnly, onResize,
   onUpdateCue, onDeleteCue, onAddAutomation, onSelectCue, onClose,
 }: Props) {
   const [tab, setTab] = useState<'cue' | 'layer' | 'clip'>('cue')
   const [layerParams, setLayerParams] = useState<Param[]>([])
   const [clipParams, setClipParams] = useState<Param[]>([])
   const [loadingParams, setLoadingParams] = useState(false)
+  const [delArmed, setDelArmed] = useState(false)
 
   // Resize logic
   const resizingRef = useRef(false)
@@ -107,47 +120,57 @@ export function BottomPanel({
       setLayerParams(extractParams(lr, base).filter(p => p.name !== 'name').slice(0, 60))
       setClipParams(extractParams(cr, `${base}/clips/${cue.clipIndex}`).filter(p => p.name !== 'name').slice(0, 60))
       setLoadingParams(false)
-    })
+    }).catch(() => { if (!cancelled) setLoadingParams(false) })
     return () => { cancelled = true }
   }, [track?.resolumeLayerIndex, cue?.clipIndex])
+
+  useEffect(() => { setDelArmed(false) }, [cue?.id])
+
+  const handle = (
+    <div
+      className="bp-resize-handle"
+      onMouseDown={e => { resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
+    />
+  )
+  const roChip = readOnly && <span className="chip">SHOW · samo branje</span>
+  const closeBtn = <button className="btn ghost bp-icon" onClick={onClose} title="Zapri">✕</button>
+  const title = (t: LayerTrack, sub: string) => (
+    <div className="bp-title">
+      <span className="bp-stripe" style={{ background: t.color ?? 'var(--text-faint)' }} />
+      <span className="bp-layer">{t.name}</span>
+      <span className="bp-sep">›</span>
+      <span className="bp-clip" title={sub}>{sub}</span>
+    </div>
+  )
+  const fire = (t: LayerTrack, c: ClipCue) => api.triggerClip(t.resolumeLayerIndex, c.clipIndex)
 
   // CUE LIST view — track is selected (LayerTrack) but no specific clip
   if (track && trackIdx != null && cueIdx == null) {
     return (
       <div className="bottom-panel" style={{ height }}>
-        <div
-          className="bp-resize-handle"
-          onMouseDown={e => { resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
-        />
+        {handle}
         <div className="bp-header">
-          <div className="bp-title">
-            <span className="bp-layer" style={{ color: track.color }}>{track.name}</span>
-            <span className="bp-sep">›</span>
-            <span className="bp-clip">{track.clips.length} clipov</span>
-          </div>
-          <div style={{ marginLeft: 'auto' }}>
-            <button className="btn-icon" onClick={onClose}>✕</button>
-          </div>
+          {title(track, `${track.clips.length} clipov`)}
+          <div className="bp-actions">{roChip}{closeBtn}</div>
         </div>
-        <div className="bp-body" style={{ padding: 0 }}>
+        <div className="bp-body">
           {track.clips.length === 0 ? (
-            <div className="bp-empty" style={{ padding: 14 }}>Ni clipov v tem layerju. Povleci clip iz brskalnika.</div>
+            <div className="bp-empty">Ni clipov v tem layerju. Povleci clip iz brskalnika.</div>
           ) : (
-            <div className="cue-list">
+            <div className="bp-cue-list">
               {track.clips.map((c, ci) => {
-                const sw = c.color ?? track.color ?? '#666'
                 const durF = smpteToFrames(c.duration, fps)
                 return (
-                  <div key={c.id} className="cue-row" onClick={() => onSelectCue(trackIdx, ci)}>
-                    <span className="cue-row-swatch" style={{ background: sw }} />
-                    <span className="cue-row-slot">#{c.clipIndex}</span>
-                    <span className="cue-row-name" title={c.clipName}>{c.clipName || `Clip ${c.clipIndex}`}</span>
-                    <span className="cue-row-time mono">{c.time}</span>
-                    <span className="cue-row-dur mono">{durF === 0 ? 'trigger' : c.duration}</span>
-                    <button
-                      className="btn-fire cue-row-fire"
-                      onClick={e => { e.stopPropagation(); api.triggerClip(track.resolumeLayerIndex, c.clipIndex) }}
-                    >▶ Fire</button>
+                  <div key={c.id} className="bp-cue-row" tabIndex={0}
+                    onClick={() => onSelectCue(trackIdx, ci)}
+                    onKeyDown={e => { if (e.key === 'Enter') onSelectCue(trackIdx, ci) }}>
+                    <span className="bp-cue-swatch" style={{ background: c.color ?? track.color ?? 'var(--text-faint)' }} />
+                    <span className="bp-cue-slot">#{c.clipIndex}</span>
+                    <span className="bp-cue-name" title={c.clipName}>{c.clipName || `Clip ${c.clipIndex}`}</span>
+                    <span className="bp-cue-time mono">{c.time}</span>
+                    <span className="bp-cue-dur mono">{durF === 0 ? 'TRIGGER' : c.duration}</span>
+                    <button className="btn bp-fire bp-icon" title="Sproži clip v Resolume"
+                      onClick={e => { e.stopPropagation(); fire(track, c) }}>▶</button>
                   </div>
                 )
               })}
@@ -160,13 +183,17 @@ export function BottomPanel({
 
   if (!track || !cue || trackIdx == null || cueIdx == null) {
     return (
-      <div className="bottom-panel empty" style={{ height: 36 }}>
+      <div className="bottom-panel empty">
         <span>Klikni na layer ali clip v timelineu</span>
+        {roChip}
       </div>
     )
   }
 
   const durFrame = smpteToFrames(cue.duration, fps)
+  const durMax = Math.max(fps * 60, durFrame * 2)
+  const setDur = (f: number) => onUpdateCue(trackIdx, cueIdx, { duration: framesToSmpte(Math.max(0, f), fps) })
+  const automated = new Set(track.automations.map(a => a.target))
 
   // Layer params stay at absolute times; clip params move with this clip
   const addAuto = (p: Param) => {
@@ -180,74 +207,81 @@ export function BottomPanel({
 
   return (
     <div className="bottom-panel" style={{ height }}>
-      {/* Drag handle at top */}
-      <div
-        className="bp-resize-handle"
-        onMouseDown={e => { resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
-      />
+      {handle}
 
       <div className="bp-header">
-        <div className="bp-title">
-          <span className="bp-layer" style={{ color: track.color }}>
-            {track.name}
-          </span>
-          <span className="bp-sep">›</span>
-          <span className="bp-clip">{cue.clipName || `Clip ${cue.clipIndex}`}</span>
-        </div>
+        {title(track, cue.clipName || `Clip ${cue.clipIndex}`)}
 
-        <div className="bp-tabs" style={{ marginLeft: 10 }}>
+        <div className="bp-tabs">
           {(['cue', 'layer', 'clip'] as const).map(t => (
-            <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+            <button key={t} className={`bp-tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
               {t === 'cue' ? 'Cue' : t === 'layer' ? 'Layer' : 'Clip'}
             </button>
           ))}
         </div>
 
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
-          <button className="btn-sm dng" onClick={() => onDeleteCue(trackIdx, cueIdx)}>Del</button>
-          <button className="btn-icon" onClick={onClose}>✕</button>
+        <div className="bp-actions">
+          {roChip}
+          <button
+            className={`btn ${delArmed ? 'on-danger' : 'ghost'}`}
+            disabled={readOnly}
+            onClick={() => { if (delArmed) onDeleteCue(trackIdx, cueIdx); else setDelArmed(true) }}
+            onMouseLeave={() => setDelArmed(false)}
+            title="Izbriši cue (dva klika)"
+          >{delArmed ? 'Potrdi brisanje' : 'Izbriši'}</button>
+          {closeBtn}
         </div>
       </div>
 
       <div className="bp-body">
         {tab === 'cue' && (
-          <div className="bp-cue-grid">
-            <div className="bp-field">
-              <label>Layer</label>
-              <span>L{track.resolumeLayerIndex} — {track.name}</span>
+          <div className="bp-props">
+            <div className="bp-row">
+              <span className="bp-label">Layer</span>
+              <span className="bp-val">L{track.resolumeLayerIndex} — {track.name}</span>
             </div>
-            <div className="bp-field">
-              <label>Clip slot</label>
-              <span>{cue.clipIndex}</span>
+            <div className="bp-row">
+              <span className="bp-label">Clip slot</span>
+              <span className="bp-val mono">{cue.clipIndex}</span>
             </div>
-            <div className="bp-field">
-              <label>Start</label>
-              <span className="mono">{cue.time}</span>
+            <div className="bp-row">
+              <span className="bp-label">Start</span>
+              <span className="bp-val mono">{cue.time}</span>
             </div>
-            <div className="bp-field">
-              <label>Duration: <span className="mono" style={{ color: '#888' }}>{durFrame === 0 ? 'trigger' : cue.duration}</span></label>
-              <input type="range" min={0} max={Math.max(fps * 60, durFrame * 2)} value={durFrame}
-                onChange={e => onUpdateCue(trackIdx, cueIdx, { duration: framesToSmpte(Number(e.target.value), fps) })}
-                style={{ width: 180 }}
-              />
+            <div className="bp-row">
+              <span className="bp-label">Duration</span>
+              <span className="bp-val mono bp-num">{cue.duration}</span>
+              <button className="btn ghost bp-icon" disabled={readOnly || durFrame === 0}
+                onClick={() => setDur(durFrame - 1)} title="−1 sličica">−</button>
+              <input type="range" className="bp-slider bp-dur-slider" min={0} max={durMax} value={durFrame}
+                style={pct(durFrame, 0, durMax)} disabled={readOnly}
+                onChange={e => setDur(Number(e.target.value))} />
+              <button className="btn ghost bp-icon" disabled={readOnly}
+                onClick={() => setDur(durFrame + 1)} title="+1 sličica">+</button>
+              {durFrame === 0 && <span className="chip next" title="Trajanje 0: samo sproži, brez samodejnega izklopa">Trigger</span>}
             </div>
-            <div className="bp-field">
-              <label>Release</label>
-              <input type="checkbox" checked={cue.release}
-                onChange={e => onUpdateCue(trackIdx, cueIdx, { release: e.target.checked })} />
+            <div className="bp-row">
+              <span className="bp-label">Release</span>
+              <label className="bp-toggle">
+                <input type="checkbox" checked={cue.release} disabled={readOnly}
+                  onChange={e => onUpdateCue(trackIdx, cueIdx, { release: e.target.checked })} />
+                <span>{cue.release ? 'Vklopljeno' : 'Izklopljeno'}</span>
+              </label>
             </div>
-            <div className="bp-field">
-              <button className="btn-fire" onClick={() => api.triggerClip(track.resolumeLayerIndex, cue.clipIndex)}>
-                ▶ Fire
-              </button>
+            <div className="bp-row bp-row-action">
+              <span className="bp-label" />
+              <button className="btn bp-fire" onClick={() => fire(track, cue)}>▶ Fire</button>
             </div>
           </div>
         )}
 
         {(tab === 'layer' || tab === 'clip') && (
           <ParamList
+            key={tab}
             params={tab === 'layer' ? layerParams : clipParams}
             loading={loadingParams}
+            automated={automated}
+            readOnly={readOnly}
             onAdd={addAuto}
             onSend={(addr, v) => api.sendOsc(addr, v)}
           />
@@ -257,11 +291,12 @@ export function BottomPanel({
   )
 }
 
-function ParamList({ params, loading, onAdd, onSend }: {
-  params: Param[]; loading: boolean
+function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
+  params: Param[]; loading: boolean; automated: Set<string>; readOnly: boolean
   onAdd: (p: Param) => void; onSend: (addr: string, v: number) => void
 }) {
   const [vals, setVals] = useState<Record<string, number>>({})
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => {
     const m: Record<string, number> = {}
     params.forEach(p => { m[p.oscAddress] = p.value })
@@ -271,32 +306,54 @@ function ParamList({ params, loading, onAdd, onSend }: {
   if (loading) return <div className="bp-empty">Nalagam…</div>
   if (!params.length) return <div className="bp-empty">Ni parametrov. Resolume mora biti odprt.</div>
 
+  const groups = new Map<string, Param[]>()
+  for (const p of params) {
+    const g = groupOf(p.oscAddress)
+    groups.set(g, [...(groups.get(g) ?? []), p])
+  }
+  const toggle = (g: string) => setCollapsed(prev => {
+    const next = new Set(prev)
+    if (next.has(g)) next.delete(g); else next.add(g)
+    return next
+  })
+
   return (
-    <div className="param-grid">
-      {params.map(p => {
-        const val = vals[p.oscAddress] ?? p.value
-        const min = p.min ?? 0
-        const max = p.max ?? 1
+    <div className="bp-params">
+      {[...groups].map(([g, ps]) => {
+        const open = !collapsed.has(g)
         return (
-          <div key={p.oscAddress} className="param-card">
-            <div className="param-card-header">
-              <span className="param-card-name" title={p.name}>{p.name}</span>
-              <button className="btn-sm" style={{ fontSize: 8, padding: '1px 4px' }}
-                onClick={() => onAdd(p)} title="Add automation">+A</button>
-            </div>
-            <div className="param-card-path">{p.oscAddress.split('/').slice(-3).join('/')}</div>
-            <div className="param-card-control">
-              <input type="range" min={min} max={max} step={max > 10 ? 1 : 0.001}
-                value={val}
-                onChange={e => {
-                  const v = Number(e.target.value)
-                  setVals(prev => ({ ...prev, [p.oscAddress]: v }))
-                  // Resolume's OSC input takes ranged parameters normalized to 0..1
-                  onSend(p.oscAddress, max > min ? (v - min) / (max - min) : v)
-                }}
-              />
-              <span className="param-card-val">{val.toFixed(max > 10 ? 0 : 3)}</span>
-            </div>
+          <div key={g}>
+            <button className="bp-section" onClick={() => toggle(g)}>
+              <span className="bp-arrow">{open ? '▾' : '▸'}</span>
+              <span>{g}</span>
+              <span className="bp-section-count">{ps.length}</span>
+            </button>
+            {open && <div className="bp-param-grid">{ps.map(p => {
+              const val = vals[p.oscAddress] ?? p.value
+              const min = p.min ?? 0
+              const max = p.max ?? 1
+              const isAuto = automated.has(p.oscAddress)
+              return (
+                <div key={p.oscAddress} className="bp-row bp-param">
+                  <span className="bp-label" title={`${p.name}\n${p.oscAddress}`}>{p.name}</span>
+                  <span className="bp-val mono bp-num">{val.toFixed(max > 10 ? 0 : 3)}</span>
+                  <input type="range" className="bp-slider" min={min} max={max} step={max > 10 ? 1 : 0.001}
+                    value={val} style={pct(val, min, max)} disabled={readOnly}
+                    onChange={e => {
+                      const v = Number(e.target.value)
+                      setVals(prev => ({ ...prev, [p.oscAddress]: v }))
+                      // Resolume's OSC input takes ranged parameters normalized to 0..1
+                      onSend(p.oscAddress, max > min ? (v - min) / (max - min) : v)
+                    }}
+                  />
+                  <button className={`btn ghost bp-icon bp-auto ${isAuto ? 'on' : ''}`}
+                    // A second lane on the same target would fight the first one
+                    disabled={readOnly || isAuto} onClick={() => onAdd(p)}
+                    title={isAuto ? 'Parameter je že avtomatiziran na tej stezi' : 'Dodaj avtomatizacijo'}
+                  >{isAuto ? '◆' : '◇'}</button>
+                </div>
+              )
+            })}</div>}
           </div>
         )
       })}

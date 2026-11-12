@@ -1,10 +1,13 @@
 import { useState } from 'react'
+import { useEscape } from './useEscape'
 import type { RundownEntry, BreakEntry } from '../../../shared/concert'
+import { TAG_COLORS } from '../theme'
 
+// Muted Resolume-style tags first, then a few saturated ones and neutral greys
 const COLORS = [
-  '#4A7CE2', '#E2934A', '#2ECC71', '#9B59B6', '#E74C3C',
-  '#1ABC9C', '#F39C12', '#3498DB', '#E91E63', '#00BCD4',
-  '#FF6B6B', '#95A5A6', '#333333', '#555555',
+  ...TAG_COLORS,
+  '#4A7CE2', '#E2934A', '#2ECC71', '#9B59B6', '#E74C3C', '#1ABC9C',
+  '#333333', '#555555',
 ]
 
 interface Updates {
@@ -21,6 +24,7 @@ interface Props {
 }
 
 export function RundownEditModal({ entry, onSave, onClose }: Props) {
+  useEscape(onClose)
   const [color, setColor] = useState(entry.color)
   const [notes, setNotes] = useState(entry.notes)
   const [label, setLabel] = useState(entry.type === 'break' ? (entry as BreakEntry).label : '')
@@ -35,10 +39,10 @@ export function RundownEditModal({ entry, onSave, onClose }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ width: 300 }} onClick={e => e.stopPropagation()}>
+      <div className="modal modal-narrow" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span>{entry.type === 'break' ? 'Uredi break' : 'Uredi vnos'}</span>
-          <button className="btn-icon" onClick={onClose}>✕</button>
+          <span className="modal-title">{entry.type === 'break' ? 'Uredi break' : 'Uredi vnos'}</span>
+          <button className="btn ghost modal-close" onClick={onClose} title="Zapri">✕</button>
         </div>
         <div className="modal-body">
 
@@ -57,11 +61,10 @@ export function RundownEditModal({ entry, onSave, onClose }: Props) {
               <div className="modal-row">
                 <span className="modal-label">Trajanje</span>
                 <input
-                  className="modal-inp"
+                  className="modal-inp modal-tc mono"
                   value={duration}
                   onChange={e => setDuration(e.target.value)}
                   placeholder="00:20:00:00"
-                  style={{ width: 110, fontVariantNumeric: 'tabular-nums' }}
                 />
               </div>
             </div>
@@ -69,37 +72,34 @@ export function RundownEditModal({ entry, onSave, onClose }: Props) {
 
           <div className="modal-section">
             <div className="modal-section-title">Barva</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '6px 0' }}>
+            <div className="modal-swatches">
               {COLORS.map(c => (
                 <button
                   key={c}
+                  className={`modal-swatch ${color === c ? 'on' : ''}`}
+                  style={{ background: c }}
                   onClick={() => setColor(c)}
-                  style={{
-                    width: 22, height: 22, background: c, border: 'none', borderRadius: 2,
-                    cursor: 'pointer', outline: color === c ? '2px solid #fff' : 'none',
-                    outlineOffset: 1,
-                  }}
+                  title={c}
                 />
               ))}
             </div>
           </div>
 
-          <div className="modal-section" style={{ borderBottom: 'none' }}>
+          <div className="modal-section">
             <div className="modal-section-title">Opomba</div>
             <textarea
-              className="modal-inp"
+              className="modal-inp modal-textarea"
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Opombe za to skladbo…"
               rows={3}
-              style={{ width: '100%', resize: 'none', marginTop: 4 }}
             />
           </div>
         </div>
 
         <div className="modal-footer">
-          <button className="btn-sm" onClick={onClose}>Prekliči</button>
-          <button className="modal-save-btn" onClick={handleSave}>Shrani</button>
+          <button className="btn" onClick={onClose}>Prekliči</button>
+          <button className="btn modal-primary" onClick={handleSave}>Shrani</button>
         </div>
       </div>
     </div>

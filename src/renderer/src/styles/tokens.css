@@ -1,0 +1,177 @@
+/* Design tokens — Resolume design language (flat greys, 1px black gutters, one mint
+   "live" accent) combined with console state conventions (yellow = selection,
+   blue = next/standby, orange = loop/warning, red = error/lost only).
+   Sources and measurements: reports/Dizajn aplikacij za živo produkcijo.md
+   Canvas drawing mirrors these values in ../theme.ts — keep both in sync. */
+
+:root {
+  /* Surfaces (measured from Resolume 7 screenshots) */
+  --bg-gutter: #000000;
+  --bg-well: #0a0909;
+  --bg-monitor: #151514;
+  --bg-lane: #1b1a19;
+  --bg-lane-alt: #201f1e;
+  --bg-tab-active: #222222;
+  --bg-track: #2a2a2a;
+  --bg-header: #2c2c2c;
+  --bg-splitter: #343434;
+  --bg-control: #3a3a39;
+  --bg-menu: #424242;
+  --bg-hover: #494949;
+  --border-field: #525252;
+
+  /* Text */
+  --text-hi: #ffffff;
+  --text: #e6e6e6;
+  --text-dim: #9a9a9a;
+  --text-faint: #6e6e6e;
+  --text-on-live: #111111;
+
+  /* States — each state also carries a shape or word, never colour alone */
+  --live: #a1fcd5;          /* on air: playing clip, playhead, PLAY, live cue */
+  --live-fill: #5c8a76;     /* progress, slider fill */
+  --live-deep: #345145;     /* live row background, locked sync chip */
+  --live-header: #4d8c75;   /* dialog title band */
+  --select: #ffd34d;        /* selection, edit cursor, focus */
+  --select-dim: #9c8130;
+  --next: #7fb8ff;          /* standby / NEXT */
+  --loop: #f2a33a;          /* loop, warnings, markers default */
+  --danger: #ff5c5c;        /* error, LTC lost, broken */
+  --danger-fill: #b3261e;   /* REC / armed / destructive confirm fill */
+  --focus-ring: var(--select);
+
+  /* Identity tags (block fills, white text ≥ 5:1) */
+  --tag-olive: #5f6b4c; --tag-slate: #56636e; --tag-rose: #7a625a; --tag-mauve: #6b4e62;
+  --tag-sage: #4f6d60; --tag-indigo: #5a5f8a; --tag-ochre: #8a6a3e; --tag-brick: #7a4848;
+
+  /* Type */
+  --font-ui: "Noto Sans", "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-cond: "Noto Sans Condensed", "Open Sans Condensed", "Roboto Condensed", "Arial Narrow", var(--font-ui);
+  --font-tc: "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+  --fs-meta: 11px;
+  --fs-ui: 12px;
+  --fs-label: 13px;
+  --fs-cue-live: 17px;
+  --fs-tc: 36px;
+
+  /* Metrics */
+  --row-h: 24px;
+  --row-h-touch: 44px;
+  --target-min: 24px;
+  --panel-title-h: 24px;
+  --tabs-h: 32px;
+  --rundown-h: 64px;
+  --transport-h: 64px;
+  --headers-w: 200px;
+  --browser-w: 260px;
+  --radius-chip: 2px;
+
+  /* Legacy aliases — older rules still use these names */
+  --c0: var(--bg-gutter);
+  --c1: var(--bg-well);
+  --c2: var(--bg-lane);
+  --c3: var(--bg-lane-alt);
+  --c4: var(--bg-control);
+  --c5: var(--bg-gutter);
+  --c6: var(--bg-splitter);
+  --c7: var(--border-field);
+  --c8: var(--text-faint);
+  --c9: var(--text-dim);
+  --ca: var(--text);
+  --cb: var(--text-hi);
+  --blue: var(--select);
+  --blue2: var(--select);
+  --red: var(--danger-fill);
+  --red2: var(--danger);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  width: 100%; height: 100%; overflow: hidden;
+  font-family: var(--font-ui); font-size: var(--fs-ui);
+  color: var(--text); background: var(--bg-gutter);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+
+.mono { font-family: var(--font-tc); }
+
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* ── Buttons (Resolume: flat --bg-control squares, no borders) ─────────── */
+
+.btn {
+  height: var(--target-min); min-width: var(--target-min); padding: 0 10px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--bg-control); border: none; border-radius: 0;
+  color: var(--text); font-size: var(--fs-ui); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); color: var(--text-hi); }
+.btn:disabled { color: var(--text-faint); background: var(--bg-track); cursor: default; }
+.btn.on-live { background: var(--live); color: var(--text-on-live); }
+.btn.on-select { background: var(--select); color: var(--text-on-live); }
+.btn.on-danger { background: var(--danger-fill); color: var(--text-hi); }
+.btn.ghost { background: transparent; color: var(--text-dim); }
+/* On/off toggle: "on" is a 2px underline, not a full fill (fills are reserved for states) */
+.btn.toggle.on { color: var(--text-hi); box-shadow: inset 0 -2px 0 var(--select); }
+.btn.ghost:hover { background: var(--bg-hover); color: var(--text-hi); }
+
+/* Status chip: small uppercase word, shape + colour */
+.chip {
+  height: 20px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px;
+  border-radius: var(--radius-chip); font-size: var(--fs-meta); font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
+  background: var(--bg-control); color: var(--text-dim);
+}
+.chip.live { background: var(--live-deep); color: var(--live); }
+.chip.live-outline { background: transparent; box-shadow: inset 0 0 0 1px var(--live); color: var(--live); }
+.chip.select { background: var(--select); color: var(--text-on-live); }
+.chip.next { background: transparent; box-shadow: inset 0 0 0 1px var(--next); color: var(--next); }
+.chip.warn { background: transparent; box-shadow: inset 0 0 0 1px var(--loop); color: var(--loop); }
+.chip.danger { background: var(--danger-fill); color: var(--text-hi); }
+.chip.blink { animation: chip-blink 1s steps(2, start) infinite; }
+@keyframes chip-blink { to { visibility: hidden; } }
+
+/* ── Range inputs: --bg-track rail, --live-fill thumb ─────────────────── */
+
+input[type=range] {
+  -webkit-appearance: none; appearance: none; height: 4px;
+  background: var(--bg-track); outline: none; cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 10px; height: 14px; border-radius: 0;
+  background: var(--live-fill); border: none;
+}
+input[type=range]:hover::-webkit-slider-thumb { background: var(--live); }
+input[type=range]:disabled { opacity: 0.4; cursor: default; }
+
+input[type=checkbox] { accent-color: var(--live-fill); width: 14px; height: 14px; }
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-well); }
+::-webkit-scrollbar-thumb { background: var(--bg-splitter); }
+::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
+
+/* ── Legacy small buttons (still used in a few places) ────────────────── */
+
+.btn-sm {
+  height: 22px; padding: 0 8px; background: var(--bg-control); border: none;
+  color: var(--text); font-size: var(--fs-meta); font-weight: 600; cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.btn-sm:hover { background: var(--bg-hover); color: var(--text-hi); }
+.btn-sm.active { background: var(--select); color: var(--text-on-live); }
+.btn-icon {
+  min-width: 22px; height: 22px; background: transparent; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 13px; display: inline-flex; align-items: center; justify-content: center;
+}
+.btn-icon:hover { color: var(--text-hi); background: var(--bg-hover); }
+
+.spacer { flex: 1; }
+.dirty-dot { color: var(--select); font-size: 9px; margin-left: 5px; vertical-align: middle; }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useEscape } from './useEscape'
 import type { Show } from '../../../shared/show'
 
 type ClockSource = 'internal' | 'ltc-a' | 'ltc-b'
@@ -44,6 +45,7 @@ async function probeOutputChannels(deviceId: string): Promise<number | null> {
 }
 
 export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
+  useEscape(onClose)
   const [name, setName] = useState(show.name)
   const [bpm, setBpm] = useState(show.bpm ?? 120)
   const [fps, setFps] = useState(show.frameRate)
@@ -168,8 +170,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span>Nastavitve projekta</span>
-          <button className="btn-icon" onClick={onClose}>✕</button>
+          <span className="modal-title">Nastavitve projekta</span>
+          <button className="btn ghost modal-close" onClick={onClose} title="Zapri">✕</button>
         </div>
 
         <div className="modal-body">
@@ -184,7 +186,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 type="number" className="modal-inp modal-num" min={20} max={999} step={1}
                 value={bpm} onChange={e => setBpm(Math.max(1, Number(e.target.value)))}
               />
-              <span className="modal-hint" style={{ marginLeft: 8 }}>BPM grid na timelinu</span>
+              <span className="modal-hint inline">BPM grid na timelinu</span>
             </Row>
           </div>
 
@@ -195,7 +197,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
               <select className="modal-inp modal-sel" value={fps} onChange={e => setFps(Number(e.target.value))}>
                 {[24, 25, 30, 50, 60].map(f => <option key={f} value={f}>{f} fps</option>)}
               </select>
-              <span className="modal-hint" style={{ marginLeft: 8 }}>FPS lahko spreminjate kadarkoli</span>
+              <span className="modal-hint inline">FPS lahko spreminjate kadarkoli</span>
             </Row>
             <Row label="Vir">
               <label className="modal-radio">
@@ -233,7 +235,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
             <Row label="Freewheel">
               <input type="number" className="modal-inp modal-num" min={0} max={300}
                 value={freewheel} onChange={e => setFreewheel(Number(e.target.value))} />
-              <span className="modal-hint">okvirjev</span>
+              <span className="modal-hint inline">okvirjev</span>
             </Row>
           </div>
 
@@ -262,11 +264,11 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 return <>
                   <select className="modal-inp modal-sel" value={audioOutputChannelL}
                     onChange={e => setAudioOutputChannelL(Number(e.target.value))}
-                    style={{ marginLeft: 6 }} title="Levi kanal">{opts}</select>
+                    title="Levi kanal">{opts}</select>
                   <select className="modal-inp modal-sel" value={audioOutputChannelR}
                     onChange={e => setAudioOutputChannelR(Number(e.target.value))}
-                    style={{ marginLeft: 4 }} title="Desni kanal">{opts}</select>
-                  <span className="modal-hint" style={{ marginLeft: 6 }}>L / R</span>
+                    title="Desni kanal">{opts}</select>
+                  <span className="modal-hint inline">L / R</span>
                 </>
               })()}
             </Row>
@@ -287,7 +289,6 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 className="modal-inp modal-sel"
                 value={ltcChannelA}
                 onChange={e => setLtcChannelA(Number(e.target.value))}
-                style={{ marginLeft: 6 }}
               >
                 {Array.from({ length: Math.max(channelCountByDevice[ltcDeviceA] ?? 16, ltcChannelA + 1) }, (_, i) => (
                   <option key={i} value={i}>Ch {i + 1}</option>
@@ -311,14 +312,13 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 className="modal-inp modal-sel"
                 value={ltcChannelB}
                 onChange={e => setLtcChannelB(Number(e.target.value))}
-                style={{ marginLeft: 6 }}
               >
                 {Array.from({ length: Math.max(channelCountByDevice[ltcDeviceB] ?? 16, ltcChannelB + 1) }, (_, i) => (
                   <option key={i} value={i}>Ch {i + 1}</option>
                 ))}
               </select>
             </Row>
-            <span className="modal-hint" style={{ paddingLeft: 82 }}>
+            <span className="modal-hint modal-hint-indent">
               SMPTE A/B sta dva ločena LTC vhoda; izbira pod "Vir" določi kateri se uporabi za ta projekt
             </span>
           </div>
@@ -342,8 +342,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
         </div>
 
         <div className="modal-footer">
-          <button className="btn-sm" onClick={onClose}>Prekliči</button>
-          <button className="modal-save-btn" onClick={handleSave}>Shrani</button>
+          <button className="btn" onClick={onClose}>Prekliči</button>
+          <button className="btn modal-primary" onClick={handleSave}>Shrani</button>
         </div>
       </div>
     </div>
@@ -364,7 +364,7 @@ function SmpteField({ label, value, max, onChange }: {
 }) {
   return (
     <div className="smpte-field">
-      <input type="number" className="smpte-input" min={0} max={max} value={value}
+      <input type="number" className="smpte-input mono" min={0} max={max} value={value}
         onChange={e => onChange(e.target.value)} onFocus={e => e.target.select()} />
       <span className="smpte-label">{label}</span>
     </div>

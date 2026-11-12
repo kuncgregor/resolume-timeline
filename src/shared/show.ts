@@ -56,7 +56,8 @@ export interface LayerTrack {
   resolumeLayerId: number      // stable by-id reference
   resolumeLayerIndex: number   // 1-based OSC index (can drift if layers reordered)
   color?: string
-  muted?: boolean
+  muted?: boolean              // scheduler sends nothing for this track
+  locked?: boolean             // timeline edits disabled for this track
   expanded: boolean            // show automation sub-lanes below
   clips: ClipCue[]
   automations: AutomationSubTrack[]

@@ -1,13 +1,12 @@
-import { useState } from 'react'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
-
-const api = (window as any).timeline
 
 interface Props {
   engineState: EngineState
   show: Show | null
   offsetFrames: number
+  endFrame: number          // last frame with content (clips / audio); 0 = empty show
+  ltcActive: boolean
   onPlay: () => void
   onStop: () => void
   onLocate: (frame: number) => void
@@ -15,65 +14,70 @@ interface Props {
   browserOpen: boolean
 }
 
+// Remaining-time thresholds (seconds) for the warning and danger colours
+const WARN_S = 30
+const DANGER_S = 10
+
 export function TransportBar({
-  engineState, show, offsetFrames,
+  engineState, show, offsetFrames, endFrame, ltcActive,
   onPlay, onStop, onLocate, onToggleBrowser, browserOpen,
 }: Props) {
-  const { frame, playing, fps, resolumeConnected } = engineState
-  const displayFrame = frame + offsetFrames
-  const tc = framesToSmpte(displayFrame, fps)
-  const [pinging, setPinging] = useState(false)
+  const { frame, playing, fps } = engineState
+  const tc = framesToSmpte(frame + offsetFrames, fps)
+  const source = show?.clock.source ?? 'internal'
+  const isLtc = source === 'ltc' || source === 'ltc-a' || source === 'ltc-b'
+  const ltcName = source === 'ltc-b' ? 'LTC B' : 'LTC A'
 
-  const host = show?.resolume.host ?? '127.0.0.1'
-  const oscPort = show?.resolume.oscPort ?? 7000
-  const restPort = show?.resolume.restPort ?? 8080
-
-  const handlePing = async () => {
-    setPinging(true)
-    await api.connectResolume(host, oscPort, restPort)
-    setPinging(false)
-  }
-
-  const bpm = show?.bpm
+  const remaining = Math.max(0, endFrame - frame)
+  const remainingS = remaining / fps
+  const remainClass = endFrame === 0 ? 'idle' : remainingS <= DANGER_S ? 'danger' : remainingS <= WARN_S ? 'warn' : ''
 
   return (
     <div className="transport-bar">
-      <div className="tc-display">{tc}</div>
-      <div className="tc-fps-group">
-        <div className="tc-fps">{fps} fps</div>
-        {bpm != null && <div className="tc-bpm">{bpm} BPM</div>}
+      <div className="tc-block">
+        <div className={`tc-display ${playing ? 'running' : ''}`}>{tc}</div>
+        <div className="tc-badges">
+          <span className="fps-badge" title="Frame rate projekta">{fps}</span>
+          {isLtc ? (
+            ltcActive
+              ? <span className="chip live" title="Timecode prihaja">● {ltcName}</span>
+              : <span className="chip warn blink" title="Ni LTC signala">○ {ltcName} ni signala</span>
+          ) : (
+            <span className="chip" title="Interna ura">INT</span>
+          )}
+        </div>
       </div>
 
-      <div className="transport-controls">
-        <button
-          className={`btn-transport ${playing ? 'active' : ''}`}
-          onClick={playing ? onStop : onPlay}
-        >
-          {playing ? '■ STOP' : '▶ PLAY'}
+      <div className="transport-buttons">
+        <button className="tbtn" onClick={() => onLocate(0)} title="Na začetek (Home)">⏮</button>
+        <button className={`tbtn ${!playing ? 'stopped' : ''}`} onClick={onStop} title="Stop (Space)">■</button>
+        <button className={`tbtn play ${playing ? 'on-live' : ''}`} onClick={playing ? onStop : onPlay}
+          title={playing ? 'Predvaja — Space za stop' : 'Predvajaj (Space)'}>
+          ▶{playing && <span className="tbtn-label">PLAY</span>}
         </button>
-        <button className="btn-icon" onClick={() => onLocate(0)} title="Na začetek">⏮</button>
       </div>
 
-      <div className="status-row" title={`REST: http://${host}:${restPort} · OSC: ${host}:${oscPort}`}>
-        <span className={`status-dot ${resolumeConnected ? 'ok' : 'err'}`} />
-        <span className="status-label">
-          {resolumeConnected ? `Resolume ${host}` : `Ni povezave (${host}:${restPort})`}
+      <div className={`remain ${remainClass}`} title="Čas do konca zadnjega clipa ali avdia">
+        <span className="remain-label">
+          {remainClass === 'danger' ? '!! Konec' : remainClass === 'warn' ? '▲ Konec' : 'Do konca'}
         </span>
-        <button
-          className="btn-sm"
-          onClick={handlePing}
-          disabled={pinging}
-          style={{ marginLeft: 4 }}
-          title="Poveži Resolume"
-        >
-          {pinging ? '…' : '↺'}
-        </button>
+        <span className="remain-value mono">
+          {endFrame === 0 ? '--:--:--' : `−${framesToSmpte(remaining, fps)}`}
+        </span>
       </div>
+
+      {show?.bpm != null && (
+        <div className="bpm-block" title="BPM (mreža na časovnici)">
+          <span className="remain-label">BPM</span>
+          <span className="bpm-value mono">{show.bpm}</span>
+        </div>
+      )}
 
       <div className="spacer" />
 
-      <button className={`btn-sm ${browserOpen ? 'active' : ''}`} onClick={onToggleBrowser}>
-        Clips
+      <button className={`btn toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
+        title="Pokaži ali skrij Resolume clipe">
+        Clipi
       </button>
     </div>
   )

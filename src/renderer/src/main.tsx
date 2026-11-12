@@ -3,7 +3,10 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
-import './index.css'
+import './styles/tokens.css'
+import './styles/chrome.css'
+import './styles/canvas.css'
+import './styles/panels.css'
 
 window.onerror = (msg, src, line, col, err) => {
   console.error('[RENDERER CRASH]', msg, src, line, col, err)

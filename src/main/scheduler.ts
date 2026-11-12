@@ -116,7 +116,7 @@ export class Scheduler {
       } else if (track.type === 'layer') {
         const lt = track as LayerTrack
         const layer = lt.resolumeLayerIndex
-        if (layer < 1) continue  // layer no longer exists in Resolume
+        if (layer < 1 || lt.muted) continue  // gone from Resolume, or muted
         // Ends before starts, so a clip ending on the frame the next one starts
         // does not clear the new clip.
         for (const clip of lt.clips) {
@@ -147,6 +147,7 @@ export class Scheduler {
         const at = track as AutomationTrack
         this.sendAuto(at.target, undefined, at.keyframes, T, fps)
       } else if (track.type === 'layer') {
+        if ((track as LayerTrack).muted) continue
         for (const auto of (track as LayerTrack).automations) {
           this.sendAuto(auto.target, auto.paramId, auto.keyframes, T, fps)
         }
@@ -163,6 +164,7 @@ export class Scheduler {
         const at = track as AutomationTrack
         this.forceSendAuto(at.target, undefined, at.keyframes, T, fps)
       } else if (track.type === 'layer') {
+        if ((track as LayerTrack).muted) continue
         for (const auto of (track as LayerTrack).automations) {
           this.forceSendAuto(auto.target, auto.paramId, auto.keyframes, T, fps)
         }
@@ -237,7 +239,7 @@ export class Scheduler {
       } else if (track.type === 'layer') {
         const lt = track as LayerTrack
         const layer = lt.resolumeLayerIndex
-        if (layer < 1) continue
+        if (layer < 1 || lt.muted) continue  // gone from Resolume, or muted
         const sorted = [...lt.clips]
           .filter(c => smpteToFrames(c.time, fps) <= T)
           .sort((a, b) => smpteToFrames(b.time, fps) - smpteToFrames(a.time, fps))

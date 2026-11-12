@@ -16,6 +16,7 @@ import { LTCDecoder } from './ltc-decoder'
 import { AudioEngine } from './audio-engine'
 import type { WaveformInfo } from './audio-engine'
 import { loadAutosave, writeAutosave, clearAutosave } from './autosave'
+import { TAG_COLORS } from './theme'
 
 const api = (window as any).timeline
 
@@ -24,16 +25,9 @@ export interface DragClipData {
   clipIndex: number; clipId: number; clipName: string
 }
 
-const LAYER_COLORS = [
-  '#4A7CE2', '#E2934A', '#2ECC71', '#9B59B6', '#E74C3C',
-  '#1ABC9C', '#F39C12', '#3498DB', '#E91E63', '#00BCD4',
-]
-
-const ENTRY_COLORS = [
-  '#4A7CE2', '#E2934A', '#2ECC71', '#9B59B6', '#E74C3C',
-  '#1ABC9C', '#F39C12', '#3498DB', '#E91E63', '#00BCD4',
-  '#FF6B6B', '#95A5A6',
-]
+// New layers and rundown entries get muted Resolume-style tag colours
+const LAYER_COLORS = TAG_COLORS
+const ENTRY_COLORS = TAG_COLORS
 
 const EMPTY_SHOW: Show = {
   version: 1, name: 'Nov projekt', frameRate: 25, duration: '02:00:00:00',
@@ -128,6 +122,10 @@ export default function App() {
   const [restoredAt, setRestoredAt] = useState<number | null>(_restored?.savedAt ?? null)
   const [autosaveFailed, setAutosaveFailed] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // SHOW mode locks every editing gesture (QLab Show Mode / console "live" lock)
+  const [showMode, setShowMode] = useState(false)
+  const showModeRef = useRef(false)
+  showModeRef.current = showMode
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   const activeIdRef = useRef<string>(_initActiveId)
   const ltcActiveRef = useRef(false)
@@ -218,6 +216,8 @@ export default function App() {
   const [pxPerFrame, setPxPerFrame] = useState(3)
   const [scrollFrame, setScrollFrame] = useState(0)
   const [showBrowser, setShowBrowser] = useState(true)
+  const showBrowserRef = useRef(showBrowser)
+  showBrowserRef.current = showBrowser
   // Selection is stored by id: clips get re-sorted when moved and tracks can be
   // re-ordered by the Resolume sync, so stored indices would point at the wrong item.
   const [selection, setSelection] = useState<{ trackId: string | null; cueId: string | null }>(
@@ -260,7 +260,7 @@ export default function App() {
       setEngineState(state)
       if (state.playing && autoScrollRef.current) {
         setScrollFrame(prev => {
-          const cw = window.innerWidth - 380
+          const cw = window.innerWidth - 200 - (showBrowserRef.current ? 260 : 0)
           const vf = cw / pxPerFrame
           const px = (state.frame - prev) * pxPerFrame
           if (px > cw * 0.75) return state.frame - Math.floor(vf * 0.25)
@@ -369,7 +369,10 @@ export default function App() {
         if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(0)
         else audioEngineRef.current.stop()
       }
-      if (e.code === 'Delete' || e.code === 'Backspace') {
+      if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault(); goRef.current(1)
+      }
+      if ((e.code === 'Delete' || e.code === 'Backspace') && !showModeRef.current) {
         if (selectedTrackIdx != null && selectedCueIdx != null) {
           handleDeleteCue(selectedTrackIdx, selectedCueIdx)
         }
@@ -444,6 +447,24 @@ export default function App() {
       api.play()
     }
   }, [activeId, rundown])
+
+  // GO: step through the rundown. Ignores repeats within 300 ms so a double press
+  // cannot skip an entry.
+  const lastGoRef = useRef(0)
+  const handleGo = useCallback((direction: 1 | -1) => {
+    const now = performance.now()
+    if (now - lastGoRef.current < 300) return
+    lastGoRef.current = now
+    const idx = rundown.findIndex(e => e.id === activeId)
+    const target = rundown[idx + direction]
+    if (target) handleSelectEntry(target.id)
+  }, [rundown, activeId, handleSelectEntry])
+  const goRef = useRef(handleGo)
+  goRef.current = handleGo
+
+  const handleReconnect = useCallback(() => {
+    api.connectResolume(show.resolume.host, show.resolume.oscPort, show.resolume.restPort)
+  }, [show.resolume.host, show.resolume.oscPort, show.resolume.restPort])
 
   const handleDeleteEntry = useCallback((id: string) => {
     if (rundown.length <= 1) return  // always keep at least one
@@ -714,6 +735,17 @@ export default function App() {
     })
   }, [setShow])
 
+  const toggleTrackFlag = useCallback((trackIdx: number, flag: 'muted' | 'locked') => {
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const lt = tracks[trackIdx] as LayerTrack
+      tracks[trackIdx] = { ...lt, [flag]: !lt[flag] }
+      return { ...prev, tracks }
+    })
+  }, [setShow])
+  const handleToggleMute = useCallback((i: number) => toggleTrackFlag(i, 'muted'), [toggleTrackFlag])
+  const handleToggleLock = useCallback((i: number) => toggleTrackFlag(i, 'locked'), [toggleTrackFlag])
+
   const handleResizeAutoLane = useCallback((autoId: string, height: number) => {
     setAutoLaneHeights(prev => ({ ...prev, [autoId]: height }))
   }, [])
@@ -805,19 +837,35 @@ export default function App() {
   const selectedCue = selectedTrack && selectedCueIdx != null
     ? selectedTrack.clips[selectedCueIdx] ?? null : null
 
+  // Last frame with content, for the transport's "time to end" countdown
+  const endFrame = (() => {
+    let end = 0
+    for (const t of show.tracks) {
+      if (t.type !== 'layer') continue
+      for (const c of (t as LayerTrack).clips)
+        end = Math.max(end, smpteToFrames(c.time, fps) + smpteToFrames(c.duration, fps))
+    }
+    if (audioLoaded && show.audioTrack)
+      end = Math.max(end, smpteToFrames(show.audioTrack.startOffset, fps) + Math.round(audioEngineRef.current.duration * fps))
+    return end
+  })()
+
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
 
   return (
-    <div className="app">
+    <div className={`app${showMode ? ' show-mode' : ''}`}>
       <RundownStrip
         rundown={rundown}
         activeId={activeId}
-        ltcActive={ltcActive}
-        ltcDisplay={ltcRawTC}
+        playing={engineState.playing}
+        showMode={showMode}
         concertDirty={concertDirty}
         activeShowDirty={activeShowEntry?.dirty ?? false}
         concertFilePath={concertFilePath}
+        resolumeConnected={engineState.resolumeConnected}
+        resolumeHost={show.resolume.host}
         onSelect={handleSelectEntry}
+        onGo={handleGo}
         onReorder={handleReorder}
         onAddShow={handleAddShow}
         onAddBreak={handleAddBreak}
@@ -828,6 +876,8 @@ export default function App() {
         onOpenShowFile={handleOpenShowFile}
         onSaveActiveShow={handleSaveActiveShow}
         onSettings={() => setShowSettings(true)}
+        onToggleShowMode={() => setShowMode(m => !m)}
+        onReconnect={handleReconnect}
       />
 
       {(restoredAt || autosaveFailed) && (
@@ -846,6 +896,8 @@ export default function App() {
         engineState={engineState}
         show={show}
         offsetFrames={offsetFrames}
+        endFrame={endFrame}
+        ltcActive={ltcActive}
         onPlay={handlePlay}
         onStop={handleStop}
         onLocate={handleLocate}
@@ -870,7 +922,10 @@ export default function App() {
               layerRowHeights={layerRowHeights} autoLaneHeights={autoLaneHeights}
               scrollY={scrollY}
               audioTrack={show.audioTrack}
+              readOnly={showMode}
               onSelect={selectTrack}
+              onToggleMute={handleToggleMute}
+              onToggleLock={handleToggleLock}
               onToggleExpand={handleToggleExpand}
               onResizeLayer={handleResizeLayer}
               onResizeAutoLane={handleResizeAutoLane}
@@ -883,6 +938,7 @@ export default function App() {
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} bpm={show.bpm}
+              readOnly={showMode}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
@@ -915,7 +971,7 @@ export default function App() {
 
       {!activeIsBreak && (
         <BottomPanel
-          track={selectedTrack} cue={selectedCue}
+          track={selectedTrack} cue={selectedCue} readOnly={showMode}
           cueIdx={selectedCueIdx} trackIdx={selectedTrackIdx} fps={fps}
           height={bottomPanelHeight} onResize={setBottomPanelHeight}
           onUpdateCue={handleUpdateCue} onDeleteCue={handleDeleteCue}

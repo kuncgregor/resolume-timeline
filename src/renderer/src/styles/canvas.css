@@ -1,0 +1,68 @@
+/* Timeline canvas container and its overlays (keyframe menu, clip colour picker).
+   Flat menu surface, 1px black edge, 24px rows — no shadows or rounded panels. */
+
+/* ── Timeline canvas container ────────────────────────────────────── */
+
+.timeline-canvas-container {
+  flex: 1; min-width: 0; overflow: hidden; position: relative; background: var(--bg-well);
+}
+.timeline-canvas-container > canvas { display: block; }
+
+/* ── Menu surface (shared by context menu and colour picker) ──────── */
+
+.ctx-menu,
+.clip-color-picker {
+  position: absolute; z-index: 200;
+  display: flex; flex-direction: column;
+  min-width: 200px; padding: 4px 0;
+  background: var(--bg-menu); border: 1px solid var(--bg-gutter); border-radius: 0;
+  font-size: var(--fs-ui); color: var(--text);
+}
+
+.ctx-title {
+  height: var(--row-h); padding: 0 10px; display: flex; align-items: center;
+  font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.ctx-hint {
+  padding: 0 10px 4px; font-family: var(--font-tc); font-size: var(--fs-meta);
+  color: var(--text-dim); white-space: nowrap;
+}
+
+.ctx-row { height: var(--row-h); padding: 0 10px; display: flex; align-items: center; gap: 8px; }
+.ctx-row label { min-width: 56px; font-size: var(--fs-meta); color: var(--text-dim); }
+.ctx-row input {
+  flex: 1; min-width: 0; height: 20px; padding: 0 6px;
+  background: var(--bg-track); border: 1px solid var(--border-field); border-radius: 0;
+  color: var(--text-hi); font-family: var(--font-tc); font-size: var(--fs-ui); outline: none;
+}
+.ctx-row input:focus { border-color: var(--select); }
+
+.ctx-btn {
+  height: var(--row-h); padding: 0 10px; display: flex; align-items: center;
+  background: none; border: none; border-radius: 0; cursor: pointer;
+  color: var(--text); font-family: inherit; font-size: var(--fs-ui); text-align: left; white-space: nowrap;
+}
+.ctx-btn:hover { background: var(--bg-hover); color: var(--text-hi); }
+.ctx-btn.danger { color: var(--danger); }
+.ctx-btn.danger:hover { background: var(--danger-fill); color: var(--text-hi); }
+.ctx-btn.dim { color: var(--text-dim); }
+.ctx-btn.dim:hover { color: var(--text-hi); }
+
+.ctx-divider { height: 1px; margin: 4px 0; background: var(--bg-gutter); }
+
+/* ── Clip colour picker ───────────────────────────────────────────── */
+
+.ccp-label {
+  padding: 4px 10px 2px; font-size: var(--fs-meta); color: var(--text-dim);
+}
+.ccp-grid {
+  display: grid; grid-template-columns: repeat(8, 20px); gap: 3px;
+  padding: 2px 10px 4px;
+}
+.ccp-swatch {
+  width: 20px; height: 20px; padding: 0; border: none; border-radius: 0; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
+}
+.ccp-swatch:hover { outline: 1px solid var(--text-hi); outline-offset: 1px; }
+.ccp-swatch.on { outline: 2px solid var(--select); outline-offset: 1px; }
