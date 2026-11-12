@@ -18,6 +18,12 @@ export interface Resolution {
 // while the clip plays across a deck switch).
 const clipCache = new Map<number, any>()
 
+/** Adds a clip fetched by id (a clip playing from a deck Resolume isn't showing). */
+export function rememberClip(json: any) { if (json?.id != null) clipCache.set(json.id, json) }
+
+/** Last seen JSON of a clip by Resolume id (also clips of decks Resolume isn't showing). */
+export function knownClip(id: number): any { return clipCache.get(id) ?? null }
+
 const sameList = (a?: string[], b?: string[]) =>
   (a ?? []).length === (b ?? []).length && (a ?? []).every((x, i) => x === b?.[i])
 

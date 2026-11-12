@@ -7,6 +7,11 @@ interface Props {
   offsetFrames: number
   endFrame: number          // last frame with content (clips / audio); 0 = empty show
   ltcActive: boolean
+  ltcOutside: boolean         // LTC arrives but is outside this timeline's TC range
+  ltcRawTC: string            // last incoming timecode
+  followTc: boolean
+  onToggleFollowTc: () => void
+  anyLtcTimeline: boolean     // some timeline follows LTC (Follow TC makes sense)
   recordArmed: boolean
   onToggleRecord: () => void
   overrideCount: number       // lanes the operator took over in Resolume
@@ -14,6 +19,7 @@ interface Props {
   readOnly: boolean
   onPlay: () => void
   onStop: () => void
+  stopArmed: boolean          // SHOW mode: first stop press done, waiting for the second
   onLocate: (frame: number) => void
   onToggleBrowser: () => void
   browserOpen: boolean
@@ -24,8 +30,8 @@ const WARN_S = 30
 const DANGER_S = 10
 
 export function TransportBar({
-  engineState, show, offsetFrames, endFrame, ltcActive, recordArmed, onToggleRecord,
-  overrideCount, onReenable, readOnly, onPlay, onStop, onLocate, onToggleBrowser, browserOpen,
+  engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord,
+  overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen,
 }: Props) {
   const { frame, playing, fps } = engineState
   const tc = framesToSmpte(frame + offsetFrames, fps)
@@ -44,18 +50,31 @@ export function TransportBar({
         <div className="tc-badges">
           <span className="fps-badge" title="Project frame rate">{fps}</span>
           {isLtc ? (
-            ltcActive
-              ? <span className="chip live" title="Receiving timecode">● {ltcName}</span>
-              : <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
+            !ltcActive
+              ? <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
+              : ltcOutside
+                ? <span className="chip warn" title={`Incoming LTC ${ltcRawTC} is outside this timeline (starts at ${show?.clock.offset || '00:00:00:00'}, ends at the next LTC timeline's start)`}>{ltcName} {ltcRawTC} · not here</span>
+                : <span className="chip live" title={`Receiving timecode ${ltcRawTC}`}>● {ltcName}</span>
           ) : (
             <span className="chip" title="Internal clock">INT</span>
+          )}
+          {anyLtcTimeline && (
+            <button className={`chip follow-chip ${followTc ? 'on' : ''}`} onClick={onToggleFollowTc}
+              title={followTc
+                ? 'Follow TC on: incoming LTC selects the timeline whose TC range it is in (click to turn off)'
+                : 'Follow TC off: LTC only drives the selected timeline (click to switch timelines by timecode)'}
+            >Follow TC</button>
           )}
         </div>
       </div>
 
       <div className="transport-buttons">
-        <button className="tbtn" onClick={() => onLocate(0)} title="Go to start (Home)">⏮</button>
-        <button className={`tbtn ${!playing ? 'stopped' : ''}`} onClick={onStop} title="Stop (Space)">■</button>
+        <button className="tbtn" onClick={() => onLocate(0)} disabled={readOnly && playing}
+          title={readOnly && playing ? 'Locked while the show runs (SHOW mode)' : 'Go to start (Home)'}>⏮</button>
+        <button className={`tbtn ${!playing ? 'stopped' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={onStop}
+          title={readOnly && playing ? 'Stop — SHOW mode: press twice (Space twice)' : 'Stop (Space)'}>
+          ■{stopArmed && <span className="tbtn-label">AGAIN TO STOP</span>}
+        </button>
         <button className={`tbtn play ${playing ? 'on-live' : ''}`} onClick={playing ? onStop : onPlay}
           title={playing ? 'Playing — Space to stop' : 'Play (Space)'}>
           ▶{playing && <span className="tbtn-label">PLAY</span>}

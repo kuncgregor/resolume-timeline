@@ -14,6 +14,7 @@ interface Props {
   resolumeHost: string
   currentDeck: { index: number; name: string; color: string; count: number } | null  // deck selected in Resolume
   onSelect: (id: string) => void
+  confirmEntryId: string | null   // SHOW mode while playing: this block was clicked once, click again to switch
   onGo: (direction: 1 | -1) => void
   onReorder: (newOrder: RundownEntry[]) => void
   onAddShow: () => void
@@ -36,10 +37,12 @@ const entryMeta = (e: RundownEntry) => e.type === 'break'
 const entryName = (e: RundownEntry) =>
   e.type === 'show' ? ((e as ShowEntry).show.name || 'Untitled') : ((e as BreakEntry).label || 'Break')
 
+const tcSourceLabel = (src: string) => src === 'ltc-b' ? 'LTC B' : src === 'ltc-a' || src === 'ltc' ? 'LTC A' : 'INT'
+
 export function RundownStrip({
   rundown, activeId, playing, nowRemaining, showMode, concertDirty, activeShowDirty, concertFilePath,
   resolumeConnected, resolumeHost, currentDeck,
-  onSelect, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
+  onSelect, confirmEntryId, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
   onOpenConcert, onSaveConcert, onOpenShowFile, onSaveActiveShow, onSettings,
   onToggleShowMode, onReconnect,
 }: Props) {
@@ -192,11 +195,12 @@ export function RundownStrip({
                       {isLive && <span className="chip live">▶ Live</span>}
                       {isActive && !isLive && <span className="chip">Now</span>}
                       {isNext && <span className="chip next">▷ Next</span>}
+                      {confirmEntryId === entry.id && <span className="chip warn blink">Click again</span>}
                     </div>
                     <div className="rd-name" title={`${entryName(entry)}${showMode ? '' : ' — double-click to rename'}`}>{entryName(entry)}</div>
                     <div className="rd-meta mono">
                       {entry.type === 'show'
-                        ? <>{(entry as ShowEntry).show.clock.offset || '00:00:00:00'}{(entry as ShowEntry).show.bpm ? ` · ${(entry as ShowEntry).show.bpm} BPM` : ''}</>
+                        ? <>{tcSourceLabel((entry as ShowEntry).show.clock.source)} · {(entry as ShowEntry).show.clock.offset || '00:00:00:00'}{(entry as ShowEntry).show.bpm ? ` · ${(entry as ShowEntry).show.bpm} BPM` : ''}</>
                         : <>⏸ {(entry as BreakEntry).duration}</>}
                     </div>
                   </div>

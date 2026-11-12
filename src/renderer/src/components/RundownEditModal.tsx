@@ -16,26 +16,48 @@ interface Updates {
   label?: string
   duration?: string
   name?: string        // timeline name (show.name)
+  clock?: { source: TcSource; offset: string }   // timeline: which timecode it follows
 }
 
+export type TcSource = 'internal' | 'ltc-a' | 'ltc-b'
+const TC_RE = /^(\d{2}):([0-5]\d):([0-5]\d)[:;](\d{2})$/
+
 interface Props {
+  otherTimelines: { name: string; source: string; offset: string }[]
   entry: RundownEntry
   onSave: (id: string, updates: Updates) => void
   onClose: () => void
 }
 
-export function RundownEditModal({ entry, onSave, onClose }: Props) {
+export function RundownEditModal({ entry, otherTimelines, onSave, onClose }: Props) {
   useEscape(onClose)
   const [color, setColor] = useState(entry.color)
   const [notes, setNotes] = useState(entry.notes)
   const [label, setLabel] = useState(entry.type === 'break' ? (entry as BreakEntry).label : '')
   const [name, setName] = useState(entry.type === 'show' ? (entry as ShowEntry).show.name : '')
   const [duration, setDuration] = useState(entry.type === 'break' ? (entry as BreakEntry).duration : '')
+  const clock = entry.type === 'show' ? (entry as ShowEntry).show.clock : null
+  const [tcSource, setTcSource] = useState<TcSource>(
+    clock?.source === 'ltc-b' ? 'ltc-b' : clock?.source === 'ltc-a' || clock?.source === 'ltc' ? 'ltc-a' : 'internal')
+  const [startTc, setStartTc] = useState(clock?.offset || '00:00:00:00')
+  const [initialSource] = useState(tcSource)
+  const sameStart = tcSource === 'internal' ? [] : otherTimelines.filter(t =>
+    (t.source === 'ltc-b' ? 'ltc-b' : t.source === 'ltc' || t.source === 'ltc-a' ? 'ltc-a' : null) === tcSource
+    && t.offset === startTc.trim().replace(';', ':'))
+  const fps = entry.type === 'show' ? (entry as ShowEntry).show.frameRate : 25
+  const tcMatch = TC_RE.exec(startTc.trim())
+  const tcValid = !!tcMatch && Number(tcMatch[1]) < 24 && Number(tcMatch[4]) < Math.round(fps)
 
   const handleSave = () => {
     const updates: Updates = { color, notes }
     if (entry.type === 'break') { updates.label = label || 'Break'; updates.duration = duration }
-    else if (name.trim()) updates.name = name.trim()
+    else {
+      if (name.trim()) updates.name = name.trim()
+      if (!tcValid) return
+      const offset = startTc.trim().replace(';', ':')
+      // Untouched (e.g. only the colour changed): keep a legacy 'ltc' / 'mtc' source as it is
+      if (tcSource !== initialSource || offset !== (clock?.offset || '00:00:00:00')) updates.clock = { source: tcSource, offset }
+    }
     onSave(entry.id, updates)
     onClose()
   }
@@ -61,6 +83,40 @@ export function RundownEditModal({ entry, onSave, onClose }: Props) {
                   onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
                   placeholder="e.g. Opener"
                 />
+              </div>
+            </div>
+          )}
+
+          {entry.type === 'show' && (
+            <div className="modal-section">
+              <div className="modal-section-title">Timecode</div>
+              <div className="modal-row">
+                <span className="modal-label">Follows</span>
+                <div className="seg">
+                  {([['internal', 'Internal'], ['ltc-a', 'LTC A'], ['ltc-b', 'LTC B']] as const).map(([v, l]) => (
+                    <button key={v} className={`seg-btn ${tcSource === v ? 'on' : ''}`} onClick={() => setTcSource(v)}>{l}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="modal-row">
+                <span className="modal-label">Start TC</span>
+                <input
+                  className={`modal-inp modal-tc mono ${tcValid ? '' : 'invalid'}`}
+                  value={startTc}
+                  onChange={e => setStartTc(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+                  placeholder="01:00:00:00"
+                />
+              </div>
+              {sameStart.length > 0 && (
+                <div className="modal-hint modal-hint-indent lane-warn">
+                  Same start TC as {sameStart.map(t => `“${t.name}”`).join(', ')} on this input: only the selected one runs.
+                </div>
+              )}
+              <div className="modal-hint modal-hint-indent">
+                {tcSource === 'internal'
+                  ? 'Runs on its own clock (Space / GO). The start TC is only shown as the time display.'
+                  : `Timeline 0 = ${startTc || '—'} on ${tcSource === 'ltc-a' ? 'LTC A' : 'LTC B'} (external input, inputs in ⚙ Timeline settings). It runs from its start TC until the next LTC timeline's start TC.`}
               </div>
             </div>
           )}
@@ -118,7 +174,8 @@ export function RundownEditModal({ entry, onSave, onClose }: Props) {
 
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn modal-primary" onClick={handleSave}>Save</button>
+          <button className="btn modal-primary" onClick={handleSave} disabled={entry.type === 'show' && !tcValid}
+            title={entry.type === 'show' && !tcValid ? `Start TC must be HH:MM:SS:FF (frames below ${Math.round(fps)})` : undefined}>Save</button>
         </div>
       </div>
     </div>

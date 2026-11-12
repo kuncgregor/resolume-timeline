@@ -28,6 +28,7 @@ const api = {
     ipcRenderer.invoke('resolume:getThumbnail', layerId, clipId),
   getLayerRaw: (layerIndex: number): Promise<any> => ipcRenderer.invoke('resolume:getLayerRaw', layerIndex),
   getGroupRaw: (groupIndex: number): Promise<any> => ipcRenderer.invoke('resolume:getGroupRaw', groupIndex),
+  getClipById: (clipId: number): Promise<any> => ipcRenderer.invoke('resolume:getClipById', clipId),
   getClipRaw: (layerIndex: number, clipIndex: number): Promise<any> =>
     ipcRenderer.invoke('resolume:getClipRaw', layerIndex, clipIndex),
 

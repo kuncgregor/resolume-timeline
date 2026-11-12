@@ -73,6 +73,7 @@ export function timelineBridge(): Plugin {
         getThumbnail: (layerId: number, clipId: number) => rest.getThumbnail(layerId, clipId),
         getLayerRaw: (layerIndex: number) => rest.getJson(`/composition/layers/${layerIndex}`),
         getGroupRaw: (groupIndex: number) => rest.getJson(`/composition/layergroups/${groupIndex}`),
+        getClipById: (clipId: number) => rest.getJson(`/composition/clips/by-id/${clipId}`),
         getClipRaw: (layerIndex: number, clipIndex: number) =>
           rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`),
         triggerClip: (layer: number, clip: number) => { osc.connectClip(layer, clip, 40); return null },
@@ -88,6 +89,7 @@ export function timelineBridge(): Plugin {
         connectResolume: async (host: string, oscPort: number, restPort: number) => {
           osc.connect(host, oscPort)
           rest.setBase(host, restPort)
+          scheduler.reconnectWs()
           resolumeConnected = await rest.ping()
           emit('resolume:status', { connected: resolumeConnected })
           if (resolumeConnected) {
@@ -105,7 +107,7 @@ export function timelineBridge(): Plugin {
           transport.setLtcFrame(Math.max(0, ltcAbsFrame - offsetFrame))
           return null
         },
-        sendLtcStop: () => { transport.clearLtc(); return null },
+        sendLtcStop: () => { transport.clearLtc(); scheduler.notify(); return null },
       }
 
       const readBody = (req: IncomingMessage) => new Promise<string>((resolve, reject) => {

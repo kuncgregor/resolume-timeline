@@ -168,12 +168,17 @@ ipcMain.handle('resolume:getLayerRaw', (_e, layerIndex: number) =>
 ipcMain.handle('resolume:getGroupRaw', (_e, groupIndex: number) =>
   rest.getJson(`/composition/layergroups/${groupIndex}`))
 
+// By clip id: also reaches a clip of a deck Resolume isn't showing, while it is playing
+ipcMain.handle('resolume:getClipById', (_e, clipId: number) =>
+  rest.getJson(`/composition/clips/by-id/${clipId}`))
+
 ipcMain.handle('resolume:getClipRaw', (_e, layerIndex: number, clipIndex: number) =>
   rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`))
 
 ipcMain.handle('resolume:connect', async (_e, host: string, oscPort: number, restPort: number) => {
   osc.connect(host, oscPort)
   rest.setBase(host, restPort)
+  scheduler.reconnectWs()
   const ok = await rest.ping()
   resolumeConnected = ok
   safeSend('resolume:status', { connected: ok })
@@ -217,6 +222,7 @@ ipcMain.on('ltc:frame', (_e, ltcAbsFrame: number) => {
 
 ipcMain.on('ltc:stop', () => {
   transport.clearLtc()
+  scheduler.notify()   // ticks only fire on frame changes: tell the UI the transport stopped
 })
 
 // ── Window ────────────────────────────────────────────────────────────────────

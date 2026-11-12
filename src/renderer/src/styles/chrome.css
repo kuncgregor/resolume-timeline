@@ -537,3 +537,20 @@
 
 /* ── Decks (Resolume tabs) ────────────────────────────────────────────── */
 .chip.deck-chip { background: transparent; box-shadow: inset 3px 0 0 var(--deck-color), inset 0 0 0 1px var(--bg-splitter); color: var(--text); height: 24px; padding-left: 9px; }
+
+/* ── Show safety ─────────────────────────────────────────────────────── */
+.health-bar { display: flex; flex-direction: column; gap: 1px; background: var(--bg-gutter); flex-shrink: 0; }
+.health-item {
+  height: 28px; padding: 0 12px; display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-ui); color: var(--text-hi);
+}
+.health-item b { font-family: var(--font-cond); letter-spacing: 0.06em; }
+.health-item.danger { background: var(--danger-fill); }
+.health-item.warn { background: color-mix(in srgb, var(--loop) 22%, var(--bg-lane)); }
+.health-item .btn-sm { margin-left: auto; }
+.health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-hi); animation: health-blink 1s steps(2, start) infinite; }
+@keyframes health-blink { to { visibility: hidden; } }
+.tbtn.stop-armed { background: var(--danger-fill); color: var(--text-hi); animation: stop-pulse 0.5s ease-in-out infinite alternate; }
+@keyframes stop-pulse { to { opacity: 0.6; } }
+.chip.follow-chip { cursor: pointer; border: none; background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--bg-splitter); }
+.chip.follow-chip.on { color: var(--live); box-shadow: inset 0 0 0 1px var(--live); }

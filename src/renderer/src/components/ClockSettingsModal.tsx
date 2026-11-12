@@ -44,6 +44,13 @@ async function probeOutputChannels(deviceId: string): Promise<number | null> {
   }
 }
 
+// "http://10.0.0.5:8080/ " → "10.0.0.5" (ports have their own fields); IPv6 literals stay as typed
+function cleanHost(raw: string): string {
+  let h = raw.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '')
+  if ((h.match(/:/g) ?? []).length === 1) h = h.replace(/:\d*$/, '')
+  return h || '127.0.0.1'
+}
+
 export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
   useEscape(onClose)
   const [name, setName] = useState(show.name)
@@ -162,7 +169,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
         audioOutputChannelL,
         audioOutputChannelR,
       },
-      resolume: { ...show.resolume, host, oscPort, restPort },
+      // "http://10.0.0.5:8080/ " → "10.0.0.5": ports have their own fields
+      resolume: { ...show.resolume, host: cleanHost(host), oscPort, restPort },
       deckReturn,
     })
     onClose()
@@ -219,7 +227,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
               </label>
             </Row>
 
-            <Row label="TC offset">
+            <Row label="Start TC">
               <div className="smpte-row">
                 <SmpteField label="HH" value={parts.hh} max={23} onChange={v => setPart('hh', v)} />
                 <span className="smpte-sep">:</span>
@@ -230,7 +238,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 <SmpteField label="FF" value={parts.ff} max={fps - 1} onChange={v => setPart('ff', v)} />
               </div>
               <span className="modal-hint">
-                TC offset can be changed at any time — it sets the timecode at which the project starts
+                Timecode at which this timeline starts (timeline 0). With LTC it runs from here until the next LTC timeline's start TC.
               </span>
             </Row>
 

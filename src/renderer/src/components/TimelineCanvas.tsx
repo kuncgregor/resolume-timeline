@@ -341,6 +341,13 @@ interface Props {
   onDeleteKeyframes: (items: KeyframeRef[]) => void
   // Keyframes at atFrame + offsetFrames; existing keyframes at those exact times are replaced
   onPasteKeyframes: (trackIdx: number, autoIdx: number, atFrame: number, items: KeyframePasteItem[]) => void
+  // Clip right-click automation templates: opacity fade on the cue's clip, copy / paste of
+  // every lane bound to the cue. clipFadeUnavailable → reason the fade can't be made, or null.
+  onClipFade: (trackIdx: number, cueIdx: number, mode: 'in' | 'out' | 'inout', seconds: number) => void
+  clipFadeUnavailable: (trackIdx: number, cueIdx: number) => string | null
+  onCopyClipAutomation: (trackIdx: number, cueIdx: number) => void
+  onPasteClipAutomation: (trackIdx: number, cueIdx: number) => void
+  canPasteClipAutomation: boolean
   onResizeAutoLane: (autoId: string, height: number) => void
   selectedTrackIdx: number | null
   selectedCueIdx: number | null
@@ -354,6 +361,7 @@ export function TimelineCanvas({
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
+  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
@@ -362,6 +370,7 @@ export function TimelineCanvas({
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
   const [ctxInputVal, setCtxInputVal] = useState('')
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
+  const [fadeSeconds, setFadeSeconds] = useState(1)   // clip menu fade length, kept for the session
   const [sel, setSel] = useState<KfHit[]>([])
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
   // Handlers read the selection through the ref, so a change is visible before the re-render
@@ -1612,7 +1621,7 @@ export function TimelineCanvas({
       {clipColorPicker && (
         <div
           className="clip-color-picker"
-          style={clampPos(clipColorPicker.x, clipColorPicker.y, 220, 190)}
+          style={clampPos(clipColorPicker.x, clipColorPicker.y, 220, 380)}
           onMouseDown={e => e.stopPropagation()}
         >
           <div className="ctx-title">Clip colour</div>
@@ -1627,6 +1636,60 @@ export function TimelineCanvas({
               setClipColorPicker(null)
             }}
           >Reset (layer colour)</button>
+          {(() => {
+            // Automation templates for this cue: opacity fade, copy / paste of its lanes
+            const { trackIdx: ti, cueIdx: ci } = clipColorPicker
+            const lt = tracks[ti] as LayerTrack | undefined
+            const cue = lt?.clips[ci]
+            if (!lt || !cue) return null
+            const editable = canEdit(ti)
+            const fadeWhy = clipFadeUnavailable(ti, ci)
+            const noEnd = smpteToFrames(cue.duration, fps) <= 0
+            const bound = lt.automations.filter(a => a.clipId === cue.id && !a.layerBound).length
+            const close = () => setClipColorPicker(null)
+            const fadeBtn = (mode: 'in' | 'out' | 'inout', label: string) => {
+              const off = !editable || !!fadeWhy || (mode !== 'in' && noEnd)
+              return (
+                <button key={mode} className="ctx-seg-btn" disabled={off}
+                  title={fadeWhy ?? (mode !== 'in' && noEnd ? 'Trigger-only cue has no end to fade out to'
+                    : `${label} over ${fadeSeconds} s on the clip's opacity`)}
+                  onClick={() => { onClipFade(ti, ci, mode, fadeSeconds); close() }}
+                >{label}</button>
+              )
+            }
+            return <>
+              <div className="ctx-divider" />
+              <div className="ccp-label">Fade in / out (opacity)</div>
+              <div className="ctx-row">
+                <label>Fade</label>
+                <div className="ctx-seg">
+                  {fadeBtn('in', 'In')}{fadeBtn('out', 'Out')}{fadeBtn('inout', 'In + Out')}
+                </div>
+              </div>
+              <div className="ctx-row">
+                <label>Length</label>
+                <div className="ctx-seg">
+                  {[0.5, 1, 2].map(sec => (
+                    <button key={sec} className={`ctx-seg-btn${fadeSeconds === sec ? ' on' : ''}`}
+                      disabled={!editable || !!fadeWhy}
+                      onClick={() => setFadeSeconds(sec)}
+                    >{sec} s</button>
+                  ))}
+                </div>
+              </div>
+              {fadeWhy && <div className="ctx-note">{fadeWhy}</div>}
+              <div className="ctx-divider" />
+              <button className="ctx-btn" disabled={!editable || !bound}
+                title={bound ? 'Copy every lane that follows this clip, keyframes relative to its start' : 'No automation lanes follow this clip'}
+                onClick={() => { onCopyClipAutomation(ti, ci); close() }}
+              >Copy clip automation{bound ? ` (${bound})` : ''}</button>
+              <button className="ctx-btn" disabled={!editable || !canPasteClipAutomation}
+                title={canPasteClipAutomation ? 'Paste the copied lanes onto this clip, from its start' : 'Copy a clip\'s automation first'}
+                onClick={() => { onPasteClipAutomation(ti, ci); close() }}
+              >Paste clip automation</button>
+            </>
+          })()}
+          <div className="ctx-divider" />
           <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Cancel</button>
         </div>
       )}
@@ -1797,6 +1860,7 @@ function rulerSteps(fps: number, ppf: number): { major: number; minor: number; s
     [fps, [10, 5, 4, 2]], [2 * fps, [10, 4, 2]], [5 * fps, [10, 5]], [10 * fps, [10, 5, 2]],
     [15 * fps, [15, 5, 3]], [30 * fps, [30, 6, 3]], [60 * fps, [12, 6, 4, 2]],
     [120 * fps, [8, 4, 2]], [300 * fps, [10, 5]], [600 * fps, [10, 5, 2]],
+    [1800 * fps, [6, 3]], [3600 * fps, [6, 4, 2]],
   ]
   const rungs = ladder.filter(([f], i) => i < 2 ? f < fps : true)
   const [major, divs] = rungs.find(([f]) => f * ppf >= 80) ?? rungs[rungs.length - 1]
@@ -1931,7 +1995,10 @@ function drawAudioLane(
         data.length / 2 - 1
       )
       let mn = data[piStart * 2] ?? 0, mx = data[piStart * 2 + 1] ?? 0
-      for (let pi = piStart + 1; pi <= piEnd; pi++) {
+      // Zoomed far out one pixel spans thousands of peaks: sample at most ~64 of them, so a
+      // 3 h song costs the same per redraw as a short one (the outline is indistinguishable)
+      const stride = Math.max(1, Math.floor((piEnd - piStart) / 64))
+      for (let pi = piStart + 1; pi <= piEnd; pi += stride) {
         if (data[pi * 2] < mn) mn = data[pi * 2]
         if (data[pi * 2 + 1] > mx) mx = data[pi * 2 + 1]
       }

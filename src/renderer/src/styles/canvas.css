@@ -48,6 +48,10 @@
 .ctx-btn.danger:hover { background: var(--danger-fill); color: var(--text-hi); }
 .ctx-btn.dim { color: var(--text-dim); }
 .ctx-btn.dim:hover { color: var(--text-hi); }
+.ctx-btn:disabled, .ctx-btn:disabled:hover { background: none; color: var(--text-faint); cursor: default; }
+.ctx-note {
+  padding: 0 10px 4px; max-width: 200px; font-size: var(--fs-meta); line-height: 1.35; color: var(--text-dim);
+}
 
 .ctx-divider { height: 1px; margin: 4px 0; background: var(--bg-gutter); }
 
@@ -75,6 +79,8 @@
 }
 .ctx-seg-btn:hover { background: var(--bg-hover); color: var(--text-hi); }
 .ctx-seg-btn.on { background: var(--select); border-color: var(--select); color: var(--text-on-live); }
+.ctx-seg-btn:disabled, .ctx-seg-btn:disabled:hover { background: var(--bg-track); color: var(--text-faint); cursor: default; }
+.ctx-seg-btn.on:disabled { background: var(--bg-control); border-color: var(--bg-gutter); }
 .ctx-glyph { font-size: 9px; line-height: 1; }
 
 /* Resolume curve families: family name + In / Out / In-Out per row */
@@ -108,3 +114,18 @@
 }
 .ccp-swatch:hover { outline: 1px solid var(--text-hi); outline-offset: 1px; }
 .ccp-swatch.on { outline: 2px solid var(--select); outline-offset: 1px; }
+
+/* ── Overview strip (OverviewBar) ─────────────────────────────────── */
+/* Whole show above the ruler; label cell as wide as the lane headers so the strip
+   lines up with the timeline canvas. Height must match BAR_H in OverviewBar.tsx. */
+
+.timeline-column { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; gap: 1px; }
+.overview-bar { height: 28px; flex-shrink: 0; display: flex; gap: 1px; background: var(--bg-gutter); }
+.overview-label {
+  width: var(--headers-w); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; background: var(--bg-header);
+  font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+}
+.overview-length { font-weight: 400; letter-spacing: 0; color: var(--text-faint); }
+.overview-canvas { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-well); }
+.overview-canvas > canvas { display: block; touch-action: none; }

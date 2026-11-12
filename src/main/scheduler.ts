@@ -1,6 +1,7 @@
 import { Transport, smpteToFrames } from './transport'
 import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
+import { ResolumeWs } from './resolume-ws'
 import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind, ClipCue } from '../shared/show'
 import { toFrameKeyframes, sampleLane } from '../shared/automation'
 import { toRestValue, normalize, type LaneTarget } from '../shared/paramTree'
@@ -10,6 +11,7 @@ export type { LaneTarget }
 const SEEK_THRESHOLD = 30
 const ECHO_MS = 600        // how long a value we sent may still come back from Resolume
 const RELEASE_MS = 600     // REC: no operator change for this long = parameter released
+const RECORD_MS = 40       // REC: at most one keyframe per lane per 40 ms (one frame at 25 fps)
 const PREROLL_MS = 150     // cross-deck cues: deck switch starts this early (deck load ~100 ms)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -67,10 +69,16 @@ export class Scheduler {
   private restInFlight = new Set<number>()
   private restPending = new Map<number, number | string | boolean>()
 
+  // Operator changes arrive over Resolume's WebSocket; polling covers what it doesn't (yet)
+  private ws: ResolumeWs
+  private lastFullPoll = 0
+
   constructor(transport: Transport, osc: OscClient, rest: ResolumeRest) {
     this.transport = transport
     this.osc = osc
     this.rest = rest
+    this.ws = new ResolumeWs(() => ({ host: rest.host, port: rest.port }))
+    this.ws.onUpdate((id, value, initial) => this.onParamUpdate(id, value, initial))
   }
 
   loadShow(show: Show) {
@@ -81,6 +89,7 @@ export class Scheduler {
     // Edits arrive many times while playing; resetting lastFrame here would skip the
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
+    this.indexLanes()
     // Only lanes whose value at the playhead changed are sent (dedupe by lane); re-sending
     // everything on every edit would overwrite what the operator does in Resolume.
     this.updateAllAutomation(this.transport.now())
@@ -89,6 +98,8 @@ export class Scheduler {
   /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
   setTargets(map: Record<string, LaneTarget>) {
     this.targets = new Map(Object.entries(map))
+    this.ws.setParams(new Set([...this.targets.values()].map(t => t.paramId)))
+    this.indexLanes()
     this.updateAllAutomation(this.transport.now())
   }
 
@@ -161,7 +172,10 @@ export class Scheduler {
   }
 
   /** REC armed: operator changes in Resolume become keyframes instead of overrides. */
-  setRecordArmed(armed: boolean) { this.recordArmed = armed }
+  setRecordArmed(armed: boolean) {
+    this.recordArmed = armed
+    if (!armed && this.recordTimer) { clearTimeout(this.recordTimer); this.recordTimer = null; this.recordPending.clear() }
+  }
 
   /** Hand overridden lanes back to the timeline (all, or the given ids). */
   reenable(ids?: string[]) {
@@ -196,44 +210,95 @@ export class Scheduler {
     if (this.tickHandle) return
     this.tickHandle = setInterval(() => this.tick(), 8)
     this.watchHandle = setInterval(() => { this.watchManualChanges() }, 250)
+    this.ws.start()
   }
 
   stop() {
     if (this.tickHandle) { clearInterval(this.tickHandle); this.tickHandle = null }
     if (this.watchHandle) { clearInterval(this.watchHandle); this.watchHandle = null }
+    this.ws.stop()
   }
 
-  // Polls automated parameters (REST by id, ~0.3 ms each on localhost) to notice when the
-  // operator moves one in Resolume. Our own sends are ignored for 400 ms and by value.
+  // Automated lanes Resolume should be watched for, with their targets (muted / disabled skip)
+  private *watchedLanes(): Generator<[AutomationSubTrack, LaneTarget]> {
+    if (!this.show) return
+    const mutedGroups = mutedGroupIds(this.show)
+    for (const track of this.show.tracks) {
+      if (track.type === 'group' ? (track as GroupTrack).muted
+        : track.type !== 'layer' || isMuted(track as LayerTrack, mutedGroups)) continue
+      for (const auto of (track as LayerTrack | GroupTrack).automations) {
+        const target = this.targets.get(auto.id)
+        if (target && auto.enabled !== false) yield [auto, target]
+      }
+    }
+  }
+
+  // A value of an automated parameter as Resolume reports it (WebSocket push or poll).
+  // Not our own echo and different from the last one seen = the operator moved it.
+  private observe(auto: AutomationSubTrack, target: LaneTarget, value: number | string | boolean) {
+    const seen = this.lastSeen.get(auto.id)
+    this.lastSeen.set(auto.id, value)
+    if (seen === undefined || sameValue(seen, value, target)) return
+    if (this.isEcho(target.paramId, value, target)) return
+    const v = normalize({ kind: target.kind, min: target.min, max: target.max, options: target.options }, value)
+    if (this.recordArmed) {
+      // Touch: the lane stops sending while the operator holds the parameter
+      this.touchedAt.set(auto.id, Date.now())
+      this.queueRecord(auto.id, v, target.kind === 'choice' ? String(value) : undefined)
+    } else {
+      this.overridden.set(auto.id, v)
+      this.emitOverrides()
+    }
+  }
+
+  // Pushes arrive at frame rate (our own sends echo back too): look lanes up by parameter id
+  private lanesByParam = new Map<number, [AutomationSubTrack, LaneTarget][]>()
+  private indexLanes() {
+    this.lanesByParam.clear()
+    for (const [auto, target] of this.watchedLanes()) {
+      const list = this.lanesByParam.get(target.paramId)
+      if (list) list.push([auto, target]); else this.lanesByParam.set(target.paramId, [[auto, target]])
+    }
+  }
+
+  // REC: WebSocket pushes come per fader step; the renderer writes one keyframe per lane per
+  // RECORD_MS (the latest value), so a recorded move doesn't rebuild the show 60 times a second
+  private recordPending = new Map<string, { value: number; option?: string }>()
+  private recordTimer: NodeJS.Timeout | null = null
+  private queueRecord(laneId: string, value: number, option?: string) {
+    this.recordPending.set(laneId, { value, option })
+    if (this.recordTimer) return
+    this.recordTimer = setTimeout(() => {
+      this.recordTimer = null
+      for (const [id, r] of this.recordPending) this.eventCb?.('engine:record', { laneId: id, value: r.value, option: r.option })
+      this.recordPending.clear()
+    }, RECORD_MS)
+  }
+
+  private onParamUpdate(id: number, value: number | string | boolean, initial: boolean) {
+    for (const [auto, target] of this.lanesByParam.get(id) ?? []) {
+      if (initial) { if (!this.lastSeen.has(auto.id)) this.lastSeen.set(auto.id, value) }
+      else this.observe(auto, target, value)
+    }
+  }
+
+  /** Reconnect the WebSocket now (Resolume host changed / reconnect pressed). */
+  reconnectWs() { this.ws.reconnect() }
+
+  // Polls automated parameters (REST by id, ~0.3 ms each on localhost) that the WebSocket
+  // doesn't cover yet; every 2 s all of them, in case a push was missed.
   private watching = false
   private async watchManualChanges() {
     if (this.watching || !this.show) return
     this.watching = true
     try {
-      const mutedGroups = mutedGroupIds(this.show)
-      for (const track of this.show.tracks) {
-        if (track.type === 'group' ? (track as GroupTrack).muted
-          : track.type !== 'layer' || isMuted(track as LayerTrack, mutedGroups)) continue
-        for (const auto of (track as LayerTrack | GroupTrack).automations) {
-          const target = this.targets.get(auto.id)
-          if (!target || auto.enabled === false) continue
-          const p = await this.rest.getParamById(target.paramId)
-          if (!p || p.value === undefined) continue
-          const value = p.value as number | string | boolean
-          const seen = this.lastSeen.get(auto.id)
-          this.lastSeen.set(auto.id, value)
-          if (seen === undefined || sameValue(seen, value, target)) continue
-          if (this.isEcho(target.paramId, value, target)) continue
-          const v = normalize({ kind: target.kind, min: target.min, max: target.max, options: target.options }, value)
-          if (this.recordArmed) {
-            // Touch: the lane stops sending while the operator holds the parameter
-            this.touchedAt.set(auto.id, Date.now())
-            this.eventCb?.('engine:record', { laneId: auto.id, value: v, option: target.kind === 'choice' ? String(value) : undefined })
-          } else {
-            this.overridden.set(auto.id, v)
-            this.emitOverrides()
-          }
-        }
+      const full = Date.now() - this.lastFullPoll > 2000
+      if (full) this.lastFullPoll = Date.now()
+      for (const [auto, target] of [...this.watchedLanes()]) {
+        if (!full && this.ws.isLive(target.paramId)) continue
+        const p = await this.rest.getParamById(target.paramId)
+        if (!p || p.value === undefined) continue
+        this.observe(auto, target, p.value as number | string | boolean)
       }
     } finally {
       this.watching = false

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe } from '../../shared/show'
+import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe, ParamRef } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
 import type { RundownEntry, ShowEntry, BreakEntry, ConcertFile } from '../../shared/concert'
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
 import { TimelineCanvas } from './components/TimelineCanvas'
+import { OverviewBar } from './components/OverviewBar'
 import { BottomPanel } from './components/BottomPanel'
 import { ClipBrowser } from './components/ClipBrowser'
 import { RundownStrip } from './components/RundownStrip'
@@ -17,10 +18,12 @@ import { AudioEngine } from './audio-engine'
 import type { WaveformInfo } from './audio-engine'
 import { loadAutosave, writeAutosave, clearAutosave } from './autosave'
 import { TAG_COLORS } from './theme'
-import { resolveShow, laneFieldsFor } from './resolver'
+import { resolveShow, laneFieldsFor, rememberClip, knownClip } from './resolver'
 import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
-import { sameRef, normalize, type ParamInfo } from '../../shared/paramTree'
+import { HealthBar } from './components/HealthBar'
+import { PPF_MIN, PPF_MAX } from './layout'
+import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
 
@@ -67,6 +70,34 @@ const shallowSame = (a: object, b: object) =>
 // order with each group track placed directly before its member layers. Tracks whose layer is
 // gone are kept (they hold cues/automation). Returns `show` unchanged when nothing differs, so
 // the periodic sync does not mark the show dirty.
+const FOLLOW_TC_KEY = 'resolume-timeline:followTc'
+const STOP_CONFIRM_MS = 1500   // SHOW mode: second Space / ■ within this stops
+
+/** LTC input a clock source listens to ('ltc' = legacy A). */
+const ltcInputOf = (src: string): 'a' | 'b' | null => src === 'ltc-b' ? 'b' : src === 'ltc-a' || src === 'ltc' ? 'a' : null
+
+/** The timeline an incoming LTC time (seconds) belongs to, among timelines on that input:
+ *  each owns the range from its start TC up to the next greater start TC (like timecode shows
+ *  on a lighting desk). Timelines sharing a start TC: the selected one wins. */
+function ltcOwner(rundown: RundownEntry[], tcSec: number, input: 'a' | 'b', activeId: string): string | null {
+  let best: string | null = null, bestStart = -1
+  for (const e of rundown) {
+    if (e.type !== 'show' || ltcInputOf(e.show.clock.source) !== input) continue
+    const fr = e.show.frameRate
+    const start = smpteToFrames(e.show.clock.offset || '00:00:00:00', fr) / fr
+    if (start > tcSec + 1e-6) continue
+    if (start > bestStart + 1e-6 || (Math.abs(start - bestStart) <= 1e-6 && e.id === activeId)) { best = e.id; bestStart = start }
+  }
+  return best
+}
+
+/** Project frame of a decoded LTC frame. It is decoded when its sync word ends, i.e. as the
+ *  next frame starts (+1); 50/60 fps projects get 25/30 fps LTC (one LTC frame = 2 frames). */
+const ltcToFrames = (hh: number, mm: number, ss: number, ff: number, fps: number) => {
+  const per = fps > 30 ? 2 : 1
+  return (hh * 3600 + mm * 60 + ss) * fps + (ff + 1) * per
+}
+
 function syncLayers(show: Show, comp: ResolumeComposition): Show {
   const layers = (comp.layers ?? []).filter(Boolean)
   const groups = (comp.layergroups ?? []).filter(Boolean)
@@ -147,6 +178,36 @@ function resolveClipDuration(clipRaw: any): number {
 
 let uid = 1
 const newId = () => `c${Date.now()}-${uid++}`
+
+// ── Clip automation templates (clip right-click: fades, copy / paste) ─────────
+const CLIP_OPACITY_PATH: ParamRef['path'] = ['video', 'opacity']
+type CueKey = { frame: number; value: number; ease: string; option?: string }
+// Lanes bound to a cue, keyframe times relative to the cue start (frames at `fps`)
+interface ClipAutoClipboard {
+  fps: number; layerId: number; cueName: string
+  lanes: { lane: AutomationSubTrack; keys: (Omit<CueKey, 'frame'> & { offset: number })[] }[]
+}
+
+/** Puts `keys` onto the lane of `ref` bound to `cue` (a new lane from `fresh` when the cue
+ *  has none): existing keyframes inside `ranges` are replaced, the others are kept. */
+function mergeCueLane(
+  lt: LayerTrack, cue: ClipCue, ref: ParamRef, fresh: () => AutomationSubTrack,
+  keys: CueKey[], ranges: [number, number][], fps: number,
+): LayerTrack {
+  const inRange = (f: number) => ranges.some(([a, b]) => f >= a && f <= b)
+  const idx = lt.automations.findIndex(a => sameRef(a.ref, ref) && a.clipId === cue.id && !a.layerBound)
+  const base = idx >= 0 ? lt.automations[idx] : fresh()
+  const byTime = new Map<string, Keyframe>()
+  for (const k of base.keyframes) if (!inRange(smpteToFrames(k.time, fps))) byTime.set(k.time, k)
+  for (const k of keys) {
+    const time = framesToSmpte(k.frame, fps)
+    byTime.set(time, { time, value: k.value, ease: k.ease, ...(k.option !== undefined ? { option: k.option } : {}) })
+  }
+  const keyframes = [...byTime.values()].sort((a, b) => smpteToFrames(a.time, fps) - smpteToFrames(b.time, fps))
+  const lane: AutomationSubTrack = { ...base, keyframes, ...(base.visible === false ? { visible: true } : {}) }
+  const automations = idx >= 0 ? lt.automations.map((a, i) => (i === idx ? lane : a)) : [...lt.automations, lane]
+  return { ...lt, expanded: true, automations }
+}
 let entryUid = 1
 const newEntryId = () => `e${Date.now()}-${entryUid++}`
 
@@ -186,9 +247,10 @@ export default function App() {
   const [showMode, setShowMode] = useState(false)
   const showModeRef = useRef(false)
   showModeRef.current = showMode
+  // Playhead locked: SHOW mode while playing (only GO / the clock move it)
+  const showLockedRef = () => showModeRef.current && engineRef.current.playing
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   const activeIdRef = useRef<string>(_initActiveId)
-  const ltcActiveRef = useRef(false)
 
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
 
@@ -196,7 +258,14 @@ export default function App() {
   const ltcDecoderRef = useRef(new LTCDecoder())
   const [ltcActive, setLtcActive] = useState(false)
   const [ltcRawTC, setLtcRawTC] = useState('--:--:--:--')
-  useEffect(() => { ltcActiveRef.current = ltcActive }, [ltcActive])
+  // LTC arrives but belongs to no / another timeline (before this one's start TC, or at or
+  // after the next LTC timeline's start TC): the active timeline doesn't run
+  const [ltcOutside, setLtcOutside] = useState(false)
+  // Follow TC: switch to the timeline whose TC range the incoming LTC is in (per machine)
+  const [followTc, setFollowTc] = useState(() => { try { return localStorage.getItem(FOLLOW_TC_KEY) === '1' } catch { return false } })
+  const followTcRef = useRef(followTc)
+  followTcRef.current = followTc
+  useEffect(() => { try { localStorage.setItem(FOLLOW_TC_KEY, followTc ? '1' : '0') } catch { /* private mode */ } }, [followTc])
 
   // Audio engine
   const audioEngineRef = useRef(new AudioEngine())
@@ -386,6 +455,8 @@ export default function App() {
   const laneStatusRef = useRef(laneStatus)
   laneStatusRef.current = laneStatus
   const sentTargetsRef = useRef('')
+  const [clipCacheTick, setClipCacheTick] = useState(0)
+  const clipFetchAtRef = useRef(new Map<number, number>())
   useEffect(() => {
     const { status, targets, updates } = resolveShow(show, composition)
     if (updates.length) {
@@ -403,12 +474,27 @@ export default function App() {
       })
     }
     setLaneStatus(prev => JSON.stringify(prev) === JSON.stringify(status) ? prev : status)
+    // Clips of decks Resolume isn't showing: fetch them by id (works while they play) so
+    // their lanes resolve; this runs again with every composition poll until it succeeds
+    const elsewhere = new Set<number>()
+    for (const t of show.tracks) if (t.type === 'layer')
+      for (const a of (t as LayerTrack).automations)
+        if (status[a.id]?.state === 'elsewhere' && a.ref?.clipId != null) elsewhere.add(a.ref.clipId)
+    // At most one attempt per clip every 2 s: this effect also runs on every edit / REC key
+    const now = Date.now()
+    for (const id of elsewhere) {
+      if (now - (clipFetchAtRef.current.get(id) ?? 0) < 2000) continue
+      clipFetchAtRef.current.set(id, now)
+      api.getClipById(id).then((json: any) => {
+        if (json?.id === id) { rememberClip(json); setClipCacheTick(n => n + 1) }
+      }).catch(() => {})
+    }
     const key = JSON.stringify(targets)
     if (key !== sentTargetsRef.current) {
       sentTargetsRef.current = key
       api.setTargets(targets)
     }
-  }, [show, composition, setShow])
+  }, [show, composition, setShow, clipCacheTick])
 
   useEffect(() => { api.loadShowDirect(show) }, [show])
 
@@ -439,32 +525,66 @@ export default function App() {
     ? channelForSource(show)
     : (ltcEnabledShows[0] ? channelForSource(ltcEnabledShows[0].show) : 0)
 
+  // Values the running decoder reads without restarting it (a Follow TC switch to a
+  // timeline with another frame rate must not drop the signal)
+  const ltcInput: 'a' | 'b' = ltcInputOf(show.clock.source) ?? (ltcEnabledShows[0] ? ltcInputOf(ltcEnabledShows[0].show.clock.source) ?? 'a' : 'a')
+  const ltcInputRef = useRef(ltcInput)
+  ltcInputRef.current = ltcInput
+  const fpsRef = useRef(fps)
+  fpsRef.current = fps
+  const freewheelRef = useRef(show.clock.freewheelFrames ?? 5)
+  freewheelRef.current = show.clock.freewheelFrames ?? 5
+  const ltcGenRef = useRef(0)
+
   useEffect(() => {
     const decoder = ltcDecoderRef.current
+    const gen = ++ltcGenRef.current
     if (!ltcShouldRun) {
-      decoder.stop().then(() => { setLtcActive(false); api.sendLtcStop() })
+      decoder.stop().then(() => { if (ltcGenRef.current === gen) { setLtcActive(false); setLtcOutside(false); api.sendLtcStop() } })
       return
     }
     // "LTC live" means frames are arriving. When they stop for longer than the freewheel
     // window, the indicator goes off and the transport stops at the last frame.
     let lostTimer: ReturnType<typeof setTimeout> | undefined
-    const lostAfterMs = Math.max(400, ((show.clock.freewheelFrames ?? 5) + 3) / fps * 1000)
-    decoder.onFrame = (absFrame, hh, mm, ss, ff) => {
+    let outsideFor: string | null = null     // active timeline we already stopped as "not here"
+    let followedTo: string | null = null, followedAt = 0
+    decoder.onFrame = (_abs, hh, mm, ss, ff) => {
       const pad = (n: number) => String(n).padStart(2, '0')
       setLtcRawTC(`${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`)
       setLtcActive(true)
-      api.sendLtcFrame(absFrame)
+      const f = fpsRef.current
+      const ltcFps = f > 30 ? f / 2 : f
+      const active = activeIdRef.current
+      const owner = ltcOwner(rundownRef.current, hh * 3600 + mm * 60 + ss + ff / ltcFps, ltcInputRef.current, active)
+      // One switch request per owner while the active id catches up (it updates a render
+      // later); after that, request again (the operator may have picked another timeline)
+      const now = performance.now()
+      if (owner && owner !== active && followTcRef.current && (owner !== followedTo || now - followedAt > 1000)) {
+        followedTo = owner; followedAt = now
+        selectEntryRef.current(owner)
+      }
+      if (owner && owner === active) {
+        outsideFor = null
+        api.sendLtcFrame(ltcToFrames(hh, mm, ss, ff, f))
+      } else if (outsideFor !== active) {
+        // Not this timeline's timecode: it must not run (once per selected timeline)
+        outsideFor = active
+        api.sendLtcStop()
+      }
+      setLtcOutside(owner !== active)
       clearTimeout(lostTimer)
-      lostTimer = setTimeout(() => { setLtcActive(false); api.sendLtcStop() }, lostAfterMs)
+      const lostAfterMs = Math.max(400, (freewheelRef.current + 3) / f * 1000)
+      lostTimer = setTimeout(() => { setLtcActive(false); setLtcOutside(false); api.sendLtcStop() }, lostAfterMs)
     }
     decoder.onError = (err) => console.error('[LTC]', err)
-    decoder.start(ltcDeviceId || undefined, ltcChannelIdx, fps)
+    decoder.start(ltcDeviceId || undefined, ltcChannelIdx, fpsRef.current)
     return () => {
       clearTimeout(lostTimer)
-      decoder.stop().then(() => { setLtcActive(false); api.sendLtcStop() })
+      // A newer run of this effect owns the state by the time the old decoder has stopped
+      decoder.stop().then(() => { if (ltcGenRef.current === gen) { setLtcActive(false); setLtcOutside(false); api.sendLtcStop() } })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ltcShouldRun, ltcDeviceId, ltcChannelIdx, fps, show.clock.freewheelFrames])
+  }, [ltcShouldRun, ltcDeviceId, ltcChannelIdx])
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
@@ -476,19 +596,23 @@ export default function App() {
       if (e.target instanceof HTMLInputElement && !['range', 'checkbox'].includes(e.target.type)) return
       if (e.code === 'Space') {
         e.preventDefault()
+        // Auto-repeat of a held key is not a second press (it would confirm the SHOW stop)
+        if (e.repeat) return
         if (engineRef.current.playing) {
-          api.stop(); audioEngineRef.current.stop()
+          stopRef.current()
         } else {
           api.play()
           if (audioLoadedRef.current) audioEngineRef.current.play(engineRef.current.frame)
         }
       }
+      if (e.code === 'Home' && showLockedRef()) { e.preventDefault(); return }
       if (e.code === 'Home') { e.preventDefault(); api.locate(0); setScrollFrame(0); autoScrollRef.current = true
         if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(0)
         else audioEngineRef.current.stop()
       }
       if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !(e.target instanceof HTMLButtonElement)) {
-        e.preventDefault(); goRef.current(1)
+        e.preventDefault()
+        if (!e.repeat) goRef.current(1)
       }
       if ((e.code === 'Delete' || e.code === 'Backspace') && !showModeRef.current) {
         if (selectedTrackIdx != null && selectedCueIdx != null) {
@@ -511,13 +635,44 @@ export default function App() {
     api.stop(); autoScrollRef.current = true; audioEngineRef.current.stop()
   }, [])
 
+  // SHOW mode while playing: stopping takes a second press within STOP_CONFIRM_MS (a stray
+  // Space must not stop a running show) and the playhead can't be moved by clicks
+  // The same confirmation guards switching timelines from the rundown while the show runs
+  const [stopArmed, setStopArmed] = useState<string | null>(null)   // 'stop' or the entry id clicked
+  const stopArmedRef = useRef<string | null>(null)
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const disarm = useCallback(() => {
+    clearTimeout(stopTimerRef.current)
+    stopArmedRef.current = null; setStopArmed(null)
+  }, [])
+  /** SHOW mode while playing: true the first time (armed, do nothing), true again only after
+   *  the confirmation window; false = go ahead. */
+  const needsConfirm = useCallback((what: string) => {
+    if (!showModeRef.current || !engineRef.current.playing || stopArmedRef.current === what) { disarm(); return false }
+    clearTimeout(stopTimerRef.current)
+    stopArmedRef.current = what; setStopArmed(what)
+    stopTimerRef.current = setTimeout(disarm, STOP_CONFIRM_MS)
+    return true
+  }, [disarm])
+  const requestStop = useCallback(() => {
+    if (needsConfirm('stop')) return
+    handleStop()
+  }, [handleStop, needsConfirm])
+  // A transport that stopped or started by itself (LTC lost / back) drops a pending confirmation
+  useEffect(() => { disarm() }, [engineState.playing, disarm])
+  useEffect(() => () => clearTimeout(stopTimerRef.current), [])
+  const stopRef = useRef(requestStop)
+  stopRef.current = requestStop
+
   const handleLocate = useCallback((frame: number) => {
+    if (showLockedRef()) return
     api.locate(frame); setScrollFrame(Math.max(0, frame - 50))
     if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(frame)
     else audioEngineRef.current.stop()
   }, [])
 
   const handleSeek = useCallback((frame: number) => {
+    if (showLockedRef()) return
     autoScrollRef.current = false; api.locate(frame)
     if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(frame)
     else audioEngineRef.current.stop()
@@ -554,21 +709,22 @@ export default function App() {
     setConcertDirty(true)
   }, [])
 
+  const rundownRef = useRef(rundown)
+  rundownRef.current = rundown
   const handleSelectEntry = useCallback((id: string) => {
     if (id === activeId) return
-    api.stop(); audioEngineRef.current.stop()
+    // The new timeline starts at 0, stopped. An LTC timeline runs as soon as its own
+    // timecode arrives (never on the internal clock from the old timeline's position).
+    api.stop(); api.locate(0); audioEngineRef.current.stop()
     setActiveId(id)
     clearSelection(); setScrollFrame(0)
     autoScrollRef.current = true
-    // LTC auto-play: if LTC is live and new entry is a show, start immediately
-    const entry = rundown.find(e => e.id === id)
-    if (entry?.type === 'show' && ltcActiveRef.current) {
-      api.play()
-    }
-  }, [activeId, rundown])
+  }, [activeId])
 
   // GO: step through the rundown. Ignores repeats within 300 ms so a double press
   // cannot skip an entry.
+  const selectEntryRef = useRef(handleSelectEntry)
+  selectEntryRef.current = handleSelectEntry
   const lastGoRef = useRef(0)
   const handleGo = useCallback((direction: 1 | -1) => {
     const now = performance.now()
@@ -602,14 +758,22 @@ export default function App() {
     setRundown(newOrder); setConcertDirty(true)
   }, [])
 
-  const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & { name?: string }) => {
+  const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
+    name?: string; clock?: { source: Show['clock']['source']; offset: string }
+  }) => {
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
       if (e.type === 'show') {
         const renamed = updates.name !== undefined && updates.name !== e.show.name
+        const reclocked = !!updates.clock && (updates.clock.source !== e.show.clock.source || updates.clock.offset !== e.show.clock.offset)
+        const show = renamed || reclocked ? {
+          ...e.show,
+          ...(renamed ? { name: updates.name! } : {}),
+          ...(reclocked ? { clock: { ...e.show.clock, ...updates.clock } } : {}),
+        } : e.show
         return {
           ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes,
-          ...(renamed ? { show: { ...e.show, name: updates.name! }, dirty: true } : {}),
+          ...(show !== e.show ? { show, dirty: true } : {}),
         }
       }
       return { ...e, ...updates }
@@ -891,6 +1055,164 @@ export default function App() {
     })
   }, [setShow])
 
+  // ── Clip automation templates (clip right-click) ─────────────────────────────
+  // Resolume JSON of a cue's clip: the live composition, else the last copy seen (clips of a
+  // deck Resolume isn't showing). null = Resolume hasn't shown this clip.
+  const clipJsonOf = useCallback((lt: LayerTrack | undefined, cue: ClipCue | undefined): any => {
+    if (lt?.type !== 'layer' || !cue) return null
+    const layer = composition?.layers?.find(l => l?.id === lt.resolumeLayerId) as any
+    return (layer?.clips ?? []).find((c: any) => c?.id === cue.clipId) ?? knownClip(cue.clipId)
+  }, [composition])
+
+  const clipOpacityInfo = useCallback((trackIdx: number, cueIdx: number): ParamInfo | null => {
+    const lt = showRef.current.tracks[trackIdx] as LayerTrack | undefined
+    const cue = lt?.clips?.[cueIdx]
+    const json = clipJsonOf(lt, cue)
+    return json && cue
+      ? resolveRef(json, { scope: 'clip', clipId: cue.clipId, path: CLIP_OPACITY_PATH, label: 'Opacity' })
+      : null
+  }, [clipJsonOf])
+
+  /** Why the opacity fade can't be made for a cue (menu tooltip), or null when it can. */
+  const clipFadeUnavailable = useCallback((trackIdx: number, cueIdx: number): string | null => {
+    const lt = showRef.current.tracks[trackIdx] as LayerTrack | undefined
+    const cue = lt?.clips?.[cueIdx]
+    if (!cue) return 'No clip'
+    if (clipOpacityInfo(trackIdx, cueIdx)) return null
+    if (clipJsonOf(lt, cue)) return 'This clip has no video opacity parameter'
+    return composition
+      ? 'Clip is not in the deck Resolume is showing: show its deck in Resolume once, then try again'
+      : 'Resolume is offline: the clip\'s opacity parameter can\'t be read'
+  }, [clipOpacityInfo, clipJsonOf, composition])
+
+  // Fade in / out on the clip's video opacity: a clip lane bound to the cue (reused when the
+  // cue already has one), keyframes inside the fade ranges replaced, others kept
+  const handleClipFade = useCallback((trackIdx: number, cueIdx: number, mode: 'in' | 'out' | 'inout', seconds: number) => {
+    if (showModeRef.current) return
+    const info = clipOpacityInfo(trackIdx, cueIdx)
+    if (!info) return
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const lt = tracks[trackIdx] as LayerTrack
+      const cue = lt?.type === 'layer' && !lt.locked ? lt.clips[cueIdx] : undefined
+      if (!cue) return prev
+      const fps = prev.frameRate
+      const s = smpteToFrames(cue.time, fps), dur = smpteToFrames(cue.duration, fps), e = s + dur
+      if (mode !== 'in' && dur <= 0) return prev  // trigger-only cue: no end to fade out to
+      const maxLen = dur > 0 ? (mode === 'inout' ? Math.floor(dur / 2) : dur) : Infinity
+      const len = Math.max(1, Math.min(Math.round(seconds * fps), maxLen))
+      const keys: CueKey[] = [], ranges: [number, number][] = []
+      if (mode !== 'out') {
+        ranges.push([s, s + len])
+        keys.push({ frame: s, value: 0, ease: 'sineInOut' }, { frame: s + len, value: 1, ease: 'linear' })
+      }
+      if (mode !== 'in') {
+        ranges.push([e - len, e])
+        keys.push({ frame: e - len, value: 1, ease: 'sineInOut' }, { frame: e, value: 0, ease: 'linear' })
+        // A lane sends nothing before its first key: without a start key a clip faded out
+        // once (opacity left at 0 in Resolume) would play black until the fade on the next run
+        const existing = lt.automations.find(a => a.clipId === cue.id && !a.layerBound && sameRef(a.ref, info.ref))
+        const hasEarlier = existing?.keyframes.some(k => { const f = smpteToFrames(k.time, fps); return f >= s && f < e - len })
+        if (mode === 'out' && !hasEarlier && e - len > s) { ranges.push([s, s]); keys.push({ frame: s, value: 1, ease: 'linear' }) }
+      }
+      const fresh = (): AutomationSubTrack => {
+        const palette = SCOPE_COLORS.clip
+        const sameScope = lt.automations.filter(a => (a.ref?.scope ?? 'layer') === 'clip').length
+        return {
+          id: `auto-${Date.now()}-${uid++}`, keyframes: [], enabled: true,
+          color: palette[sameScope % palette.length], clipId: cue.id,
+          ...laneFieldsFor(info, lt.resolumeLayerIndex, cue.clipIndex),
+        } as AutomationSubTrack
+      }
+      tracks[trackIdx] = mergeCueLane(lt, cue, info.ref, fresh, keys, ranges, fps)
+      return { ...prev, tracks }
+    })
+  }, [clipOpacityInfo, setShow])
+
+  // Copy / paste every lane bound to a cue, keyframes relative to the cue start
+  const clipAutoClipboardRef = useRef<ClipAutoClipboard | null>(null)
+  const [canPasteClipAutomation, setCanPasteClipAutomation] = useState(false)
+
+  const handleCopyClipAutomation = useCallback((trackIdx: number, cueIdx: number) => {
+    const cur = showRef.current
+    const lt = cur.tracks[trackIdx] as LayerTrack | undefined
+    const cue = lt?.type === 'layer' ? lt.clips[cueIdx] : undefined
+    if (!lt || !cue) return
+    const fps = cur.frameRate, s = smpteToFrames(cue.time, fps)
+    const lanes = lt.automations.filter(a => a.clipId === cue.id && !a.layerBound).map(lane => ({
+      lane,
+      keys: lane.keyframes.map(k => ({
+        offset: smpteToFrames(k.time, fps) - s, value: k.value, ease: k.ease,
+        ...(k.option !== undefined ? { option: k.option } : {}),
+      })),
+    }))
+    clipAutoClipboardRef.current = lanes.length ? { fps, layerId: lt.resolumeLayerId, cueName: cue.clipName, lanes } : null
+    setCanPasteClipAutomation(lanes.length > 0)
+    console.info(`[clip automation] copied ${lanes.length} lane(s) from "${cue.clipName}"`)
+  }, [])
+
+  const handlePasteClipAutomation = useCallback((trackIdx: number, cueIdx: number) => {
+    const clip = clipAutoClipboardRef.current
+    if (showModeRef.current || !clip) return
+    const cur = showRef.current
+    const lt = cur.tracks[trackIdx] as LayerTrack | undefined
+    const cue = lt?.type === 'layer' && !lt.locked ? lt.clips[cueIdx] : undefined
+    if (!lt || !cue) return
+    const fps = cur.frameRate, start = smpteToFrames(cue.time, fps)
+    const sameLayer = lt.resolumeLayerId === clip.layerId
+    const clipJson = clipJsonOf(lt, cue)
+    const layerJson = composition?.layers?.find(l => l?.id === lt.resolumeLayerId)
+    const skipped: string[] = []
+    const plan: { lane: AutomationSubTrack; ref: ParamRef; fields: Partial<AutomationSubTrack>; keys: CueKey[] }[] = []
+    for (const { lane, keys } of clip.lanes) {
+      const ref = lane.ref
+      const label = ref?.label ?? lane.name
+      let fields: Partial<AutomationSubTrack>
+      if (!ref || ref.scope === 'group') { skipped.push(`${label} (no parameter reference)`); continue }
+      if (ref.scope === 'clip') {
+        // Re-point at the target clip; resolve there when Resolume has shown it
+        const target: ParamRef = { ...ref, clipId: cue.clipId }
+        if (clipJson) {
+          const info = resolveRef(clipJson, target)
+          if (!info) { skipped.push(`${label} (not on clip "${cue.clipName}")`); continue }
+          fields = laneFieldsFor(info, lt.resolumeLayerIndex, cue.clipIndex)
+        } else {
+          fields = { ref: target, target: oscAddress(target, lt.resolumeLayerIndex, cue.clipIndex) }
+        }
+      } else if (sameLayer) {
+        fields = {}
+      } else {
+        // Layer parameter following the cue, pasted onto another layer: same path there
+        const info = layerJson ? resolveRef(layerJson, ref) : null
+        if (!info) { skipped.push(`${label} (not on layer "${lt.name}"${layerJson ? '' : ', Resolume offline'})`); continue }
+        fields = laneFieldsFor(info, lt.resolumeLayerIndex)
+      }
+      plan.push({
+        lane, ref: fields.ref ?? ref, fields,
+        keys: keys.map(k => ({ ...k, frame: start + Math.round(k.offset * fps / clip.fps) })).filter(k => k.frame >= 0),
+      })
+    }
+    if (plan.length) setShow(prev => {
+      const tracks = [...prev.tracks]
+      let t = tracks[trackIdx] as LayerTrack
+      const target = t?.type === 'layer' ? t.clips.find(c => c.id === cue.id) : undefined
+      if (!target) return prev
+      for (const p of plan) {
+        const frames = p.keys.map(k => k.frame)
+        const ranges: [number, number][] = frames.length ? [[Math.min(...frames), Math.max(...frames)]] : []
+        const fresh = (): AutomationSubTrack => ({
+          ...p.lane, ...p.fields, id: `auto-${Date.now()}-${uid++}`, keyframes: [],
+          clipId: target.id, layerBound: undefined, visible: undefined, paramId: undefined,
+        })
+        t = mergeCueLane(t, target, p.ref, fresh, p.keys, ranges, prev.frameRate)
+      }
+      tracks[trackIdx] = t
+      return { ...prev, tracks }
+    })
+    console.info(`[clip automation] pasted ${plan.length} lane(s) from "${clip.cueName}" onto "${cue.clipName}"`
+      + (skipped.length ? `; skipped ${skipped.length}: ${skipped.join(', ')}` : ''))
+  }, [clipJsonOf, composition, setShow])
+
   // ◇/◆ in the inspector (After Effects stopwatch + Resolve keyframe button): start
   // animating with a keyframe at the playhead, or toggle the keyframe at the playhead
   const handleToggleKey = useCallback((trackIdx: number, info: ParamInfo, real: number | string | boolean, binding: 'layer' | { cueId: string }) => {
@@ -1163,7 +1485,8 @@ export default function App() {
         resolumeConnected={engineState.resolumeConnected}
         resolumeHost={show.resolume.host}
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
-        onSelect={handleSelectEntry}
+        onSelect={id => { if (id !== activeId && !needsConfirm(id)) handleSelectEntry(id) }}
+        confirmEntryId={stopArmed && stopArmed !== 'stop' ? stopArmed : null}
         onGo={handleGo}
         onReorder={handleReorder}
         onAddShow={handleAddShow}
@@ -1191,19 +1514,36 @@ export default function App() {
         </div>
       )}
 
+      <HealthBar
+        active={showMode || engineState.playing}
+        resolumeConnected={engineState.resolumeConnected}
+        ltcSelected={isLtcSource(show.clock.source)}
+        ltcActive={ltcActive}
+        ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
+          ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}
+        brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
+        onReconnect={handleReconnect}
+      />
+
       <TransportBar
         engineState={engineState}
         show={show}
         offsetFrames={offsetFrames}
         endFrame={endFrame}
         ltcActive={ltcActive}
+        ltcOutside={ltcOutside}
+        ltcRawTC={ltcRawTC}
+        followTc={followTc}
+        onToggleFollowTc={() => setFollowTc(f => !f)}
+        anyLtcTimeline={ltcShouldRun}
         recordArmed={recordArmed}
         onToggleRecord={() => setRecordArmed(r => !r)}
         overrideCount={Object.keys(overrides).length}
         onReenable={() => handleReenable()}
         readOnly={showMode}
         onPlay={handlePlay}
-        onStop={handleStop}
+        onStop={requestStop}
+        stopArmed={stopArmed === 'stop'}
         onLocate={handleLocate}
         onToggleBrowser={() => setShowBrowser(b => !b)}
         browserOpen={showBrowser}
@@ -1220,6 +1560,14 @@ export default function App() {
             )}
           </div>
         ) : (
+          <div className="timeline-column">
+          <OverviewBar
+            tracks={show.tracks} markers={show.markers} fps={fps} decks={decks}
+            endFrame={endFrame} frame={engineState.frame} playing={engineState.playing}
+            readOnly={showMode} scrollFrame={scrollFrame} pxPerFrame={pxPerFrame}
+            onScrollFrame={f => { autoScrollRef.current = false; setScrollFrame(f) }}
+              onPxPerFrame={setPxPerFrame} onSeek={handleSeek}
+          />
           <div className="timeline-section">
             <LaneHeaders
               tracks={show.tracks} selectedIdx={selectedTrackIdx}
@@ -1262,7 +1610,7 @@ export default function App() {
               waveformInfo={waveformInfo}
               scrollY={scrollY} onScrollY={handleScrollY}
               onScrollFrame={setScrollFrame} onSeek={handleSeek}
-              onZoom={f => setPxPerFrame(p => Math.max(0.5, Math.min(60, p * f)))}
+              onZoom={f => setPxPerFrame(p => Math.max(PPF_MIN, Math.min(PPF_MAX, p * f)))}
               onSelectCue={selectCue}
               onDropClip={handleDropClip} onUpdateCue={handleUpdateCue}
               onAddKeyframe={handleAddKeyframe}
@@ -1271,9 +1619,14 @@ export default function App() {
               onUpdateKeyframes={handleUpdateKeyframes}
               onDeleteKeyframes={handleDeleteKeyframes}
               onPasteKeyframes={handlePasteKeyframes}
+              onClipFade={handleClipFade} clipFadeUnavailable={clipFadeUnavailable}
+              onCopyClipAutomation={handleCopyClipAutomation}
+              onPasteClipAutomation={handlePasteClipAutomation}
+              canPasteClipAutomation={canPasteClipAutomation}
               onResizeAutoLane={handleResizeAutoLane}
               selectedTrackIdx={selectedTrackIdx} selectedCueIdx={selectedCueIdx}
             />
+          </div>
           </div>
         )}
 
@@ -1315,6 +1668,8 @@ export default function App() {
         <RundownEditModal
           entry={editingEntry}
           onSave={handleEditEntry}
+          otherTimelines={rundown.filter((e): e is ShowEntry => e.type === 'show' && e.id !== editingEntry.id)
+            .map(e => ({ name: e.show.name, source: e.show.clock.source, offset: e.show.clock.offset || '00:00:00:00' }))}
           onClose={() => setEditingEntryId(null)}
         />
       )}

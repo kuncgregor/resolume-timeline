@@ -83,6 +83,7 @@ if (!w.timeline) {
     getThumbnail: (layerId: number, clipId: number) => rpc('getThumbnail', layerId, clipId),
     getLayerRaw: (layerIndex: number) => rpc('getLayerRaw', layerIndex),
     getGroupRaw: (groupIndex: number) => rpc('getGroupRaw', groupIndex),
+    getClipById: (clipId: number) => rpc('getClipById', clipId),
     getClipRaw: (layerIndex: number, clipIndex: number) => rpc('getClipRaw', layerIndex, clipIndex),
 
     triggerClip: (layer: number, clip: number) => rpc('triggerClip', layer, clip),

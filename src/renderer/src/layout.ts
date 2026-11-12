@@ -6,3 +6,6 @@ export const DEFAULT_LANE_H = 56  // layer (clip) lane
 export const DEFAULT_AUTO_H = 56  // automation sub-lane
 export const MIN_LANE_H = 36
 export const MIN_AUTO_H = 40
+
+// Zoom range (px per frame): a 3 h show fits on screen at the minimum
+export const PPF_MIN = 0.004, PPF_MAX = 60
