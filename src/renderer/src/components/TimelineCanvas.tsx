@@ -122,7 +122,7 @@ function pastedIndices(kfs: Keyframe[], frames: number[], fps: number): number[]
 
 /** Copied keyframe values for a lane of another kind: range ↔ choice ↔ on/off by the same
  *  0..1 position (a choice lane takes the option at that position). */
-function convertItems(items: KeyframePasteItem[], from: LaneKind, to: LaneKind, opts: string[]): KeyframePasteItem[] {
+export function convertItems(items: KeyframePasteItem[], from: LaneKind, to: LaneKind, opts: string[]): KeyframePasteItem[] {
   if (from === to && to !== 'choice') return items
   return items.map(i => {
     const value = snapValue(to, i.value, opts.length)
@@ -377,6 +377,8 @@ interface Props {
   onCopyClipAutomation: (trackIdx: number, cueIdx: number) => void
   onPasteClipAutomation: (trackIdx: number, cueIdx: number) => void
   canPasteClipAutomation: boolean
+  laneClipboard: string | null       // label of the lane copied (lane header right-click), if any
+  onPasteLaneOnCue: (trackIdx: number, cueIdx: number) => void
   onResizeAutoLane: (autoId: string, height: number) => void
   selectedTrackIdx: number | null
   selectedCueIdx: number | null
@@ -390,7 +392,7 @@ export function TimelineCanvas({
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onMoveCues, onInsertCues, onDeleteCues, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
-  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, onSetDownbeat,
+  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
@@ -2039,6 +2041,10 @@ export function TimelineCanvas({
                 title={canPasteClipAutomation ? 'Paste the copied lanes onto this clip, from its start' : 'Copy a clip\'s automation first'}
                 onClick={() => { onPasteClipAutomation(ti, ci); close() }}
               >Paste clip automation</button>
+              <button className="ctx-btn" disabled={!editable || !laneClipboard}
+                title={laneClipboard ? `Paste the copied lane onto this clip, from its start` : 'Copy a lane first: right-click its header › Copy lane'}
+                onClick={() => { onPasteLaneOnCue(ti, ci); close() }}
+              >{laneClipboard ? `Paste lane: ${laneClipboard}` : 'Paste lane'}</button>
             </>
           })()}
           <div className="ctx-divider" />

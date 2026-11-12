@@ -47,7 +47,15 @@ interface Props {
   rulerMode: 'timecode' | 'bars'          // in effect (always 'timecode' without a tempo)
   hasTempo: boolean
   onSetRulerMode: (mode: 'timecode' | 'bars') => void
+  // Right-click: copy a whole lane, paste it onto a layer / group (same parameter there) or its
+  // curve onto another lane
+  laneClipboard: string | null
+  onCopyLane: (trackIdx: number, autoIdx: number) => void
+  onPasteLane: (trackIdx: number) => void
+  onPasteCurve: (trackIdx: number, autoIdx: number) => void
 }
+
+interface HeaderMenu { x: number; y: number; ti: number; ai?: number }
 
 interface ResizeState { id: string; kind: 'layer' | 'auto'; startY: number; startH: number }
 interface EditState { ti: number; ai: number }
@@ -151,6 +159,7 @@ export function LaneHeaders({
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
   onLoadAudio, onUpdateAudio, rulerMode, hasTempo, onSetRulerMode,
+  laneClipboard, onCopyLane, onPasteLane, onPasteCurve,
 }: Props) {
   const [resizing, setResizing] = useState<ResizeState | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
@@ -158,6 +167,20 @@ export function LaneHeaders({
   // Removing a lane loses its keyframes: first click arms, second removes
   const [armedDelete, setArmedDelete] = useState<string | null>(null)
   const [picker, setPicker] = useState<PickerState | null>(null)
+  const [menu, setMenu] = useState<HeaderMenu | null>(null)
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
+  }, [menu])
+  useEffect(() => { setMenu(null) }, [scrollY])
+  const openMenu = (e: React.MouseEvent, ti: number, ai?: number) => {
+    e.preventDefault(); e.stopPropagation()
+    if (!readOnly) setMenu({ x: e.clientX, y: e.clientY, ti, ai })
+  }
   const closePicker = useCallback(() => setPicker(null), [])
 
   useEffect(() => {
@@ -288,7 +311,8 @@ export function LaneHeaders({
                   return (
                     <div key={auto.id}
                       className={`lane-row auto-row ${broken ? 'broken' : ''} ${enabled ? '' : 'disabled'} ${cue ? 'clip-lane' : ''}`}
-                      style={{ height: autoH, ...(cue ? { ['--clip-color' as any]: cueColor } : {}) }}>
+                      style={{ height: autoH, ...(cue ? { ['--clip-color' as any]: cueColor } : {}) }}
+                      onContextMenu={e => openMenu(e, i, ai)}>
                       <div className="lane-stripe auto" style={{ background: broken ? 'var(--danger)' : laneColor(auto, lt, 'var(--live-fill)') }} />
                       {cue && <ClipThumb layerId={lt.resolumeLayerId} cue={cue} color={cueColor} height={autoH - 1} />}
                       <div className="lane-body">
@@ -484,6 +508,7 @@ export function LaneHeaders({
                     className={`lane-row group-row ${isSelected ? 'selected' : ''} ${gt.muted ? 'muted' : ''}`}
                     style={{ height: h, ['--group-color' as any]: gt.color ?? 'var(--group-none)' }}
                     onClick={() => onSelect(i)}
+                    onContextMenu={e => openMenu(e, i)}
                   >
                     <div className="lane-stripe group" />
                     <div className="layer-head">
@@ -566,6 +591,7 @@ export function LaneHeaders({
                   className={`lane-row layer-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''} ${lt.muted || group?.muted ? 'muted' : ''} ${group ? 'in-group' : ''}`}
                   style={{ height: h }}
                   onClick={() => onSelect(i)}
+                  onContextMenu={e => openMenu(e, i)}
                 >
                   <div className="lane-stripe" style={{ background: lt.color ?? 'var(--bg-splitter)' }} />
                   <div className="layer-head">
@@ -618,6 +644,34 @@ export function LaneHeaders({
         </div>
       </div>
       {pickerEl}
+      {menu && (() => {
+        const t = tracks[menu.ti] as LayerTrack | undefined
+        const lane = menu.ai != null ? t?.automations?.[menu.ai] : undefined
+        const locked = !!t?.locked
+        const label = lane ? (lane.ref?.label ?? lane.name) : ''
+        const run = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); setMenu(null) }
+        return (
+          <div className="dropdown header-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={e => e.stopPropagation()}>
+            {lane ? (
+              <>
+                <button className="dropdown-item" onClick={run(() => onCopyLane(menu.ti, menu.ai!))}
+                  title="Copy this lane: paste it onto another layer (right-click its header), onto a clip (clip right-click) or its curve onto another lane">
+                  Copy lane: {label}
+                </button>
+                <button className="dropdown-item" disabled={!laneClipboard || locked} onClick={run(() => onPasteCurve(menu.ti, menu.ai!))}
+                  title="The copied curve on this lane's parameter, at the same times (keys there are replaced)">
+                  {laneClipboard ? `Paste curve of ${laneClipboard}` : 'Paste curve'}
+                </button>
+              </>
+            ) : (
+              <button className="dropdown-item" disabled={!laneClipboard || locked} onClick={run(() => onPasteLane(menu.ti))}
+                title={laneClipboard ? `The same parameter on ${t?.name ?? 'this layer'}, at the same times` : 'Copy a lane first: right-click its header › Copy lane'}>
+                {laneClipboard ? `Paste lane: ${laneClipboard}` : 'Paste lane (copy a lane first)'}
+              </button>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -6,7 +6,7 @@ import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type Showfile
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
-import { TimelineCanvas, type CueCopy } from './components/TimelineCanvas'
+import { TimelineCanvas, convertItems, type CueCopy } from './components/TimelineCanvas'
 import { OverviewBar } from './components/OverviewBar'
 import { BottomPanel } from './components/BottomPanel'
 import { ClipBrowser } from './components/ClipBrowser'
@@ -1561,6 +1561,102 @@ export default function App() {
       + (skipped.length ? `; skipped ${skipped.length}: ${skipped.join(', ')}` : ''))
   }, [clipJsonOf, composition, setShow])
 
+  // ── One lane copied whole (lane header right-click › Copy lane) ──
+  // Pasted onto a layer / group: the same parameter there, at the same times. Onto a clip: the
+  // same parameter following that clip, from its start. Onto another lane: its curve.
+  const laneClipboardRef = useRef<{ lane: AutomationSubTrack; keys: CueKey[]; start: number | null } | null>(null)
+  const [laneClipboard, setLaneClipboard] = useState<string | null>(null)
+
+  const handleCopyLane = useCallback((trackIdx: number, autoIdx: number) => {
+    const cur = showRef.current
+    const t = cur.tracks[trackIdx] as LayerTrack | undefined
+    const lane = t?.automations?.[autoIdx]
+    if (!lane) return
+    const fr = cur.frameRate
+    // A lane that follows a clip keeps its timing relative to the clip
+    const cue = lane.clipId && !lane.layerBound ? t!.clips?.find(c => c.id === lane.clipId) : undefined
+    laneClipboardRef.current = {
+      lane,
+      keys: lane.keyframes.map(k => ({ frame: smpteToFrames(k.time, fr), value: k.value, ease: k.ease, ...(k.option !== undefined ? { option: k.option } : {}) })),
+      start: cue ? smpteToFrames(cue.time, fr) : null,
+    }
+    setLaneClipboard(lane.ref?.label ?? lane.name)
+  }, [])
+
+  const handlePasteLane = useCallback((trackIdx: number, cueIdx?: number) => {
+    const cb = laneClipboardRef.current
+    if (showModeRef.current || !cb) return
+    const cur = showRef.current
+    const fr = cur.frameRate
+    const t = cur.tracks[trackIdx] as LayerTrack | GroupTrack | undefined
+    if (!t || (t.type !== 'layer' && t.type !== 'group') || t.locked) return
+    const ref = cb.lane.ref
+    if (!ref) { console.warn('[lane paste] the lane has no parameter reference'); return }
+    const isGroup = t.type === 'group'
+    if ((ref.scope === 'group') !== isGroup) { console.warn('[lane paste] group parameters go onto groups, layer and clip parameters onto layers'); return }
+    const lt = t as LayerTrack
+    const cue = cueIdx != null && !isGroup ? lt.clips[cueIdx] : undefined
+    if (ref.scope === 'clip' && !cue) { console.warn('[lane paste] a clip parameter needs a clip: right-click a clip › Paste lane'); return }
+    const index = isGroup ? (t as GroupTrack).resolumeGroupIndex : lt.resolumeLayerIndex
+    // The same parameter on the target, resolved now when Resolume shows it (else on the next sync)
+    let target: ParamRef = ref
+    let json: any = null
+    if (ref.scope === 'clip' && cue) { target = { ...ref, clipId: cue.clipId }; json = clipJsonOf(lt, cue) }
+    else if (isGroup) json = composition?.layergroups?.[index - 1]
+    else json = composition?.layers?.find(l => l?.id === lt.resolumeLayerId)
+    const info = json ? resolveRef(json, target) : null
+    if (json && !info) { console.warn(`[lane paste] ${ref.label} is not on ${cue ? `clip "${cue.clipName}"` : `"${t.name}"`}`); return }
+    const fields: Partial<AutomationSubTrack> = info
+      ? laneFieldsFor(info, index, cue?.clipIndex)
+      : { ref: target, target: oscAddress(target, index, cue?.clipIndex) }
+    const shift = cue ? smpteToFrames(cue.time, fr) - (cb.start ?? Math.min(...cb.keys.map(k => k.frame))) : 0
+    const keys = cb.keys.map(k => ({ ...k, frame: k.frame + shift })).filter(k => k.frame >= 0)
+    const frames = keys.map(k => k.frame)
+    const ranges: [number, number][] = frames.length ? [[Math.min(...frames), Math.max(...frames)]] : []
+    const fresh = (): AutomationSubTrack => ({
+      ...cb.lane, ...fields, id: `auto-${Date.now()}-${uid++}`, keyframes: [], visible: undefined, paramId: undefined,
+      ...(cue ? { clipId: cue.id, layerBound: undefined } : { clipId: undefined, layerBound: true }),
+    })
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const cur = tracks[trackIdx] as LayerTrack
+      if (!cur || cur.id !== t.id) return prev
+      if (cue) {
+        const c = cur.clips.find(x => x.id === cue.id)
+        if (!c) return prev
+        tracks[trackIdx] = mergeCueLane(cur, c, fields.ref ?? target, fresh, keys, ranges, fr)
+      } else {
+        // Onto a layer / group: the lane fixed on the timeline with this parameter (its keys in
+        // the pasted range are replaced), or a new one
+        const idx = cur.automations.findIndex(a => sameRef(a.ref, fields.ref ?? target) && a.layerBound)
+        const base = idx >= 0 ? cur.automations[idx] : fresh()
+        const inRange = (f: number) => ranges.some(([a, b]) => f >= a && f <= b)
+        const byTime = new Map<string, Keyframe>()
+        for (const k of base.keyframes) if (!inRange(smpteToFrames(k.time, fr))) byTime.set(k.time, k)
+        for (const k of keys) {
+          const time = framesToSmpte(k.frame, fr)
+          byTime.set(time, { time, value: k.value, ease: k.ease, ...(k.option !== undefined ? { option: k.option } : {}) })
+        }
+        const lane = { ...base, keyframes: [...byTime.values()].sort((a, b) => smpteToFrames(a.time, fr) - smpteToFrames(b.time, fr)), ...(base.visible === false ? { visible: true } : {}) }
+        tracks[trackIdx] = { ...cur, expanded: true, automations: idx >= 0 ? cur.automations.map((a, i) => (i === idx ? lane : a)) : [...cur.automations, lane] }
+      }
+      return { ...prev, tracks }
+    })
+  }, [clipJsonOf, composition, setShow])
+
+  // The copied lane's curve onto another lane (any parameter), at the same times
+  const handlePasteCurve = useCallback((trackIdx: number, autoIdx: number) => {
+    const cb = laneClipboardRef.current
+    if (showModeRef.current || !cb) return
+    const lane = (showRef.current.tracks[trackIdx] as LayerTrack | undefined)?.automations?.[autoIdx]
+    if (!lane || !cb.keys.length) return
+    const at = Math.min(...cb.keys.map(k => k.frame))
+    const opts = laneStatus[lane.id]?.info?.options ?? lane.options ?? []
+    const items = convertItems(cb.keys.map(k => ({ offsetFrames: k.frame - at, value: k.value, ease: k.ease, ...(k.option !== undefined ? { option: k.option } : {}) })),
+      cb.lane.kind ?? 'range', lane.kind ?? 'range', opts)
+    handlePasteKeyframes(trackIdx, autoIdx, at, items)
+  }, [laneStatus])   // eslint-disable-line react-hooks/exhaustive-deps
+
   // ◇/◆ in the inspector (After Effects stopwatch + Resolve keyframe button): start
   // animating with a keyframe at the playhead, or toggle the keyframe at the playhead
   const handleToggleKey = useCallback((trackIdx: number, info: ParamInfo, real: number | string | boolean, binding: 'layer' | { cueId: string }) => {
@@ -1982,6 +2078,8 @@ export default function App() {
               onUpdateAudio={handleUpdateAudioTrack}
               rulerMode={rulerMode} hasTempo={!!tempo}
               onSetRulerMode={m => setShow(prev => ({ ...prev, rulerMode: m }))}
+              laneClipboard={laneClipboard} onCopyLane={handleCopyLane}
+              onPasteLane={ti => handlePasteLane(ti)} onPasteCurve={handlePasteCurve}
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode} snap={snap}
@@ -2009,6 +2107,7 @@ export default function App() {
               onCopyClipAutomation={handleCopyClipAutomation}
               onPasteClipAutomation={handlePasteClipAutomation}
               canPasteClipAutomation={canPasteClipAutomation}
+              laneClipboard={laneClipboard} onPasteLaneOnCue={(ti, ci) => handlePasteLane(ti, ci)}
               onResizeAutoLane={handleResizeAutoLane}
               selectedTrackIdx={selectedTrackIdx} selectedCueIdx={selectedCueIdx}
             />

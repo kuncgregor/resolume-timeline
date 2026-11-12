@@ -711,3 +711,7 @@
 .tablet-copied { font-size: var(--fs-meta); color: var(--live); }
 .chip.follow-chip:disabled { cursor: default; opacity: 0.5; }
 .tbtn:disabled { opacity: 0.4; cursor: default; }
+
+/* Right-click menu of a layer / group / lane header */
+.dropdown.header-menu { position: fixed; min-width: 240px; max-width: 360px; }
+.dropdown.header-menu .dropdown-item { overflow: hidden; text-overflow: ellipsis; }
