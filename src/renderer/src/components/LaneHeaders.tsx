@@ -8,6 +8,9 @@ import { DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_LANE_H, MIN_AUTO_H } from '../layou
 import { smpteToFrames } from './timeUtils'
 import { ParamPicker, KIND_GLYPH, type PickBinding, type PickerClip } from './ParamPicker'
 
+// Tablet view: the audio track and files belong to the app on the computer
+const remote: boolean = !!(window as any).timeline?.__remote
+
 interface Props {
   tracks: Track[]
   selectedIdx: number | null
@@ -437,7 +440,7 @@ export function LaneHeaders({
             <div className="audio-head-top">
               <span className="audio-head-icon">♪</span>
               <span className="audio-head-name" title={audioTrack.filePath}>{audioTrack.name}</span>
-              {!readOnly && (
+              {!readOnly && !remote && (
                 <button className="lane-tool" title="Load a different audio file"
                   onClick={e => { e.stopPropagation(); onLoadAudio() }}>⇄</button>
               )}
@@ -454,7 +457,8 @@ export function LaneHeaders({
             </div>
           </div>
         ) : (
-          <button className="audio-load" disabled={readOnly}
+          <button className="audio-load" disabled={readOnly || remote}
+            title={remote ? 'The audio track is loaded on the computer running the app' : undefined}
             onClick={e => { e.stopPropagation(); onLoadAudio() }}>
             ♪ Load audio
           </button>

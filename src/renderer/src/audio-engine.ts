@@ -221,8 +221,11 @@ export class AudioEngine {
     this._routingMerger = merger
   }
 
+  /** No output (a tablet UI: the app on the computer plays the audio track). */
+  silent = false
+
   play(fromFrame: number) {
-    if (!this.ctx || !this.buffer || !this.gainNode) return
+    if (this.silent || !this.ctx || !this.buffer || !this.gainNode) return
     this.stop()
     const offsetSec = (fromFrame - this._startOffsetFrames) / this._fps
     if (offsetSec >= this.buffer.duration) return

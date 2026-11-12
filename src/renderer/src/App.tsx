@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe, ParamRef } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
-import type { RundownEntry, ShowEntry, BreakEntry, ConcertFile } from '../../shared/concert'
+import { isValidRundown, type RundownEntry, type ShowEntry, type BreakEntry, type ConcertFile } from '../../shared/concert'
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
@@ -27,6 +27,9 @@ import { tempoOf, rulerModeOf, snapOf, gridSnapOf, formatSnapStep, type SnapGrid
 import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
+// A browser on the app's tablet server: edits the same session, but LTC, the audio track,
+// recording and the engine's show/targets stay with the app on the computer
+const REMOTE: boolean = !!api.__remote
 
 export interface DragClipData {
   layerIndex: number; layerId: number
@@ -233,7 +236,7 @@ const renameDefault = (r: ReturnType<typeof loadAutosave>) => r && {
   rundown: r.rundown.map((e, i) => e.type === 'show' && /^(Nov projekt|Projekt \d+)$/.test(e.show.name)
     ? { ...e, show: { ...e.show, name: `Timeline ${i + 1}` } } : e),
 }
-const _restored = renameDefault(loadAutosave())
+const _restored = REMOTE ? null : renameDefault(loadAutosave())
 const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
   ? _restored.activeId : (_restored?.rundown[0].id ?? _initEntry.id)
 
@@ -271,6 +274,7 @@ export default function App() {
 
   // Audio engine
   const audioEngineRef = useRef(new AudioEngine())
+  audioEngineRef.current.silent = REMOTE
   const [audioLoaded, setAudioLoaded] = useState(false)
   const [, setAudioDuration] = useState(0)
   const [waveformInfo, setWaveformInfo] = useState<WaveformInfo | null>(null)
@@ -320,20 +324,98 @@ export default function App() {
 
   // ── Autosave ───────────────────────────────────────────────────────────────
 
-  const autosaveRef = useRef({ rundown, activeId, concertFilePath, concertDirty })
-  autosaveRef.current = { rundown, activeId, concertFilePath, concertDirty }
+  // SHOW mode is part of the session: the lock applies on the tablets too
+  const autosaveRef = useRef({ rundown, activeId, concertFilePath, concertDirty, showMode })
+  autosaveRef.current = { rundown, activeId, concertFilePath, concertDirty, showMode }
   const flushAutosave = useCallback(() => {
+    if (REMOTE) return
     setAutosaveFailed(!writeAutosave({ savedAt: Date.now(), ...autosaveRef.current }))
   }, [])
   // Debounced so dragging a keyframe does not serialize the show on every mouse move
   useEffect(() => {
     const t = setTimeout(flushAutosave, 800)
     return () => clearTimeout(t)
-  }, [rundown, activeId, concertFilePath, concertDirty, flushAutosave])
+  }, [rundown, activeId, concertFilePath, concertDirty, showMode, flushAutosave])
   useEffect(() => {
     window.addEventListener('pagehide', flushAutosave)
     return () => window.removeEventListener('pagehide', flushAutosave)
   }, [flushAutosave])
+
+  // ── Session sync ───────────────────────────────────────────────────────────
+  // The engine keeps the session (session.json in the app's data folder) and passes every
+  // change on to the other UIs: the app window and tablets show and edit the same timelines.
+  // Whole-session: each push names the revision it was based on, and a push based on an
+  // older one is refused (that UI takes the current session instead), so a UI that missed
+  // changes can't overwrite them. Also how the app finds the timelines made in the browser.
+  const sessionJsonRef = useRef('')   // last session sent or received
+  const sessionRevRef = useRef<number | null>(null)
+  const pushingRef = useRef(false)
+  const [sessionReady, setSessionReady] = useState(false)
+  const adoptSession = useCallback((d: any, rev: number | null) => {
+    if (rev != null && sessionRevRef.current != null && rev <= sessionRevRef.current) return   // older reply
+    if (rev != null) sessionRevRef.current = rev
+    if (!d || !isValidRundown(d.rundown)) return
+    const state = {
+      rundown: d.rundown as RundownEntry[],
+      activeId: d.rundown.some((e: RundownEntry) => e.id === d.activeId) ? d.activeId as string : d.rundown[0].id as string,
+      concertFilePath: (d.concertFilePath ?? null) as string | null,
+      concertDirty: !!d.concertDirty,
+      showMode: !!d.showMode,
+    }
+    sessionJsonRef.current = JSON.stringify(state)
+    activeIdRef.current = state.activeId
+    setRundown(state.rundown); setActiveId(state.activeId)
+    setConcertFilePath(state.concertFilePath); setConcertDirty(state.concertDirty)
+    setShowMode(state.showMode)
+  }, [])
+  const pushSession = useCallback(async () => {
+    // One push at a time: the next one must carry the revision the previous one created
+    if (pushingRef.current) return
+    const json = JSON.stringify(autosaveRef.current)
+    if (json === sessionJsonRef.current) return
+    sessionJsonRef.current = json
+    pushingRef.current = true
+    let ok = false
+    try {
+      const r = await api.sessionSet({ savedAt: Date.now(), ...autosaveRef.current }, sessionRevRef.current)
+      ok = !!r?.ok
+      if (ok) sessionRevRef.current = Math.max(r.rev, sessionRevRef.current ?? 0)
+      else if (r?.data) { sessionRevRef.current = null; adoptSession(r.data, r.rev) }
+    } catch { sessionJsonRef.current = '' /* retried with the next change */ }
+    finally { pushingRef.current = false }
+    // Changed while the push was on its way (not after a refusal: this UI now shows the
+    // engine's session, its own state is the one that was refused)
+    if (ok && JSON.stringify(autosaveRef.current) !== sessionJsonRef.current) pushSession()
+  }, [adoptSession])
+  const fetchSession = useCallback(async (startup: boolean) => {
+    const s = await api.sessionGet()
+    if (!s?.rundown) return
+    // At startup the newer of the engine's session and this window's own autosave wins; a
+    // tablet always shows the engine's
+    if (!startup || REMOTE || !_restored || (s.savedAt ?? 0) > _restored.savedAt) {
+      adoptSession(s, s.rev ?? null)
+      if (startup && !REMOTE) setRestoredAt(s.savedAt ?? null)
+    } else sessionRevRef.current = s.rev ?? null
+  }, [adoptSession])
+  useEffect(() => {
+    let live = true, timer: ReturnType<typeof setTimeout> | undefined
+    // A tablet must not push its empty start state over the real session: it only becomes
+    // ready after reading it (retried until the app answers)
+    const first = () => fetchSession(true).then(
+      () => { if (live) setSessionReady(true) },
+      () => { if (!live) return; if (REMOTE) timer = setTimeout(first, 2000); else setSessionReady(true) })
+    first()
+    const unsub = api.onSession(({ data, from, rev }: { data: any; from: string | null; rev: number }) => {
+      if (from !== api.clientId) adoptSession(data, rev)
+    })
+    const unsubRe = api.onReconnect(() => { fetchSession(false).catch(() => {}) })
+    return () => { live = false; clearTimeout(timer); unsub(); unsubRe() }
+  }, [adoptSession, fetchSession])
+  useEffect(() => {
+    if (!sessionReady) return
+    const t = setTimeout(pushSession, 250)
+    return () => clearTimeout(t)
+  }, [sessionReady, rundown, activeId, concertFilePath, concertDirty, showMode, pushSession])
 
   const handleDiscardRestored = useCallback(() => {
     api.stop(); audioEngineRef.current.stop()
@@ -406,6 +488,13 @@ export default function App() {
     return unsub
   }, [pxPerFrame])
 
+  // Play / Stop / locate from a tablet: the audio track (played here) follows
+  useEffect(() => REMOTE ? undefined : api.onTransportCmd(({ frame, playing, from }: { frame: number; playing: boolean; from: string | null }) => {
+    if (from === api.clientId) return
+    if (playing && audioLoadedRef.current) audioEngineRef.current.play(frame)
+    else audioEngineRef.current.stop()
+  }), [])
+
   // Ticks only arrive while the frame changes, so the connection status needs its own
   // event, plus one query at startup in case that event fired before we subscribed
   useEffect(() => {
@@ -443,8 +532,8 @@ export default function App() {
   const [overrides, setOverrides] = useState<Record<string, number>>({})
   const [recordArmed, setRecordArmed] = useState(false)
   useEffect(() => api.onOverrides((m: Record<string, number>) => setOverrides(m)), [])
-  useEffect(() => { api.setRecordArmed(recordArmed) }, [recordArmed])
-  useEffect(() => api.onRecord(({ laneId, value, option }: { laneId: string; value: number; option?: string }) => {
+  useEffect(() => { if (!REMOTE) api.setRecordArmed(recordArmed) }, [recordArmed])
+  useEffect(() => REMOTE ? undefined : api.onRecord(({ laneId, value, option }: { laneId: string; value: number; option?: string }) => {
     showRef.current.tracks.forEach((t, ti) => {
       if (t.type !== 'layer' && t.type !== 'group') return
       const ai = (t as LayerTrack | GroupTrack).automations.findIndex(a => a.id === laneId)
@@ -515,13 +604,13 @@ export default function App() {
       }).catch(() => {})
     }
     const key = JSON.stringify(targets)
-    if (key !== sentTargetsRef.current) {
+    if (key !== sentTargetsRef.current && !REMOTE) {
       sentTargetsRef.current = key
       api.setTargets(targets)
     }
   }, [show, composition, setShow, clipCacheTick])
 
-  useEffect(() => { api.loadShowDirect(show) }, [show])
+  useEffect(() => { if (!REMOTE) api.loadShowDirect(show) }, [show])
 
   // ── LTC decoder lifecycle ──────────────────────────────────────────────────
 
@@ -542,7 +631,7 @@ export default function App() {
   const ltcEnabledShows = rundown.filter(
     (e): e is ShowEntry => e.type === 'show' && isLtcSource(e.show.clock.source)
   )
-  const ltcShouldRun = ltcEnabledShows.length > 0
+  const ltcShouldRun = !REMOTE && ltcEnabledShows.length > 0
   const ltcDeviceId = isLtcSource(show.clock.source)
     ? (deviceForSource(show) ?? '')
     : (ltcEnabledShows[0] ? (deviceForSource(ltcEnabledShows[0].show) ?? '') : '')
@@ -564,6 +653,7 @@ export default function App() {
   useEffect(() => {
     const decoder = ltcDecoderRef.current
     const gen = ++ltcGenRef.current
+    if (REMOTE) return   // the app on the computer decodes LTC
     if (!ltcShouldRun) {
       decoder.stop().then(() => { if (ltcGenRef.current === gen) { setLtcActive(false); setLtcOutside(false); api.sendLtcStop() } })
       return
@@ -796,6 +886,7 @@ export default function App() {
   }, [rundown.length])
 
   const handleOpenShowFile = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
     const result = await api.openShowFile()
     if (!result) return
     const idx = rundown.length
@@ -891,6 +982,7 @@ export default function App() {
   }, [])
 
   const handleSaveActiveShow = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
     if (!activeShowEntry) return
     const filePath = await api.saveShow(activeShowEntry.show)
     if (filePath) {
@@ -903,6 +995,7 @@ export default function App() {
   }, [activeShowEntry, activeId])
 
   const handleSaveConcert = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
     const data: ConcertFile = {
       version: 1,
       name: concertFilePath?.split('/').pop()?.replace(/\.concert\.json$|\.json$/, '') ?? 'Concert',
@@ -916,6 +1009,7 @@ export default function App() {
   }, [rundown, concertFilePath])
 
   const handleOpenConcert = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
     const result = await api.loadConcert()
     if (!result) return
     const entries: RundownEntry[] = (result.entries ?? []).map((fe: any, i: number) =>
@@ -979,6 +1073,7 @@ export default function App() {
   }, [unloadAudio])
 
   const handleLoadAudioTrack = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
     const result = await api.openAudioFile()
     if (!result) return
     if (!await loadAudioIntoEngine(result.filePath, result.data, showRef.current)) return
@@ -997,7 +1092,8 @@ export default function App() {
   useEffect(() => {
     if (wantedAudioPath === loadedAudioPathRef.current) return
     unloadAudio()
-    if (!wantedAudioPath) return
+    // A tablet doesn't play the audio track: no need to pull the whole file over Wi-Fi
+    if (!wantedAudioPath || REMOTE) return
     const gen = audioLoadGenRef.current
     api.readAudioFile(wantedAudioPath).then((res: { data: Uint8Array } | null) => {
       if (gen !== audioLoadGenRef.current) return
@@ -1672,7 +1768,7 @@ export default function App() {
       <HealthBar
         active={showMode || engineState.playing}
         resolumeConnected={engineState.resolumeConnected}
-        ltcSelected={isLtcSource(show.clock.source)}
+        ltcSelected={!REMOTE && isLtcSource(show.clock.source)}
         ltcActive={ltcActive}
         ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
           ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}

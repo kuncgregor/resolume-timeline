@@ -1,5 +1,7 @@
 // Browser fallback for `window.timeline` (normally exposed by the Electron preload).
-// Talks to the dev bridge (src/web/bridge.ts) over HTTP + Server-Sent Events.
+// Talks to the engine over HTTP + Server-Sent Events (src/main/web-server.ts): the dev bridge
+// (`npm run web`) or the app's tablet server. A page served by the tablet server runs as a
+// remote (window.__TL_REMOTE__): the app on the computer keeps LTC, audio and the show sync.
 // File dialogs are replaced with <input type=file> and downloads.
 import type { Show } from '../../shared/show'
 import type { ConcertFile, LoadedConcert } from '../../shared/concert'
@@ -7,9 +9,20 @@ import type { ConcertFile, LoadedConcert } from '../../shared/concert'
 const w = window as any
 
 if (!w.timeline) {
+  // Tablet server access key: from the link (?k=…), remembered for reloads without it
+  const KEY_STORE = 'resolume-timeline:remoteKey'
+  const fromUrl = new URLSearchParams(location.search).get('k')
+  let key = fromUrl ?? ''
+  try {
+    if (fromUrl) localStorage.setItem(KEY_STORE, fromUrl)
+    else key = localStorage.getItem(KEY_STORE) ?? ''
+  } catch { /* private mode */ }
+  const k = key ? `?k=${encodeURIComponent(key)}` : ''
+  const clientId = `web-${Math.random().toString(36).slice(2, 10)}`
+
   const rpc = async (method: string, ...args: unknown[]) => {
     const res = await fetch('/__tl/rpc', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TL-Key': key },
       body: JSON.stringify({ method, args }),
     })
     const body = await res.json()
@@ -17,7 +30,15 @@ if (!w.timeline) {
     return body.result
   }
 
-  const events = new EventSource('/__tl/events')
+  const events = new EventSource(`/__tl/events${k}`)
+  // EventSource reconnects by itself; events sent in the gap are lost, so the app re-reads
+  // the session after a reconnect (a tablet waking up)
+  let opened = false
+  const reconnectCbs = new Set<() => void>()
+  events.addEventListener('open', () => {
+    if (opened) reconnectCbs.forEach(cb => cb())
+    opened = true
+  })
   const on = (channel: string) => (cb: (payload: any) => void) => {
     const h = (e: MessageEvent) => cb(JSON.parse(e.data))
     events.addEventListener(channel, h)
@@ -48,11 +69,13 @@ if (!w.timeline) {
 
   w.timeline = {
     __web: true,
-    play: () => rpc('play'),
+    __remote: !!w.__TL_REMOTE__,
+    clientId,
+    play: () => rpc('play', clientId),
     recordStart: () => rpc('recordStart'),
     recordStop: () => rpc('recordStop'),
-    stop: () => rpc('stop'),
-    locate: (frame: number) => rpc('locate', frame),
+    stop: () => rpc('stop', clientId),
+    locate: (frame: number) => rpc('locate', frame, clientId),
     getState: () => rpc('getState'),
 
     loadShow: async () => (await openShowFile())?.show ?? null,
@@ -60,6 +83,13 @@ if (!w.timeline) {
     openShowFile,
     loadShowDirect: (show: Show) => rpc('loadShowDirect', show),
     getCurrentShow: () => rpc('getCurrentShow'),
+    sessionGet: () => rpc('sessionGet'),
+    sessionSet: (data: unknown, baseRev: number | null) => rpc('sessionSet', data, clientId, baseRev),
+    onSession: on('session:changed'),
+    onReconnect: (cb: () => void) => { reconnectCbs.add(cb); return () => { reconnectCbs.delete(cb) } },
+    onTransportCmd: on('transport:cmd'),
+    getRemoteServer: async () => null,
+    setRemoteServer: async () => null,
 
     saveConcert: async (data: ConcertFile) => download(`${data.name ?? 'concert'}.concert.json`, data),
     // Browser cannot read the referenced show files by path, so shows load empty.
@@ -76,7 +106,7 @@ if (!w.timeline) {
     },
 
     readAudioFile: async (filePath: string) => {
-      const res = await fetch(`/__tl/audio?path=${encodeURIComponent(filePath)}`)
+      const res = await fetch(`/__tl/audio?path=${encodeURIComponent(filePath)}${key ? `&k=${encodeURIComponent(key)}` : ''}`)
       if (!res.ok) return null
       return { filePath, data: new Uint8Array(await res.arrayBuffer()) }
     },

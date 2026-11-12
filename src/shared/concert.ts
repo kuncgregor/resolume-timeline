@@ -44,3 +44,10 @@ export interface LoadedConcert {
   entries: ConcertFileEntry[]
   shows: Record<string, Show>   // keyed by entry id
 }
+
+/** A rundown read from storage or another UI can be used: entries with ids, shows with tracks. */
+export function isValidRundown(rundown: unknown): rundown is RundownEntry[] {
+  return Array.isArray(rundown) && rundown.length > 0 && rundown.every((e: any) =>
+    e && typeof e.id === 'string' &&
+    (e.type === 'break' || (e.type === 'show' && e.show && Array.isArray(e.show.tracks) && e.show.clock && e.show.resolume)))
+}

@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { TabletAccess } from './TabletAccess'
 import type { RundownEntry, ShowEntry, BreakEntry } from '../../../shared/concert'
 
 interface Props {
@@ -29,6 +30,8 @@ interface Props {
   onToggleShowMode: () => void
   onReconnect: () => void
 }
+
+const remote: boolean = !!(window as any).timeline?.__remote
 
 const entryMeta = (e: RundownEntry) => e.type === 'break'
   ? `⏸ Break ${(e as BreakEntry).duration}`
@@ -108,7 +111,8 @@ export function RundownStrip({
             {menu === 'add' && (
               <div className="dropdown" onClick={e => e.stopPropagation()}>
                 <button className="dropdown-item" onClick={() => { onAddShow(); setMenu(null) }}>New timeline</button>
-                <button className="dropdown-item" onClick={() => { onOpenShowFile(); setMenu(null) }}>Open timeline from file…</button>
+                <button className="dropdown-item" disabled={remote} title={remote ? 'Files are opened and saved on the computer running the app' : undefined}
+                  onClick={() => { onOpenShowFile(); setMenu(null) }}>Open timeline from file…</button>
                 <div className="dropdown-sep" />
                 <button className="dropdown-item" onClick={() => { onAddBreak(); setMenu(null) }}>Break</button>
               </div>
@@ -116,7 +120,7 @@ export function RundownStrip({
           </div>
 
           <div className="menu-anchor">
-            <button className="btn ghost"
+            <button className="btn ghost" disabled={remote} title={remote ? 'Files are opened and saved on the computer running the app' : undefined}
               onClick={e => { e.stopPropagation(); setMenu(m => m === 'file' ? null : 'file') }}>
               Concert ▾
             </button>
@@ -131,12 +135,13 @@ export function RundownStrip({
             )}
           </div>
 
-          <button className={`btn ${activeShowDirty ? '' : 'ghost'}`} onClick={onSaveActiveShow}
-            title="Save the active timeline to a file">
+          <button className={`btn ${activeShowDirty ? '' : 'ghost'}`} onClick={onSaveActiveShow} disabled={remote}
+            title={remote ? 'Files are opened and saved on the computer running the app' : 'Save the active timeline to a file'}>
             Save timeline{activeShowDirty && <span className="dirty-dot">●</span>}
           </button>
 
-          <button className="btn ghost" onClick={onSettings} disabled={showMode} title="Timeline settings">⚙</button>
+          <button className="btn ghost" onClick={onSettings} disabled={showMode || remote}
+            title={remote ? 'Timecode and audio settings are made on the computer running the app' : 'Timeline settings'}>⚙</button>
         </div>
 
         <div className="spacer" />
@@ -158,6 +163,8 @@ export function RundownStrip({
             Deck {currentDeck.index} · {currentDeck.name}
           </span>
         )}
+
+        <TabletAccess />
 
         <button className={`chip ${resolumeConnected ? 'live' : 'danger blink'} conn-chip`} onClick={onReconnect}
           title={resolumeConnected ? `Connected to Resolume (${resolumeHost}). Click to reconnect.` : 'Resolume is unreachable. Click to retry.'}>

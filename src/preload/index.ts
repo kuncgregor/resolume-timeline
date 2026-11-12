@@ -3,12 +3,25 @@ import type { Show, CueEvent, EngineState } from '../shared/show'
 import type { ResolumeComposition } from '../shared/resolume'
 import type { ConcertFile, LoadedConcert } from '../shared/concert'
 
+interface RemoteInfo { enabled: boolean; running: boolean; port: number; urls: string[]; error: string | null }
+
+// Identifies this UI in session / transport broadcasts (its own changes come back too)
+const clientId = `app-${Math.random().toString(36).slice(2, 10)}`
+
+const on = <T>(channel: string) => (cb: (payload: T) => void) => {
+  const h = (_: unknown, p: T) => cb(p)
+  ipcRenderer.on(channel, h)
+  return () => { ipcRenderer.removeListener(channel, h) }
+}
+
 const api = {
-  play: () => ipcRenderer.invoke('engine:play'),
+  __remote: false,
+  clientId,
+  play: () => ipcRenderer.invoke('engine:play', clientId),
   recordStart: (): Promise<{ ok: boolean; latencyMs: number; file: string | null; dir: string }> => ipcRenderer.invoke('record:start'),
   recordStop: () => ipcRenderer.invoke('record:stop'),
-  stop: () => ipcRenderer.invoke('engine:stop'),
-  locate: (frame: number) => ipcRenderer.invoke('engine:locate', frame),
+  stop: () => ipcRenderer.invoke('engine:stop', clientId),
+  locate: (frame: number) => ipcRenderer.invoke('engine:locate', frame, clientId),
   getState: (): Promise<EngineState> => ipcRenderer.invoke('engine:getState'),
 
   loadShow: (): Promise<Show | null> => ipcRenderer.invoke('show:load'),
@@ -16,6 +29,14 @@ const api = {
   openShowFile: (): Promise<{ show: Show; filePath: string } | null> => ipcRenderer.invoke('show:open'),
   loadShowDirect: (show: Show): Promise<Show> => ipcRenderer.invoke('show:loadDirect', show),
   getCurrentShow: (): Promise<Show | null> => ipcRenderer.invoke('show:getCurrent'),
+  sessionGet: (): Promise<any> => ipcRenderer.invoke('session:get'),
+  sessionSet: (data: unknown, baseRev: number | null): Promise<{ ok: boolean; rev: number; data?: any }> =>
+    ipcRenderer.invoke('session:set', data, clientId, baseRev),
+  onSession: on<{ data: any; from: string | null; rev: number }>('session:changed'),
+  onReconnect: (_cb: () => void) => () => {},   // IPC doesn't drop
+  onTransportCmd: on<{ cmd: 'play' | 'stop' | 'locate'; frame: number; playing: boolean; from: string | null }>('transport:cmd'),
+  getRemoteServer: (): Promise<RemoteInfo> => ipcRenderer.invoke('remote:get'),
+  setRemoteServer: (enabled: boolean): Promise<RemoteInfo> => ipcRenderer.invoke('remote:set', enabled),
 
   saveConcert: (data: ConcertFile): Promise<string | null> => ipcRenderer.invoke('concert:save', data),
   loadConcert: (): Promise<LoadedConcert | null> => ipcRenderer.invoke('concert:load'),

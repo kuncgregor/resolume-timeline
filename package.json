@@ -9,7 +9,9 @@
     "preview": "electron-vite preview",
     "web": "vite --config web.vite.config.ts",
     "test:ltc": "node scripts/ltc-test.mjs",
-    "postinstall": ""
+    "postinstall": "",
+    "dist": "electron-vite build && electron-builder --mac",
+    "dist:dir": "electron-vite build && electron-builder --mac dir"
   },
   "dependencies": {
     "node-osc": "^9.1.0",
@@ -17,15 +19,60 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.2.1",
     "electron": "^28.1.0",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.0.0",
+    "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "typescript": "^5.3.3",
     "vite": "^5.0.10"
+  },
+  "productName": "Resolume Timeline",
+  "author": "Gregor Kunc",
+  "build": {
+    "appId": "com.gregorkunc.resolume-timeline",
+    "productName": "Resolume Timeline",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "build/icon.png",
+      "identity": null,
+      "hardenedRuntime": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Resolume Timeline reads LTC timecode from an audio input.",
+        "NSLocalNetworkUsageDescription": "Resolume Timeline talks to Resolume Arena and serves the tablet view on the local network."
+      }
+    },
+    "dmg": {
+      "title": "Resolume Timeline"
+    },
+    "afterPack": "build/after-pack.cjs"
   }
 }

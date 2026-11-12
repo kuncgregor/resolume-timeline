@@ -6,6 +6,9 @@ import {
   TC_SNAP_GRIDS, SNAP_GRID_LABEL, snapGridsFor, type SnapGrid, type SnapSettings,
 } from '../grid'
 
+// Tablet view (see TabletAccess): recording and LTC belong to the app on the computer
+const remote: boolean = !!(window as any).timeline?.__remote
+
 interface Props {
   engineState: EngineState
   show: Show | null
@@ -82,7 +85,7 @@ export function TransportBar({
             <span className="chip" title="Internal clock">INT</span>
           )}
           {anyLtcTimeline && (
-            <button className={`chip follow-chip ${followTc ? 'on' : ''}`} onClick={onToggleFollowTc}
+            <button className={`chip follow-chip ${followTc ? 'on' : ''}`} onClick={onToggleFollowTc} disabled={remote}
               title={followTc
                 ? 'Follow TC on: incoming LTC selects the timeline whose TC range it is in (click to turn off)'
                 : 'Follow TC off: LTC only drives the selected timeline (click to switch timelines by timecode)'}
@@ -103,8 +106,8 @@ export function TransportBar({
           ▶{playing && <span className="tbtn-label">PLAY</span>}
         </button>
         {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume */}
-        <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly}
-          title={recordArmed
+        <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly || remote}
+          title={remote ? 'KEYS records on the computer running the app' : recordArmed
             ? 'KEYS armed (auto-key): changes to automated parameters in Resolume are written as keyframes at the playhead'
             : 'KEYS (auto-key): record changes you make in Resolume as keyframes — not a video recording (that is REC ARENA)'}>
           <span className="rec-dot">◆</span><span className="tbtn-label">KEYS</span>
@@ -112,8 +115,8 @@ export function TransportBar({
         {/* Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first) */}
         <button
           className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
-          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec}
-          title={arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
+          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec} disabled={remote}
+          title={remote ? 'Recording in Arena is started on the computer running the app' : arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
             : arenaRec.state === 'starting' ? 'Starting Arena\'s recorder…'
             : arenaRec.armed ? 'Armed: Play jumps to the timeline start and records in Arena from there (LTC: from its start TC) until the timeline end. Click to disarm.'
             : 'Record this timeline in Arena: arm, then Play — the recording starts exactly at the timeline start and stops at its end'}

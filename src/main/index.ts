@@ -1,113 +1,76 @@
-import { ArenaRecorder } from './recorder'
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, powerSaveBlocker } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
+import crypto from 'crypto'
 import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
-import { Transport, smpteToFrames } from './transport'
-import { OscClient } from './osc-client'
-import { ResolumeRest } from './resolume-rest'
-import { Scheduler, type LaneTarget } from './scheduler'
-import type { Show, CueEvent } from '../shared/show'
-import { rv } from '../shared/resolume'
+import { EngineHost, appDataDir } from './engine-host'
+import { WebServer, lanAddresses } from './web-server'
+import type { Show } from '../shared/show'
 
-const transport = new Transport(25)
-const osc = new OscClient('127.0.0.1', 7000)
-const recorder = new ArenaRecorder(osc)
-const rest = new ResolumeRest('127.0.0.1', 8080)
-const scheduler = new Scheduler(transport, osc, rest)
+// One engine per computer: a second launch only brings the running app to the front
+if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0) }
+
+const host = new EngineHost()
 
 let win: BrowserWindow | null = null
-let currentShow: Show | null = null
-let resolumeConnected = false
 
-function safeSend(channel: string, ...args: unknown[]) {
+host.addSink((channel, payload) => {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
-    try { win.webContents.send(channel, ...args) } catch {}
+    try { win.webContents.send(channel, payload) } catch {}
   }
-}
-
-// ── Resolume ping + auto-composition push ─────────────────────────────────────
-
-async function checkResolume() {
-  const ok = await rest.ping()
-  if (ok !== resolumeConnected) {
-    resolumeConnected = ok
-    safeSend('resolume:status', { connected: ok })
-  }
-  if (ok) {
-    const comp = await rest.getComposition()
-    if (comp) {
-      safeSend('resolume:compositionUpdate', comp)
-      scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
-      const tc = (comp as any).tempocontroller?.tempo
-      scheduler.setArenaTempo(tc?.id != null ? { id: tc.id, value: Number(rv(tc, 0)) } : null)
-    }
-  }
-}
-setInterval(checkResolume, 2000)  // also feeds the live state strip in the layer headers
-
-// ── Scheduler tick → UI ───────────────────────────────────────────────────────
-
-scheduler.onEvent((channel, payload) => safeSend(channel, payload))
-
-scheduler.onTick(frame => {
-  safeSend('engine:tick', {
-    frame,
-    playing: transport.playing,
-    fps: transport.fps,
-    showName: currentShow?.name ?? '',
-    resolumeConnected,
-  })
 })
 
-scheduler.start()
-osc.connect()
+// ── IPC: engine calls (same names as the web RPC, see engine-host.ts) ─────────
 
-// ── IPC ───────────────────────────────────────────────────────────────────────
+const ENGINE_CHANNELS: Record<string, string> = {
+  'engine:play': 'play', 'engine:stop': 'stop', 'engine:locate': 'locate', 'engine:getState': 'getState',
+  'record:start': 'recordStart', 'record:stop': 'recordStop',
+  'show:loadDirect': 'loadShowDirect', 'show:getCurrent': 'getCurrentShow',
+  'session:get': 'sessionGet', 'session:set': 'sessionSet',
+  'resolume:getComposition': 'getComposition', 'resolume:getThumbnail': 'getThumbnail',
+  'resolume:getLayerRaw': 'getLayerRaw', 'resolume:getGroupRaw': 'getGroupRaw',
+  'resolume:getClipById': 'getClipById', 'resolume:getClipRaw': 'getClipRaw',
+  'resolume:connect': 'connectResolume',
+  'resolume:triggerClip': 'triggerClip', 'resolume:triggerColumn': 'triggerColumn',
+  'resolume:clearLayer': 'clearLayer', 'resolume:sendOsc': 'sendOsc', 'resolume:selectDeck': 'selectDeck',
+  'resolume:setParamById': 'setParamById', 'resolume:getParamById': 'getParamById',
+  'engine:reenable': 'reenableAutomation', 'engine:setRecordArmed': 'setRecordArmed',
+  'engine:setTargets': 'setTargets', 'cue:manualFire': 'fireCue',
+}
+for (const [channel, method] of Object.entries(ENGINE_CHANNELS)) {
+  ipcMain.handle(channel, (_e, ...args) => host.methods[method](...args))
+}
 
-ipcMain.handle('engine:play', () => { transport.play(); scheduler.notify(); return null })
-ipcMain.handle('engine:stop', () => { transport.stop(); scheduler.notify(); return null })
-ipcMain.handle('engine:locate', (_e, frame: number) => { transport.locate(frame); scheduler.notify(); return null })
-ipcMain.handle('engine:getState', () => ({
-  frame: transport.now(), playing: transport.playing, fps: transport.fps,
-  showName: currentShow?.name ?? '', resolumeConnected,
-}))
+// LTC timecode from the renderer's audio decoder (fire and forget, at frame rate)
+ipcMain.on('ltc:frame', (_e, ltcAbsFrame: number) => { host.methods.sendLtcFrame(ltcAbsFrame) })
+ipcMain.on('ltc:stop', () => { host.methods.sendLtcStop() })
+
+// ── IPC: files (native dialogs) ───────────────────────────────────────────────
+
+const SHOW_FILTER = [{ name: 'Show JSON', extensions: ['json'] }]
 
 ipcMain.handle('show:load', async () => {
-  const { filePaths } = await dialog.showOpenDialog({
-    title: 'Open timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
-  })
+  const { filePaths } = await dialog.showOpenDialog({ title: 'Open timeline', filters: SHOW_FILTER, properties: ['openFile'] })
   if (!filePaths[0]) return null
-  try {
-    const show = JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show
-    currentShow = show
-    osc.connect(show.resolume.host, show.resolume.oscPort)
-    rest.setBase(show.resolume.host, show.resolume.restPort)
-    scheduler.loadShow(show)
-    return show
-  } catch (e) { console.error('show:load', e); return null }
+  try { return host.loadShow(JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show) }
+  catch (e) { console.error('show:load', e); return null }
 })
 
 ipcMain.handle('show:save', async (_e, show: Show) => {
   const { filePath } = await dialog.showSaveDialog({
-    title: 'Save timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }],
-    defaultPath: `${show.name ?? 'show'}.json`,
+    title: 'Save timeline', filters: SHOW_FILTER, defaultPath: `${show.name ?? 'show'}.json`,
   })
   if (!filePath) return null
   writeFileSync(filePath, JSON.stringify(show, null, 2))
-  currentShow = show; scheduler.loadShow(show)
+  host.loadShow(show)
   return filePath
 })
 
 ipcMain.handle('show:open', async () => {
-  const { filePaths } = await dialog.showOpenDialog({
-    title: 'Open timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
-  })
+  const { filePaths } = await dialog.showOpenDialog({ title: 'Open timeline', filters: SHOW_FILTER, properties: ['openFile'] })
   if (!filePaths[0]) return null
-  try {
-    const show = JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show
-    return { show, filePath: filePaths[0] }
-  } catch { return null }
+  try { return { show: JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show, filePath: filePaths[0] } }
+  catch { return null }
 })
 
 ipcMain.handle('concert:save', async (_e, data: any) => {
@@ -137,21 +100,9 @@ ipcMain.handle('concert:load', async () => {
   } catch { return null }
 })
 
-ipcMain.handle('show:loadDirect', (_e, show: Show) => {
-  currentShow = show
-  osc.connect(show.resolume.host, show.resolume.oscPort)
-  rest.setBase(show.resolume.host, show.resolume.restPort)
-  scheduler.loadShow(show)
-  return show
-})
-
-ipcMain.handle('show:getCurrent', () => currentShow)
-
 ipcMain.handle('audio:openFile', async () => {
   const { filePaths, canceled } = await dialog.showOpenDialog({
-    title: 'Open audio file',
-    filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
-    properties: ['openFile'],
+    title: 'Open audio file', filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }], properties: ['openFile'],
   })
   if (canceled || !filePaths[0]) return null
   return loadAudioFile(filePaths[0])
@@ -160,77 +111,43 @@ ipcMain.handle('audio:openFile', async () => {
 // Reload a show's audio track by its saved path (switching shows, restoring autosave)
 ipcMain.handle('audio:readFile', (_e, filePath: string) => loadAudioFile(filePath))
 
-// ── Resolume REST ─────────────────────────────────────────────────────────────
+// ── Tablet access: the UI in a browser on the LAN ─────────────────────────────
+// Off by default (a show network is not always a trusted one); the setting and the access
+// key are kept in remote.json next to the session.
 
-ipcMain.handle('resolume:getComposition', async () => rest.getComposition())
-ipcMain.handle('resolume:getThumbnail', async (_e, layerId: number, clipId: number) =>
-  rest.getThumbnail(layerId, clipId))
-
-ipcMain.handle('resolume:getLayerRaw', (_e, layerIndex: number) =>
-  rest.getJson(`/composition/layers/${layerIndex}`))
-
-ipcMain.handle('resolume:getGroupRaw', (_e, groupIndex: number) =>
-  rest.getJson(`/composition/layergroups/${groupIndex}`))
-
-// By clip id: also reaches a clip of a deck Resolume isn't showing, while it is playing
-// Arena recorder: start resolves once Arena created the file (the timeline starts then)
-ipcMain.handle('record:start', () => recorder.start())
-ipcMain.handle('record:stop', () => { recorder.stop(); return null })
-
-ipcMain.handle('resolume:getClipById', (_e, clipId: number) =>
-  rest.getJson(`/composition/clips/by-id/${clipId}`))
-
-ipcMain.handle('resolume:getClipRaw', (_e, layerIndex: number, clipIndex: number) =>
-  rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`))
-
-ipcMain.handle('resolume:connect', async (_e, host: string, oscPort: number, restPort: number) => {
-  osc.connect(host, oscPort)
-  rest.setBase(host, restPort)
-  scheduler.reconnectWs()
-  const ok = await rest.ping()
-  resolumeConnected = ok
-  safeSend('resolume:status', { connected: ok })
-  if (ok) {
-    const comp = await rest.getComposition()
-    if (comp) safeSend('resolume:compositionUpdate', comp)
+interface RemoteSettings { enabled: boolean; port: number; key: string }
+const REMOTE_FILE = join(appDataDir(), 'remote.json')
+const newKey = () => crypto.randomBytes(16).toString('hex')
+const remote: RemoteSettings = (() => {
+  const defaults = { enabled: false, port: 5180, key: newKey() }
+  let r = defaults
+  try { r = { ...defaults, ...JSON.parse(readFileSync(REMOTE_FILE, 'utf8')) } } catch { /* first start */ }
+  // A short or missing key (older settings, edited file) is replaced
+  if (typeof r.key !== 'string' || r.key.length < 32) {
+    r.key = newKey()
+    try { writeFileSync(REMOTE_FILE, JSON.stringify(r, null, 2)) } catch {}
   }
-  return ok
-})
+  return r
+})()
+const webServer = new WebServer(host, join(__dirname, '../renderer'))
+let remoteError: string | null = null
 
-// ── Resolume OSC actions ──────────────────────────────────────────────────────
+function remoteInfo() {
+  const urls = webServer.running ? lanAddresses().map(ip => `http://${ip}:${remote.port}/?k=${remote.key}`) : []
+  return { enabled: remote.enabled, running: webServer.running, port: remote.port, urls, error: remoteError }
+}
 
-ipcMain.handle('resolume:triggerClip', (_e, layer: number, clip: number) => { osc.connectClip(layer, clip, 40); return null })
-ipcMain.handle('resolume:triggerColumn', (_e, column: number) => { osc.connectColumn(column); return null })
-ipcMain.handle('resolume:clearLayer', (_e, layer: number) => { osc.clearLayer(layer); return null })
-ipcMain.handle('resolume:sendOsc', (_e, address: string, value: number) => { osc.send(address, value); return null })
-ipcMain.handle('resolume:selectDeck', async (_e, index: number) => {
-  const ok = await rest.selectDeck(index)
-  if (ok) scheduler.noteDeckSelected(index)
-  return ok
-})
-ipcMain.handle('resolume:setParamById', (_e, id: number, value: number | string | boolean) => {
-  scheduler.noteSent(id, value)  // inspector fader: the app's own change, not an operator override
-  return rest.setParamById(id, value)
-})
-ipcMain.handle('resolume:getParamById', (_e, id: number) => rest.getParamById(id))
-ipcMain.handle('engine:reenable', (_e, ids?: string[]) => { scheduler.reenable(ids); return null })
-ipcMain.handle('engine:setRecordArmed', (_e, armed: boolean) => { scheduler.setRecordArmed(armed); return null })
-ipcMain.handle('engine:setTargets', (_e, map: Record<string, LaneTarget>) => { scheduler.setTargets(map); return null })
-ipcMain.handle('cue:manualFire', (_e, cue: CueEvent, layer: number) => { scheduler.manualTriggerCue(cue, layer); return null })
+async function applyRemote() {
+  if (remote.enabled && !webServer.running) remoteError = await webServer.start(remote.port, remote.key)
+  if (!remote.enabled) { webServer.stop(); remoteError = null }
+}
 
-// LTC timecode from renderer audio decoder
-ipcMain.on('ltc:frame', (_e, ltcAbsFrame: number) => {
-  if (!currentShow) return
-  const src = currentShow.clock.source
-  if (src !== 'ltc' && src !== 'ltc-a' && src !== 'ltc-b') return
-  const offsetFrame = smpteToFrames(currentShow.clock.offset || '00:00:00:00', transport.fps)
-  const timelineFrame = Math.max(0, ltcAbsFrame - offsetFrame)
-  transport.setLtcFrame(timelineFrame)
-})
-
-ipcMain.on('ltc:stop', () => {
-  transport.clearLtc()
-  scheduler.notify()   // ticks only fire on frame changes: tell the UI the transport stopped
+ipcMain.handle('remote:get', () => remoteInfo())
+ipcMain.handle('remote:set', async (_e, enabled: boolean) => {
+  remote.enabled = enabled
+  try { writeFileSync(REMOTE_FILE, JSON.stringify(remote, null, 2)) } catch {}
+  await applyRemote()
+  return remoteInfo()
 })
 
 // ── Window ────────────────────────────────────────────────────────────────────
@@ -243,6 +160,9 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true, nodeIntegration: false,
+      // The renderer decodes LTC and plays the audio track: it must not be throttled when
+      // the window is hidden behind Resolume
+      backgroundThrottling: false,
     },
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -255,14 +175,31 @@ function createWindow() {
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[RENDERER CRASH] reason:', details.reason, 'exitCode:', details.exitCode)
   })
+  // Show safety: closing the window quits the app, so ask while the timeline runs
+  win.on('close', e => {
+    if (!host.transport.playing || !win) return
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning', buttons: ['Keep running', 'Quit'], defaultId: 0, cancelId: 0,
+      message: 'The timeline is playing.', detail: 'Quitting stops the timeline and everything it sends to Resolume.',
+    })
+    if (choice === 0) e.preventDefault()
+  })
 }
 
+app.on('second-instance', () => {
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.focus()
+})
+
 app.whenReady().then(() => {
+  // macOS App Nap would slow the engine's timers while the app is in the background
+  powerSaveBlocker.start('prevent-app-suspension')
   createWindow()
+  applyRemote()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })
 
-app.on('window-all-closed', () => {
-  scheduler.stop(); osc.close()
-  if (process.platform !== 'darwin') app.quit()
-})
+// One window: closing it quits (the engine has no UI left to show its state)
+app.on('window-all-closed', () => app.quit())
+app.on('will-quit', () => { webServer.stop(); host.dispose() })

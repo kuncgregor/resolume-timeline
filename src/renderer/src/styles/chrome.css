@@ -671,3 +671,26 @@
 .health-item.recording { background: color-mix(in srgb, var(--danger) 28%, var(--bg-lane)); color: var(--text-hi); }
 .health-item.recording b { color: var(--text-hi); }
 .health-rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 35%, transparent); }
+
+/* ── Tablet access (top bar) ─────────────────────────────────────────── */
+.chip.tablet-chip { cursor: pointer; border: none; height: 24px; background: transparent; color: var(--text-dim); box-shadow: inset 0 0 0 1px var(--bg-splitter); }
+.chip.tablet-chip:hover { color: var(--text-hi); }
+.chip.tablet-chip.on { color: var(--next); box-shadow: inset 0 0 0 1px var(--next); }
+.chip.tablet-chip.remote { cursor: default; color: var(--next); box-shadow: inset 0 0 0 1px var(--next); }
+.dropdown.tablet-pop { left: auto; right: 0; width: 300px; padding: 10px 12px; gap: 8px; }
+.tablet-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-label); color: var(--text-hi); }
+.tablet-switch { width: 52px; height: 24px; border: none; cursor: pointer; font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.06em;
+  background: var(--bg-control); color: var(--text-dim); }
+.tablet-switch.on { background: var(--next); color: var(--text-on-live); }
+.tablet-switch:disabled { opacity: 0.6; cursor: default; }
+.tablet-note { margin: 0; font-size: var(--fs-meta); color: var(--text); line-height: 1.45; white-space: normal; }
+.tablet-note.dim { color: var(--text-dim); }
+.tablet-note.danger { color: var(--danger); }
+.tablet-qr { align-self: center; width: 168px; height: 168px; background: #fff; }
+.tablet-qr img { display: block; }
+.tablet-url { text-align: left; padding: 4px 6px; border: none; cursor: copy; background: var(--bg-well); color: var(--text-hi);
+  font-size: var(--fs-meta); word-break: break-all; white-space: normal; }
+.tablet-url:hover { background: var(--bg-gutter); }
+.tablet-copied { font-size: var(--fs-meta); color: var(--live); }
+.chip.follow-chip:disabled { cursor: default; opacity: 0.5; }
+.tbtn:disabled { opacity: 0.4; cursor: default; }

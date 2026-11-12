@@ -1,7 +1,7 @@
 // Crash/refresh recovery: the whole rundown (all open shows, unsaved edits included) is
 // mirrored to localStorage and restored on the next start. Show files on disk are never
 // written by autosave — saving stays an explicit action.
-import type { RundownEntry } from '../../shared/concert'
+import { isValidRundown, type RundownEntry } from '../../shared/concert'
 
 const KEY = 'resolume-timeline:autosave:v1'
 
@@ -11,6 +11,7 @@ export interface AutosaveData {
   activeId: string
   concertFilePath: string | null
   concertDirty: boolean
+  showMode?: boolean
 }
 
 export function loadAutosave(): AutosaveData | null {
@@ -18,10 +19,7 @@ export function loadAutosave(): AutosaveData | null {
     const raw = localStorage.getItem(KEY)
     if (!raw) return null
     const data = JSON.parse(raw) as AutosaveData
-    const valid = Array.isArray(data.rundown) && data.rundown.length > 0 &&
-      data.rundown.every(e => e && typeof e.id === 'string' &&
-        (e.type === 'break' || (e.type === 'show' && Array.isArray(e.show?.tracks))))
-    return valid ? data : null
+    return isValidRundown(data.rundown) ? data : null
   } catch (e) {
     console.warn('[autosave] restore failed', e)
     return null
