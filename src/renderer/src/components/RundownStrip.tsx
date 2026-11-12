@@ -5,6 +5,7 @@ interface Props {
   rundown: RundownEntry[]
   activeId: string
   playing: boolean
+  nowRemaining: string | null    // time to its end, null when empty
   showMode: boolean
   concertDirty: boolean
   activeShowDirty: boolean
@@ -27,11 +28,15 @@ interface Props {
   onReconnect: () => void
 }
 
+const entryMeta = (e: RundownEntry) => e.type === 'break'
+  ? `⏸ Break ${(e as BreakEntry).duration}`
+  : `Timeline${(e as ShowEntry).show.bpm ? ` · ${(e as ShowEntry).show.bpm} BPM` : ''}`
+
 const entryName = (e: RundownEntry) =>
-  e.type === 'show' ? ((e as ShowEntry).show.name || 'Brez imena') : ((e as BreakEntry).label || 'Odmor')
+  e.type === 'show' ? ((e as ShowEntry).show.name || 'Untitled') : ((e as BreakEntry).label || 'Break')
 
 export function RundownStrip({
-  rundown, activeId, playing, showMode, concertDirty, activeShowDirty, concertFilePath,
+  rundown, activeId, playing, nowRemaining, showMode, concertDirty, activeShowDirty, concertFilePath,
   resolumeConnected, resolumeHost,
   onSelect, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
   onOpenConcert, onSaveConcert, onOpenShowFile, onSaveActiveShow, onSettings,
@@ -87,21 +92,21 @@ export function RundownStrip({
       <div className="topbar">
         <div className="topbar-mac-spacer" />
         <span className="topbar-title" title={concertFilePath ?? undefined}>
-          {concertName}{concertDirty && <span className="dirty-dot" title="Neshranjene spremembe">●</span>}
+          {concertName}{concertDirty && <span className="dirty-dot" title="Unsaved changes">●</span>}
         </span>
 
         <div className="topbar-group">
           <div className="menu-anchor">
             <button className="btn ghost" disabled={showMode}
               onClick={e => { e.stopPropagation(); setMenu(m => m === 'add' ? null : 'add') }}>
-              + Dodaj ▾
+              + Add ▾
             </button>
             {menu === 'add' && (
               <div className="dropdown" onClick={e => e.stopPropagation()}>
-                <button className="dropdown-item" onClick={() => { onAddShow(); setMenu(null) }}>Nov show</button>
-                <button className="dropdown-item" onClick={() => { onOpenShowFile(); setMenu(null) }}>Odpri show iz datoteke…</button>
+                <button className="dropdown-item" onClick={() => { onAddShow(); setMenu(null) }}>New timeline</button>
+                <button className="dropdown-item" onClick={() => { onOpenShowFile(); setMenu(null) }}>Open timeline from file…</button>
                 <div className="dropdown-sep" />
-                <button className="dropdown-item" onClick={() => { onAddBreak(); setMenu(null) }}>Odmor</button>
+                <button className="dropdown-item" onClick={() => { onAddBreak(); setMenu(null) }}>Break</button>
               </div>
             )}
           </div>
@@ -114,20 +119,20 @@ export function RundownStrip({
             {menu === 'file' && (
               <div className="dropdown" onClick={e => e.stopPropagation()}>
                 <button className="dropdown-item" disabled={showMode}
-                  onClick={() => { onOpenConcert(); setMenu(null) }}>Odpri concert…</button>
+                  onClick={() => { onOpenConcert(); setMenu(null) }}>Open concert…</button>
                 <button className="dropdown-item" onClick={() => { onSaveConcert(); setMenu(null) }}>
-                  Shrani concert{concertDirty ? ' ●' : ''}
+                  Save concert{concertDirty ? ' ●' : ''}
                 </button>
               </div>
             )}
           </div>
 
           <button className={`btn ${activeShowDirty ? '' : 'ghost'}`} onClick={onSaveActiveShow}
-            title="Shrani aktivni show v datoteko">
-            Shrani show{activeShowDirty && <span className="dirty-dot">●</span>}
+            title="Save the active timeline to a file">
+            Save timeline{activeShowDirty && <span className="dirty-dot">●</span>}
           </button>
 
-          <button className="btn ghost" onClick={onSettings} disabled={showMode} title="Nastavitve projekta">⚙</button>
+          <button className="btn ghost" onClick={onSettings} disabled={showMode} title="Timeline settings">⚙</button>
         </div>
 
         <div className="spacer" />
@@ -136,16 +141,16 @@ export function RundownStrip({
           className={`mode-switch ${showMode ? 'show' : 'setup'}`}
           onClick={onToggleShowMode}
           title={showMode
-            ? 'SHOW: urejanje je zaklenjeno. Klikni za SETUP.'
-            : 'SETUP: urejanje dovoljeno. Klikni za SHOW (zaklene urejanje).'}
+            ? 'SHOW: editing is locked. Click for SETUP.'
+            : 'SETUP: editing allowed. Click for SHOW (locks editing).'}
         >
           <span className={showMode ? '' : 'active'}>Setup</span>
           <span className={showMode ? 'active' : ''}>Show</span>
         </button>
 
         <button className={`chip ${resolumeConnected ? 'live' : 'danger blink'} conn-chip`} onClick={onReconnect}
-          title={resolumeConnected ? `Povezano z Resolume (${resolumeHost}). Klikni za ponovno povezavo.` : 'Resolume ni dosegljiv. Klikni za ponovni poskus.'}>
-          {resolumeConnected ? `● Resolume ${resolumeHost}` : '✕ Resolume ni povezan'}
+          title={resolumeConnected ? `Connected to Resolume (${resolumeHost}). Click to reconnect.` : 'Resolume is unreachable. Click to retry.'}>
+          {resolumeConnected ? `● Resolume ${resolumeHost}` : '✕ Resolume not connected'}
         </button>
       </div>
 
@@ -180,7 +185,7 @@ export function RundownStrip({
                       {isActive && !isLive && <span className="chip">Now</span>}
                       {isNext && <span className="chip next">▷ Next</span>}
                     </div>
-                    <div className="rd-name" title={entryName(entry)}>{entryName(entry)}</div>
+                    <div className="rd-name" title={`${entryName(entry)}${showMode ? '' : ' — double-click to rename'}`}>{entryName(entry)}</div>
                     <div className="rd-meta mono">
                       {entry.type === 'show'
                         ? <>{(entry as ShowEntry).show.clock.offset || '00:00:00:00'}{(entry as ShowEntry).show.bpm ? ` · ${(entry as ShowEntry).show.bpm} BPM` : ''}</>
@@ -189,15 +194,15 @@ export function RundownStrip({
                   </div>
                   {!showMode && (
                     <div className={`rd-controls${confirmDeleteId === entry.id ? ' confirming' : ''}`}>
-                      <button className="rd-ctl" title="Uredi" onClick={e => { e.stopPropagation(); onEdit(entry.id) }}>✎</button>
+                      <button className="rd-ctl" title="Edit" onClick={e => { e.stopPropagation(); onEdit(entry.id) }}>✎</button>
                       {confirmDeleteId === entry.id ? (
                         <button className="rd-ctl armed"
-                          title={dirty ? 'Show ima neshranjene spremembe' : 'Odstrani iz rundowna'}
+                          title={dirty ? 'Timeline has unsaved changes' : 'Remove from rundown'}
                           onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); onDelete(entry.id) }}>
-                          {dirty ? 'Izbriši (neshranjeno)?' : 'Izbriši?'}
+                          {dirty ? 'Delete (unsaved)?' : 'Delete?'}
                         </button>
                       ) : (
-                        <button className="rd-ctl" title="Odstrani" onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}>✕</button>
+                        <button className="rd-ctl" title="Remove" onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}>✕</button>
                       )}
                     </div>
                   )}
@@ -208,22 +213,36 @@ export function RundownStrip({
           })}
         </div>
 
+        {/* Now → Next → GO: what is running, what GO will load, and the button itself */}
         <div className="now-next">
-          <div className="nn-lines">
-            <div className="nn-line">
+          <button className="nn-back" onClick={() => onGo(-1)} disabled={activeIdx <= 0}
+            title={activeIdx > 0 ? `Back to: ${entryName(rundown[activeIdx - 1])}` : 'This is the first entry'}>◀</button>
+          <div className={`nn-card now ${playing ? 'live' : ''}`}>
+            <div className="nn-head">
               <span className="nn-label">Now</span>
-              <span className="nn-name now" title={active ? entryName(active) : ''}>{active ? entryName(active) : '—'}</span>
+              {active && <span className="nn-num mono">{String(activeIdx + 1).padStart(2, '0')}</span>}
+              <span className={`nn-state ${playing ? 'live' : ''}`}>{playing ? '▶ Live' : '■ Stopped'}</span>
             </div>
-            <div className="nn-line">
-              <span className="nn-label next">Next</span>
-              <span className="nn-name next" title={next ? entryName(next) : ''}>{next ? entryName(next) : 'konec rundowna'}</span>
+            <div className="nn-name" title={active ? `${entryName(active)}${showMode ? '' : ' — double-click to rename'}` : ''}
+              onDoubleClick={() => { if (active && !showMode) onEdit(active.id) }}>{active ? entryName(active) : '—'}</div>
+            <div className="nn-sub mono">
+              {active?.type === 'break' ? `Break · ${(active as BreakEntry).duration}`
+                : nowRemaining ? <><span className="nn-remain">−{nowRemaining}</span> to end</> : 'Empty timeline'}
             </div>
           </div>
-          <button className="nn-prev" onClick={() => onGo(-1)} disabled={activeIdx <= 0}
-            title="Nazaj na prejšnji vnos">◀</button>
+          <div className="nn-arrow" aria-hidden>→</div>
+          <div className={`nn-card next ${next ? '' : 'empty'}`}>
+            <div className="nn-head">
+              <span className="nn-label">Next</span>
+              {next && <span className="nn-num mono">{String(activeIdx + 2).padStart(2, '0')}</span>}
+            </div>
+            <div className="nn-name" title={next ? entryName(next) : ''}>{next ? entryName(next) : 'End of rundown'}</div>
+            <div className="nn-sub">{next ? entryMeta(next) : 'No more entries'}</div>
+          </div>
           <button className="go-btn" onClick={() => onGo(1)} disabled={!next}
-            title="GO: preklopi na naslednji vnos (Enter)">
-            GO <span className="go-arrow">▶</span>
+            title={next ? `GO: load “${entryName(next)}” (Enter)` : 'No next entry'}>
+            <span className="go-word">GO</span>
+            <span className="go-hint">{next ? `load ${String(activeIdx + 2).padStart(2, '0')}` : 'end'}</span>
           </button>
         </div>
       </div>

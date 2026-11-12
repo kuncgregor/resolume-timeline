@@ -29,7 +29,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
     try {
       const comp = await api.getComposition()
       if (!comp) {
-        setError('Resolume ni dosegljiv.\nPreferences → Webserver → Enable')
+        setError('Resolume is unreachable.\nPreferences → Webserver → Enable')
       } else {
         setComposition(comp)
         // Collapse all by default when composition first loads
@@ -85,21 +85,21 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
     <div className="clip-browser">
       <div className="browser-header">
         <span className="browser-title">Clips</span>
-        <button className="btn ghost browser-icon" onClick={refresh} disabled={loading} title="Osveži iz Resolume">
+        <button className="btn ghost browser-icon" onClick={refresh} disabled={loading} title="Refresh from Resolume">
           {loading ? '…' : '↺'}
         </button>
-        <button className="btn ghost browser-icon" onClick={onClose} title="Zapri">✕</button>
+        <button className="btn ghost browser-icon" onClick={onClose} title="Close">✕</button>
       </div>
 
       <div className="browser-search">
         <input
-          className="browser-search-inp" type="search" placeholder="Išči clip…"
+          className="browser-search-inp" type="search" placeholder="Search clips…"
           value={query} onChange={e => setQuery(e.target.value)}
         />
       </div>
 
       <div className="browser-body">
-        {loading && <div className="browser-msg">Nalagam…</div>}
+        {loading && <div className="browser-msg">Loading…</div>}
         {!loading && error && <div className="browser-msg error">{error}</div>}
 
         {!loading && !error && composition && (composition.layers ?? []).map((layer, li) => {
@@ -120,7 +120,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
               <button
                 className="browser-layer-row"
                 onClick={() => toggleCollapse(layer.id)}
-                title={hasTrack ? 'Layer je v timelineu' : 'Layer ni v timelineu'}
+                title={hasTrack ? 'Layer is in the timeline' : 'Layer is not in the timeline'}
               >
                 <span className="browser-arrow">{isCollapsed ? '▸' : '▾'}</span>
                 <span className="browser-layer-num">L{li + 1}</span>
@@ -131,7 +131,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
 
               {!isCollapsed && (
                 <div>
-                  {clips.length === 0 && <div className="browser-msg">Ni clipov</div>}
+                  {clips.length === 0 && <div className="browser-msg">No clips</div>}
                   {clips.map(({ clip, ci }) => {
                     const clipName = rv(clip.name, '')
                     const thumb = thumbnails[`${layer.id}-${clip.id}`]
@@ -144,7 +144,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
                         draggable={canDrag}
                         onDragStart={e => handleDragStart(e, layer, clip, li, ci)}
                         onDragEnd={onDragEnd}
-                        title={canDrag ? `Povleci na L${li + 1} v timelineu` : `Layer L${li + 1} ni v timelineu — najprej dodaj stezo za ta layer`}
+                        title={canDrag ? `Drag onto L${li + 1} in the timeline` : `Layer L${li + 1} is not in the timeline — add a lane for this layer first`}
                       >
                         <div className="clip-row-thumb">
                           {thumb

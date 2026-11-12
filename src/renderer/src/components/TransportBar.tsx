@@ -42,29 +42,36 @@ export function TransportBar({
       <div className="tc-block">
         <div className={`tc-display ${playing ? 'running' : ''}`}>{tc}</div>
         <div className="tc-badges">
-          <span className="fps-badge" title="Frame rate projekta">{fps}</span>
+          <span className="fps-badge" title="Project frame rate">{fps}</span>
           {isLtc ? (
             ltcActive
-              ? <span className="chip live" title="Timecode prihaja">● {ltcName}</span>
-              : <span className="chip warn blink" title="Ni LTC signala">○ {ltcName} ni signala</span>
+              ? <span className="chip live" title="Receiving timecode">● {ltcName}</span>
+              : <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
           ) : (
-            <span className="chip" title="Interna ura">INT</span>
+            <span className="chip" title="Internal clock">INT</span>
           )}
         </div>
       </div>
 
       <div className="transport-buttons">
-        <button className="tbtn" onClick={() => onLocate(0)} title="Na začetek (Home)">⏮</button>
+        <button className="tbtn" onClick={() => onLocate(0)} title="Go to start (Home)">⏮</button>
         <button className={`tbtn ${!playing ? 'stopped' : ''}`} onClick={onStop} title="Stop (Space)">■</button>
         <button className={`tbtn play ${playing ? 'on-live' : ''}`} onClick={playing ? onStop : onPlay}
-          title={playing ? 'Predvaja — Space za stop' : 'Predvajaj (Space)'}>
+          title={playing ? 'Playing — Space to stop' : 'Play (Space)'}>
           ▶{playing && <span className="tbtn-label">PLAY</span>}
+        </button>
+        {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume */}
+        <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly}
+          title={recordArmed
+            ? 'REC armed: changes to automated parameters in Resolume are written as keyframes at the playhead'
+            : 'REC: record changes from Resolume as keyframes (auto-key)'}>
+          <span className="rec-dot">●</span><span className="tbtn-label">REC</span>
         </button>
       </div>
 
-      <div className={`remain ${remainClass}`} title="Čas do konca zadnjega clipa ali avdia">
+      <div className={`remain ${remainClass}`} title="Time until the end of the last clip or audio">
         <span className="remain-label">
-          {remainClass === 'danger' ? '!! Konec' : remainClass === 'warn' ? '▲ Konec' : 'Do konca'}
+          {remainClass === 'danger' ? '!! End' : remainClass === 'warn' ? '▲ End' : 'Remaining'}
         </span>
         <span className="remain-value mono">
           {endFrame === 0 ? '--:--:--' : `−${framesToSmpte(remaining, fps)}`}
@@ -72,7 +79,7 @@ export function TransportBar({
       </div>
 
       {show?.bpm != null && (
-        <div className="bpm-block" title="BPM (mreža na časovnici)">
+        <div className="bpm-block" title="BPM (timeline grid)">
           <span className="remain-label">BPM</span>
           <span className="bpm-value mono">{show.bpm}</span>
         </div>
@@ -82,20 +89,14 @@ export function TransportBar({
 
       {overrideCount > 0 && (
         <button className="btn reenable-btn" onClick={onReenable}
-          title="Operater je v Resolume premaknil avtomatizirane parametre; te steze ne pošiljajo. Klikni, da jih vrneš časovnici.">
+          title="The operator moved automated parameters in Resolume, so those lanes are not sending. Click to hand them back to the timeline.">
           ↺ Re-enable {overrideCount}
         </button>
       )}
-      <button className={`btn rec-btn ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly}
-        title={recordArmed
-          ? 'REC: spremembe avtomatiziranih parametrov v Resolume se zapišejo kot keyframe na playhead'
-          : 'Vklopi snemanje keyframov iz Resolume (auto-key)'}>
-        ● Rec
-      </button>
 
       <button className={`btn toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
-        title="Pokaži ali skrij Resolume clipe">
-        Clipi
+        title="Show or hide Resolume clips">
+        Clips
       </button>
     </div>
   )

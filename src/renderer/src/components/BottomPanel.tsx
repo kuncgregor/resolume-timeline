@@ -104,8 +104,8 @@ export function BottomPanel({
       onMouseDown={e => { resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
     />
   )
-  const roChip = readOnly && <span className="chip">SHOW · samo branje</span>
-  const closeBtn = <button className="btn ghost bp-icon" onClick={onClose} title="Zapri">✕</button>
+  const roChip = readOnly && <span className="chip">SHOW · read-only</span>
+  const closeBtn = <button className="btn ghost bp-icon" onClick={onClose} title="Close">✕</button>
   const title = (t: LayerTrack, sub: string) => (
     <div className="bp-title">
       <span className="bp-stripe" style={{ background: t.color ?? 'var(--text-faint)' }} />
@@ -144,7 +144,7 @@ export function BottomPanel({
             <span className="bp-stripe" style={{ background: group.color ?? 'var(--text-faint)' }} />
             <span className="bp-layer">{group.name}</span>
             <span className="bp-sep">›</span>
-            <span className="bp-clip">Parametri skupine</span>
+            <span className="bp-clip">Group parameters</span>
           </div>
           <div className="bp-actions">{roChip}{closeBtn}</div>
         </div>
@@ -172,12 +172,12 @@ export function BottomPanel({
       <div className="bottom-panel" style={{ height }}>
         {handle}
         <div className="bp-header">
-          {title(track, `${track.clips.length} clipov`)}
+          {title(track, `${track.clips.length} ${track.clips.length === 1 ? 'clip' : 'clips'}`)}
           <div className="bp-actions">{roChip}{closeBtn}</div>
         </div>
         <div className="bp-body">
           {track.clips.length === 0 ? (
-            <div className="bp-empty">Ni clipov v tem layerju. Povleci clip iz brskalnika.</div>
+            <div className="bp-empty">No clips on this layer. Drag a clip from the browser.</div>
           ) : (
             <div className="bp-cue-list">
               {track.clips.map((c, ci) => {
@@ -191,7 +191,7 @@ export function BottomPanel({
                     <span className="bp-cue-name" title={c.clipName}>{c.clipName || `Clip ${c.clipIndex}`}</span>
                     <span className="bp-cue-time mono">{c.time}</span>
                     <span className="bp-cue-dur mono">{durF === 0 ? 'TRIGGER' : c.duration}</span>
-                    <button className="btn bp-fire bp-icon" title="Sproži clip v Resolume"
+                    <button className="btn bp-fire bp-icon" title="Fire the clip in Resolume"
                       onClick={e => { e.stopPropagation(); fire(track, c) }}>▶</button>
                   </div>
                 )
@@ -206,7 +206,7 @@ export function BottomPanel({
   if (!track || !cue || trackIdx == null || cueIdx == null) {
     return (
       <div className="bottom-panel empty">
-        <span>Klikni na layer ali clip v timelineu</span>
+        <span>Click a layer or clip in the timeline</span>
         {roChip}
       </div>
     )
@@ -240,8 +240,8 @@ export function BottomPanel({
             disabled={readOnly}
             onClick={() => { if (delArmed) onDeleteCue(trackIdx, cueIdx); else setDelArmed(true) }}
             onMouseLeave={() => setDelArmed(false)}
-            title="Izbriši cue (dva klika)"
-          >{delArmed ? 'Potrdi brisanje' : 'Izbriši'}</button>
+            title="Delete cue (two clicks)"
+          >{delArmed ? 'Confirm delete' : 'Delete'}</button>
           {closeBtn}
         </div>
       </div>
@@ -265,20 +265,20 @@ export function BottomPanel({
               <span className="bp-label">Duration</span>
               <span className="bp-val mono bp-num">{cue.duration}</span>
               <button className="btn ghost bp-icon" disabled={readOnly || durFrame === 0}
-                onClick={() => setDur(durFrame - 1)} title="−1 sličica">−</button>
+                onClick={() => setDur(durFrame - 1)} title="−1 frame">−</button>
               <input type="range" className="bp-slider bp-dur-slider" min={0} max={durMax} value={durFrame}
                 style={pct(durFrame, 0, durMax)} disabled={readOnly}
                 onChange={e => setDur(Number(e.target.value))} />
               <button className="btn ghost bp-icon" disabled={readOnly}
-                onClick={() => setDur(durFrame + 1)} title="+1 sličica">+</button>
-              {durFrame === 0 && <span className="chip next" title="Trajanje 0: samo sproži, brez samodejnega izklopa">Trigger</span>}
+                onClick={() => setDur(durFrame + 1)} title="+1 frame">+</button>
+              {durFrame === 0 && <span className="chip next" title="Duration 0: trigger only, no automatic release">Trigger</span>}
             </div>
             <div className="bp-row">
               <span className="bp-label">Release</span>
               <label className="bp-toggle">
                 <input type="checkbox" checked={cue.release} disabled={readOnly}
                   onChange={e => onUpdateCue(trackIdx, cueIdx, { release: e.target.checked })} />
-                <span>{cue.release ? 'Vklopljeno' : 'Izklopljeno'}</span>
+                <span>{cue.release ? 'On' : 'Off'}</span>
               </label>
             </div>
             <div className="bp-row bp-row-action">
@@ -321,8 +321,8 @@ function ParamList({ scope, params, live, loading, lanes, frame, fps, readOnly, 
   const [held, setHeld] = useState<Record<number, Real>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  if (loading) return <div className="bp-empty">Nalagam…</div>
-  if (!params.length) return <div className="bp-empty">Ni parametrov. Resolume mora biti odprt.</div>
+  if (loading) return <div className="bp-empty">Loading…</div>
+  if (!params.length) return <div className="bp-empty">No parameters. Resolume must be running.</div>
 
   const groups = new Map<string, ParamInfo[]>()
   for (const p of params) groups.set(p.group, [...(groups.get(p.group) ?? []), p])
@@ -390,17 +390,17 @@ function ParamList({ scope, params, live, loading, lanes, frame, fps, readOnly, 
                   <span className="bp-keynav">
                     {lane && (
                       <button className="btn ghost bp-icon" disabled={prevKey === undefined}
-                        onClick={() => prevKey !== undefined && onSeek(prevKey)} title="Prejšnji keyframe">◀</button>
+                        onClick={() => prevKey !== undefined && onSeek(prevKey)} title="Previous keyframe">◀</button>
                     )}
                     <button className={`btn ghost bp-icon bp-auto ${lane ? 'on' : ''} ${onKey ? 'key' : ''}`}
                       disabled={readOnly}
                       onClick={() => onToggleKey(p, val as Real)}
-                      title={!lane ? 'Animiraj: ustvari stezo in keyframe na playheadu'
-                        : onKey ? 'Odstrani keyframe na playheadu' : 'Dodaj keyframe na playheadu'}
+                      title={!lane ? 'Animate: create a lane and a keyframe at the playhead'
+                        : onKey ? 'Remove the keyframe at the playhead' : 'Add a keyframe at the playhead'}
                     >{onKey ? '◆' : '◇'}</button>
                     {lane && (
                       <button className="btn ghost bp-icon" disabled={nextKey === undefined}
-                        onClick={() => nextKey !== undefined && onSeek(nextKey)} title="Naslednji keyframe">▶</button>
+                        onClick={() => nextKey !== undefined && onSeek(nextKey)} title="Next keyframe">▶</button>
                     )}
                   </span>
                 </div>

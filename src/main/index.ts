@@ -67,7 +67,7 @@ ipcMain.handle('engine:getState', () => ({
 
 ipcMain.handle('show:load', async () => {
   const { filePaths } = await dialog.showOpenDialog({
-    title: 'Open Show', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
+    title: 'Open timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
   })
   if (!filePaths[0]) return null
   try {
@@ -82,7 +82,7 @@ ipcMain.handle('show:load', async () => {
 
 ipcMain.handle('show:save', async (_e, show: Show) => {
   const { filePath } = await dialog.showSaveDialog({
-    title: 'Save Show', filters: [{ name: 'Show JSON', extensions: ['json'] }],
+    title: 'Save timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }],
     defaultPath: `${show.name ?? 'show'}.json`,
   })
   if (!filePath) return null
@@ -93,7 +93,7 @@ ipcMain.handle('show:save', async (_e, show: Show) => {
 
 ipcMain.handle('show:open', async () => {
   const { filePaths } = await dialog.showOpenDialog({
-    title: 'Open Show', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
+    title: 'Open timeline', filters: [{ name: 'Show JSON', extensions: ['json'] }], properties: ['openFile'],
   })
   if (!filePaths[0]) return null
   try {
@@ -104,7 +104,7 @@ ipcMain.handle('show:open', async () => {
 
 ipcMain.handle('concert:save', async (_e, data: any) => {
   const { filePath } = await dialog.showSaveDialog({
-    title: 'Shrani concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }],
+    title: 'Save concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }],
     defaultPath: `${data.name ?? 'concert'}.concert.json`,
   })
   if (!filePath) return null
@@ -114,7 +114,7 @@ ipcMain.handle('concert:save', async (_e, data: any) => {
 
 ipcMain.handle('concert:load', async () => {
   const { filePaths } = await dialog.showOpenDialog({
-    title: 'Odpri concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }], properties: ['openFile'],
+    title: 'Open concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }], properties: ['openFile'],
   })
   if (!filePaths[0]) return null
   try {
@@ -141,7 +141,7 @@ ipcMain.handle('show:getCurrent', () => currentShow)
 
 ipcMain.handle('audio:openFile', async () => {
   const { filePaths, canceled } = await dialog.showOpenDialog({
-    title: 'Odpri avdio datoteko',
+    title: 'Open audio file',
     filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
     properties: ['openFile'],
   })

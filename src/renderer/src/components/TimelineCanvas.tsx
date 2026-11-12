@@ -1441,9 +1441,9 @@ export function TimelineCanvas({
             <div className="ctx-title" title={laneTitle(auto)}>{laneTitle(auto)}</div>
             <div className="ctx-hint">{kf.time}{kind === 'range' && range.min !== undefined && range.max !== undefined
               ? ` · ${formatValue('range', 0, range)} … ${formatValue('range', 1, range, undefined, range.suffix)}` : ''}
-              {n > 1 ? ` · izbranih ${n}` : ''}</div>
+              {n > 1 ? ` · ${n} selected` : ''}</div>
             <div className="ctx-row">
-              <label>Vrednost</label>
+              <label>Value</label>
               {kind === 'range' && <>
                 <input
                   type="text" inputMode="decimal"
@@ -1471,7 +1471,7 @@ export function TimelineCanvas({
                 >
                   {opts.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
-              ) : <span className="ctx-unit">{kf.option ?? '—'} (opcije neznane)</span>)}
+              ) : <span className="ctx-unit">{kf.option ?? '—'} (options unknown)</span>)}
               {kind === 'boolean' && (
                 <div className="ctx-seg">
                   {[0, 1].map(v => (
@@ -1483,11 +1483,11 @@ export function TimelineCanvas({
               )}
             </div>
             <div className="ctx-row wrap">
-              <label>Oblika</label>
+              <label>Curve</label>
               <div className="ctx-seg">
                 {(kind === 'range' ? BASIC_CURVES : (['hold'] as const)).map(c => (
                   <button key={c} className={`ctx-seg-btn${c === curCurve ? ' on' : ''}`}
-                    title={kind === 'range' ? 'Tipka E kroži med oblikami' : 'Diskretni parametri vedno skočijo'}
+                    title={kind === 'range' ? 'Press E to cycle through curves' : 'Discrete parameters always jump'}
                     onClick={() => setAll(curveTargets, { ease: c })}
                   ><span className="ctx-glyph">{BASIC_GLYPH[c]}</span>{curveLabel(c)}</button>
                 ))}
@@ -1511,7 +1511,7 @@ export function TimelineCanvas({
                 </div>
               </div>
             )}
-            {kind === 'range' && <button className="ctx-btn" onClick={commitReal}>Potrdi</button>}
+            {kind === 'range' && <button className="ctx-btn" onClick={commitReal}>Apply</button>}
             <div className="ctx-divider" />
             <button className="ctx-btn danger" onClick={() => {
               const del = targets.length ? targets : [hit]
@@ -1519,8 +1519,8 @@ export function TimelineCanvas({
               else onDeleteKeyframes(del)
               updateSel(selAfterDelete(selRef.current, del))
               close()
-            }}>{n > 1 ? `Izbriši izbrane (${n})` : 'Izbriši keyframe'}</button>
-            <button className="ctx-btn dim" onClick={close}>Prekliči</button>
+            }}>{n > 1 ? `Delete selected (${n})` : 'Delete keyframe'}</button>
+            <button className="ctx-btn dim" onClick={close}>Cancel</button>
           </div>
         )
       })()}
@@ -1531,9 +1531,9 @@ export function TimelineCanvas({
           style={clampPos(clipColorPicker.x, clipColorPicker.y, 220, 190)}
           onMouseDown={e => e.stopPropagation()}
         >
-          <div className="ctx-title">Barva clipa</div>
+          <div className="ctx-title">Clip colour</div>
           <div className="ccp-grid">{TAG_COLORS.map(swatch)}</div>
-          <div className="ccp-label">Nasičene</div>
+          <div className="ccp-label">Saturated</div>
           <div className="ccp-grid">{SATURATED_COLORS.map(swatch)}</div>
           <div className="ctx-divider" />
           <button
@@ -1542,8 +1542,8 @@ export function TimelineCanvas({
               onUpdateCue(clipColorPicker.trackIdx, clipColorPicker.cueIdx, { color: undefined })
               setClipColorPicker(null)
             }}
-          >Ponastavi (barva layerja)</button>
-          <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Prekliči</button>
+          >Reset (layer colour)</button>
+          <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Cancel</button>
         </div>
       )}
     </div>
@@ -1793,7 +1793,7 @@ function drawAudioLane(
     ctx.font = `11px ${T.fontUi}`
     ctx.textBaseline = 'middle'
     ctx.textAlign = 'left'
-    ctx.fillText('♪  Naloži avdio — klikni gumb v levem panelu', 12, laneY + laneH / 2)
+    ctx.fillText('♪  Load audio — click the button in the left panel', 12, laneY + laneH / 2)
     return
   }
 

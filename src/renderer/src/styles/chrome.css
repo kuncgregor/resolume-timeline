@@ -106,37 +106,58 @@
 .rd-ctl.armed { background: var(--danger-fill); color: var(--text-hi); font-weight: 700; }
 .rd-drop-indicator { width: 3px; background: var(--select); flex-shrink: 0; }
 
-/* NOW / NEXT + GO (console style: current and next always both visible) */
+/* NOW → NEXT → GO: left to right in the order things happen. NOW is the running entry (mint
+   while playing), NEXT is what GO will load (blue), GO sits right next to what it acts on. */
 .now-next {
-  width: 420px; flex-shrink: 0; display: flex; align-items: stretch; gap: 1px;
-  background: var(--bg-gutter);
+  flex-shrink: 0; display: flex; align-items: stretch; gap: 1px; background: var(--bg-gutter);
 }
-.nn-lines {
-  flex: 1; min-width: 0; padding: 6px 12px; background: var(--bg-header);
-  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+.nn-back {
+  width: 28px; border: none; background: var(--bg-header); color: var(--text-dim); cursor: pointer; font-size: 11px;
 }
-.nn-line { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.nn-back:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
+.nn-back:disabled { color: var(--text-faint); cursor: default; }
+
+.nn-card {
+  min-width: 0; padding: 5px 12px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  background: var(--bg-header);
+}
+.nn-card.now { width: 280px; box-shadow: inset 3px 0 0 var(--text-dim); }
+.nn-card.now.live { box-shadow: inset 3px 0 0 var(--live); background: color-mix(in srgb, var(--live-deep) 45%, var(--bg-header)); }
+.nn-card.next { width: 220px; box-shadow: inset 3px 0 0 var(--next); }
+.nn-card.next.empty { box-shadow: inset 3px 0 0 var(--bg-splitter); }
+
+.nn-head { display: flex; align-items: center; gap: 6px; height: 14px; }
 .nn-label {
-  width: 36px; flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--text-dim);
+  font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim);
 }
-.nn-label.next { color: var(--next); }
-.nn-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nn-name.now { font-size: var(--fs-cue-live); font-weight: 700; color: var(--text-hi); }
-.nn-name.next { font-size: var(--fs-label); color: var(--next); }
-.nn-prev {
-  width: 36px; border: none; background: var(--bg-control); color: var(--text); cursor: pointer; font-size: 13px;
+.nn-card.next .nn-label { color: var(--next); }
+.nn-num { font-size: 10px; color: var(--text-faint); }
+.nn-state {
+  margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-dim);
 }
-.nn-prev:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
-.nn-prev:disabled { color: var(--text-faint); cursor: default; }
+.nn-state.live { color: var(--live); }
+
+.nn-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-hi); }
+.nn-card.now .nn-name { font-size: var(--fs-cue-live); line-height: 1.15; }
+.nn-card.next .nn-name { font-size: var(--fs-label); color: var(--text); }
+.nn-card.next.empty .nn-name { color: var(--text-faint); font-weight: 400; font-style: italic; }
+.nn-sub { font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nn-remain { color: var(--text); }
+
+.nn-arrow {
+  width: 22px; display: flex; align-items: center; justify-content: center;
+  background: var(--bg-header); color: var(--text-faint); font-size: 14px;
+}
+
 .go-btn {
-  width: 120px; border: none; cursor: pointer;
+  width: 104px; border: none; cursor: pointer;
   background: var(--bg-control); color: var(--live);
   box-shadow: inset 0 0 0 2px var(--live);
-  font-size: 22px; font-weight: 800; letter-spacing: 0.08em;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
 }
-.go-btn .go-arrow { font-size: 14px; }
+.go-word { font-size: 22px; font-weight: 800; letter-spacing: 0.1em; line-height: 1; }
+.go-hint { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
 .go-btn:hover:not(:disabled) { background: var(--live-deep); }
 .go-btn:active:not(:disabled) { background: var(--live); color: var(--text-on-live); }
 .go-btn:disabled { color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--bg-splitter); cursor: default; }
@@ -438,11 +459,15 @@
 .pp-group.scope-layer .pp-group-name { color: var(--scope-layer); }
 .pp-group.scope-clip .pp-group-name { color: var(--scope-clip); }
 
-/* Auto-key REC and automation re-enable (transport, right side) */
-.transport-bar > .btn.rec-btn, .transport-bar > .btn.reenable-btn { height: auto; padding: 0 14px; }
-.btn.rec-btn { color: var(--text-dim); }
-.btn.rec-btn.armed { background: var(--danger-fill); color: var(--text-hi); animation: rec-pulse 1.2s ease-in-out infinite; }
+/* REC in the transport group; re-enable on the right */
+.tbtn.rec { width: 72px; color: var(--text-dim); }
+.tbtn.rec .rec-dot { color: var(--danger); font-size: 14px; }
+.tbtn.rec:hover:not(:disabled) .tbtn-label { color: var(--text-hi); }
+.tbtn.rec.armed { background: var(--danger-fill); color: var(--text-hi); animation: rec-pulse 1.2s ease-in-out infinite; }
+.tbtn.rec.armed .rec-dot { color: var(--text-hi); }
+.tbtn.rec:disabled { opacity: 0.4; cursor: default; }
 @keyframes rec-pulse { 50% { background: #8e1e18; } }
+.transport-bar > .btn.reenable-btn { height: auto; padding: 0 14px; }
 .btn.reenable-btn { color: var(--loop); box-shadow: inset 0 0 0 1px var(--loop); }
 .btn.reenable-btn:hover { background: var(--loop); color: var(--text-on-live); }
 /* Armed REC: red frame around the timeline like Blender/Resolve auto-key */

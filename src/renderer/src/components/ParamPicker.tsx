@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ParamRef, LaneKind } from '../../../shared/show'
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 
-// Parameter picker popover (spec: "Izbirnik parametra"). Lists every automatable parameter of
+// Parameter picker popover (spec: "Parameter picker"). Lists every automatable parameter of
 // one layer and of the clips that layer's timeline uses, grouped like Resolume shows them.
 // Rendered through a portal: the lane headers sit inside a transformed container, which would
 // otherwise turn position: fixed into "fixed to that container".
@@ -139,18 +139,18 @@ export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, 
       onDoubleClick={e => e.stopPropagation()} onKeyDown={onKey}
     >
       <div className="pp-head">
-        <span className="pp-title">{title ?? (mode === 'add' ? 'Dodaj avtomacijo' : 'Preusmeri stezo')}</span>
-        <button className="pp-close" title="Zapri (Esc)" onMouseDown={e => e.preventDefault()} onClick={onClose}>✕</button>
+        <span className="pp-title">{title ?? (mode === 'add' ? 'Add automation' : 'Retarget lane')}</span>
+        <button className="pp-close" title="Close (Esc)" onMouseDown={e => e.preventDefault()} onClick={onClose}>✕</button>
       </div>
       <input
-        className="pp-search" autoFocus placeholder="Išči parameter… (npr. blur x)"
+        className="pp-search" autoFocus placeholder="Search parameters… (e.g. blur x)"
         value={query} onChange={e => setQuery(e.target.value)} spellCheck={false}
       />
       <div className="pp-list" ref={listRef}>
         {!layerJson ? (
-          <div className="pp-empty">Resolume ni povezan — parametrov ni mogoče prebrati</div>
+          <div className="pp-empty">Resolume not connected — parameters cannot be read</div>
         ) : visible.length === 0 ? (
-          <div className="pp-empty">{searching ? 'Ni zadetkov' : 'Ta layer nima parametrov za avtomacijo'}</div>
+          <div className="pp-empty">{searching ? 'No matches' : 'This layer has no parameters to automate'}</div>
         ) : visible.map(g => {
           const open = isOpen(g)
           return (
@@ -168,7 +168,7 @@ export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, 
                   <div
                     key={r.key}
                     className={`pp-row ${my === hi ? 'hi' : ''}`}
-                    title={`${r.info.ref.label}${r.auto ? '\n● že avtomatizirano' + (mode === 'add' ? ' — izbira fokusira obstoječo stezo' : '') : ''}`}
+                    title={`${r.info.ref.label}${r.auto ? '\n● already automated' + (mode === 'add' ? ' — picking it focuses the existing lane' : '') : ''}`}
                     onMouseDown={e => e.preventDefault()}
                     onMouseEnter={() => setHi(my)}
                     onClick={() => pick(r)}

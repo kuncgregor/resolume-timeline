@@ -62,7 +62,7 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
     const ownerIndex = isGroup ? (track as GroupTrack).resolumeGroupIndex : lt.resolumeLayerIndex
     lt.automations.forEach((auto, autoIdx) => {
       if (!comp) { status[auto.id] = { state: 'offline' }; return }
-      if (!layer) { status[auto.id] = { state: 'broken', reason: isGroup ? 'Skupine ni več v Resolume' : 'Layer ni več v Resolume' }; return }
+      if (!layer) { status[auto.id] = { state: 'broken', reason: isGroup ? 'Group no longer exists in Resolume' : 'Layer no longer exists in Resolume' }; return }
 
       let info: ParamInfo | null = null
       if (auto.ref) {
@@ -73,8 +73,8 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
           status[auto.id] = {
             state: 'broken',
             reason: auto.ref.scope === 'clip' && !root
-              ? `Clip ni več v Resolume (${auto.ref.label})`
-              : `Parameter ni več v Resolume: ${auto.ref.label}`,
+              ? `Clip no longer exists in Resolume (${auto.ref.label})`
+              : `Parameter no longer exists in Resolume: ${auto.ref.label}`,
           }
           return
         }
@@ -83,7 +83,7 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
           updates.push({ trackIdx, autoIdx, updates: { min: info.min, max: info.max, kind: info.kind, options: info.options } })
       } else {
         const match = isGroup ? null : legacyMatch(auto, layer, ownerIndex)
-        if (!match) { status[auto.id] = { state: 'legacy', reason: 'Stara steza: pošilja se po OSC naslovu' }; return }
+        if (!match) { status[auto.id] = { state: 'legacy', reason: 'Legacy lane: sent by OSC address' }; return }
         info = match.info
         updates.push({ trackIdx, autoIdx, updates: { ...laneFieldsFor(info, ownerIndex, match.slot), paramId: undefined } })
       }

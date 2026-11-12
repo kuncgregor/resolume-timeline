@@ -40,7 +40,7 @@ const SCOPE_COLORS = {
 }
 
 const EMPTY_SHOW: Show = {
-  version: 1, name: 'Nov projekt', frameRate: 25, duration: '02:00:00:00',
+  version: 1, name: 'Timeline 1', frameRate: 25, duration: '02:00:00:00',
   resolume: { host: '127.0.0.1', oscPort: 7000, restPort: 8080, feedbackPort: 7001 },
   clock: { source: 'internal', offset: '00:00:00:00', freewheelFrames: 5 },
   markers: [], tracks: [],
@@ -156,13 +156,19 @@ function makeShowEntry(show: Show, filePath: string | null = null, colorIdx = 0)
 }
 
 function makeBreakEntry(): BreakEntry {
-  return { id: newEntryId(), type: 'break', label: 'Odmor', duration: '00:20:00:00', color: '#333333', notes: '' }
+  return { id: newEntryId(), type: 'break', label: 'Break', duration: '00:20:00:00', color: '#333333', notes: '' }
 }
 
 // Single module-level initial entry so IDs are stable across renders
 const _initEntry = makeShowEntry({ ...EMPTY_SHOW }, null, 0)
 // Read once at startup: the state left by the previous session (crash, reload, quit)
-const _restored = loadAutosave()
+// Entries still carrying the old default names ("Nov projekt", "Projekt N") become "Timeline N"
+const renameDefault = (r: ReturnType<typeof loadAutosave>) => r && {
+  ...r,
+  rundown: r.rundown.map((e, i) => e.type === 'show' && /^(Nov projekt|Projekt \d+)$/.test(e.show.name)
+    ? { ...e, show: { ...e.show, name: `Timeline ${i + 1}` } } : e),
+}
+const _restored = renameDefault(loadAutosave())
 const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
   ? _restored.activeId : (_restored?.rundown[0].id ?? _initEntry.id)
 
@@ -516,7 +522,8 @@ export default function App() {
 
   const handleAddShow = useCallback(() => {
     const idx = rundown.length
-    const entry = makeShowEntry({ ...EMPTY_SHOW, name: `Projekt ${idx + 1}` }, null, idx)
+    const timelines = rundown.filter(e => e.type === 'show').length
+    const entry = makeShowEntry({ ...EMPTY_SHOW, name: `Timeline ${timelines + 1}` }, null, idx)
     setRundown(prev => [...prev, entry])
     setActiveId(entry.id)
     setConcertDirty(true)
@@ -590,10 +597,16 @@ export default function App() {
     setRundown(newOrder); setConcertDirty(true)
   }, [])
 
-  const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>>) => {
+  const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & { name?: string }) => {
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
-      if (e.type === 'show') return { ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes }
+      if (e.type === 'show') {
+        const renamed = updates.name !== undefined && updates.name !== e.show.name
+        return {
+          ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes,
+          ...(renamed ? { show: { ...e.show, name: updates.name! }, dirty: true } : {}),
+        }
+      }
       return { ...e, ...updates }
     }))
     setConcertDirty(true)
@@ -1134,6 +1147,7 @@ export default function App() {
         rundown={rundown}
         activeId={activeId}
         playing={engineState.playing}
+        nowRemaining={endFrame > 0 ? framesToSmpte(Math.max(0, endFrame - engineState.frame), fps) : null}
         showMode={showMode}
         concertDirty={concertDirty}
         activeShowDirty={activeShowEntry?.dirty ?? false}
@@ -1159,10 +1173,10 @@ export default function App() {
       {(restoredAt || autosaveFailed) && (
         <div className={`notice-bar ${autosaveFailed ? 'warn' : ''}`}>
           {autosaveFailed
-            ? <span>Samodejno shranjevanje ni uspelo (premalo prostora). Shrani show ročno.</span>
-            : <span>Obnovljeno zadnje stanje ({new Date(restoredAt!).toLocaleString('sl-SI')}). Neshranjeni showi so označeni s piko.</span>}
+            ? <span>Autosave failed (not enough storage). Save the timeline manually.</span>
+            : <span>Restored last session ({new Date(restoredAt!).toLocaleString('en-GB')}). Unsaved timelines are marked with a dot.</span>}
           {restoredAt && !autosaveFailed && (
-            <button className="btn-sm" onClick={handleDiscardRestored}>Začni na novo</button>
+            <button className="btn-sm" onClick={handleDiscardRestored}>Start fresh</button>
           )}
           <button className="btn-icon" onClick={() => { setRestoredAt(null); setAutosaveFailed(false) }}>✕</button>
         </div>

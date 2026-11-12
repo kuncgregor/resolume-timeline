@@ -170,15 +170,15 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Nastavitve projekta</span>
-          <button className="btn ghost modal-close" onClick={onClose} title="Zapri">✕</button>
+          <span className="modal-title">Timeline settings</span>
+          <button className="btn ghost modal-close" onClick={onClose} title="Close">✕</button>
         </div>
 
         <div className="modal-body">
-          {/* ── Projekt ── */}
+          {/* ── Project ── */}
           <div className="modal-section">
-            <div className="modal-section-title">Projekt</div>
-            <Row label="Ime">
+            <div className="modal-section-title">Timeline</div>
+            <Row label="Name">
               <input className="modal-inp" value={name} onChange={e => setName(e.target.value)} />
             </Row>
             <Row label="BPM">
@@ -186,24 +186,24 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 type="number" className="modal-inp modal-num" min={20} max={999} step={1}
                 value={bpm} onChange={e => setBpm(Math.max(1, Number(e.target.value)))}
               />
-              <span className="modal-hint inline">BPM grid na timelinu</span>
+              <span className="modal-hint inline">BPM grid on the timeline</span>
             </Row>
           </div>
 
-          {/* ── Timecode in hitrost ── */}
+          {/* ── Timecode and frame rate ── */}
           <div className="modal-section">
-            <div className="modal-section-title">Timecode in hitrost</div>
+            <div className="modal-section-title">Timecode and frame rate</div>
             <Row label="FPS">
               <select className="modal-inp modal-sel" value={fps} onChange={e => setFps(Number(e.target.value))}>
                 {[24, 25, 30, 50, 60].map(f => <option key={f} value={f}>{f} fps</option>)}
               </select>
-              <span className="modal-hint inline">FPS lahko spreminjate kadarkoli</span>
+              <span className="modal-hint inline">FPS can be changed at any time</span>
             </Row>
-            <Row label="Vir">
+            <Row label="Source">
               <label className="modal-radio">
                 <input type="radio" name="tc-src" checked={source === 'internal'}
                   onChange={() => setSource('internal')} />
-                Interno
+                Internal
               </label>
               <label className="modal-radio">
                 <input type="radio" name="tc-src" checked={source === 'ltc-a'}
@@ -228,30 +228,30 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 <SmpteField label="FF" value={parts.ff} max={fps - 1} onChange={v => setPart('ff', v)} />
               </div>
               <span className="modal-hint">
-                TC offset lahko spreminjate kadarkoli — določa pri katerem timecode se projekt začne
+                TC offset can be changed at any time — it sets the timecode at which the project starts
               </span>
             </Row>
 
             <Row label="Freewheel">
               <input type="number" className="modal-inp modal-num" min={0} max={300}
                 value={freewheel} onChange={e => setFreewheel(Number(e.target.value))} />
-              <span className="modal-hint inline">okvirjev</span>
+              <span className="modal-hint inline">frames</span>
             </Row>
           </div>
 
           {/* ── Audio ── */}
           <div className="modal-section">
             <div className="modal-section-title">Audio</div>
-            <Row label="Audio izhod">
+            <Row label="Audio output">
               <select
                 className="modal-inp modal-sel-wide"
                 value={audioOutputDevice}
                 onChange={e => setAudioOutputDevice(e.target.value)}
               >
-                <option value="">— privzeta naprava —</option>
+                <option value="">— default device —</option>
                 {audioOutputs.map(d => (
                   <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Audio izhod ${d.deviceId.slice(0, 8)}`}
+                    {d.label || `Audio output ${d.deviceId.slice(0, 8)}`}
                   </option>
                 ))}
               </select>
@@ -264,10 +264,10 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 return <>
                   <select className="modal-inp modal-sel" value={audioOutputChannelL}
                     onChange={e => setAudioOutputChannelL(Number(e.target.value))}
-                    title="Levi kanal">{opts}</select>
+                    title="Left channel">{opts}</select>
                   <select className="modal-inp modal-sel" value={audioOutputChannelR}
                     onChange={e => setAudioOutputChannelR(Number(e.target.value))}
-                    title="Desni kanal">{opts}</select>
+                    title="Right channel">{opts}</select>
                   <span className="modal-hint inline">L / R</span>
                 </>
               })()}
@@ -278,10 +278,10 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 value={ltcDeviceA}
                 onChange={e => setLtcDeviceA(e.target.value)}
               >
-                <option value="">— privzeta naprava —</option>
+                <option value="">— default device —</option>
                 {audioInputs.map(d => (
                   <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Audio vhod ${d.deviceId.slice(0, 8)}`}
+                    {d.label || `Audio input ${d.deviceId.slice(0, 8)}`}
                   </option>
                 ))}
               </select>
@@ -301,10 +301,10 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 value={ltcDeviceB}
                 onChange={e => setLtcDeviceB(e.target.value)}
               >
-                <option value="">— privzeta naprava —</option>
+                <option value="">— default device —</option>
                 {audioInputs.map(d => (
                   <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Audio vhod ${d.deviceId.slice(0, 8)}`}
+                    {d.label || `Audio input ${d.deviceId.slice(0, 8)}`}
                   </option>
                 ))}
               </select>
@@ -319,7 +319,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
               </select>
             </Row>
             <span className="modal-hint modal-hint-indent">
-              SMPTE A/B sta dva ločena LTC vhoda; izbira pod "Vir" določi kateri se uporabi za ta projekt
+              SMPTE A/B are two separate LTC inputs; the choice under "Source" sets which one this project uses
             </span>
           </div>
 
@@ -342,8 +342,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
         </div>
 
         <div className="modal-footer">
-          <button className="btn" onClick={onClose}>Prekliči</button>
-          <button className="btn modal-primary" onClick={handleSave}>Shrani</button>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn modal-primary" onClick={handleSave}>Save</button>
         </div>
       </div>
     </div>

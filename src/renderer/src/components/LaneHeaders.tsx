@@ -177,7 +177,7 @@ export function LaneHeaders({
         anchor={picker.anchor} layerJson={layerJson} clips={clips} scope={isGroup ? 'group' : 'layer'}
         automated={lt.automations.flatMap(a => (a.ref ? [a.ref] : []))}
         mode={picker.mode}
-        title={picker.mode === 'retarget' && ai != null ? `Preusmeri: ${lt.automations[ai]?.ref?.label ?? lt.automations[ai]?.name ?? ''}` : undefined}
+        title={picker.mode === 'retarget' && ai != null ? `Retarget: ${lt.automations[ai]?.ref?.label ?? lt.automations[ai]?.name ?? ''}` : undefined}
         onPick={(info, binding) => {
           if (picker.mode === 'add') onAddParam(picker.ti, info, binding)
           else if (ai != null) onRetarget(picker.ti, ai, info)
@@ -208,11 +208,11 @@ export function LaneHeaders({
                   const retargetKey = `rt:${auto.id}`
                   const labelTip = [
                     auto.ref?.label ?? auto.name,
-                    broken ? `✕ ${status?.reason ?? 'cilja ni več v Resolume'}` : null,
-                    status?.state === 'offline' ? 'Resolume ni povezan' : null,
-                    !enabled ? 'Izklopljeno: ne pošilja' : null,
+                    broken ? `✕ ${status?.reason ?? 'target no longer exists in Resolume'}` : null,
+                    status?.state === 'offline' ? 'Resolume not connected' : null,
+                    !enabled ? 'Disabled: not sending' : null,
                     auto.target ? `OSC: ${auto.target}` : null,
-                    readOnly ? null : 'Klik: preusmeri na drug parameter',
+                    readOnly ? null : 'Click: retarget to another parameter',
                   ].filter(Boolean).join('\n')
                   return (
                     <div key={auto.id}
@@ -250,7 +250,7 @@ export function LaneHeaders({
                             {legacy && (
                               <span
                                 className={`auto-osc ${!auto.ref && !readOnly ? 'editable' : ''}`}
-                                title={`stara steza brez stabilnega cilja\n${auto.target}${!auto.ref && !readOnly ? '\n\nKlik: uredi OSC pot' : ''}`}
+                                title={`legacy lane without a stable target\n${auto.target}${!auto.ref && !readOnly ? '\n\nClick: edit OSC path' : ''}`}
                                 onClick={e => {
                                   if (auto.ref || readOnly) return
                                   e.stopPropagation()
@@ -265,41 +265,41 @@ export function LaneHeaders({
                         <div className="auto-line">
                           <span
                             className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
-                            title={releasedOutside ? 'Izven razpona keyframov — steza ne pošilja' : 'Vrednost na playheadu'}
+                            title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}
                           >{valueText}</span>
                           <button
                             className={`bind-chip ${isLayerBound ? 'layer' : 'clip'}`}
                             title={isLayerBound
-                              ? 'Fiksno na časovnici — klikni, da sledi clipu'
-                              : 'Sledi clipu — klikni za fiksno na časovnici'}
+                              ? 'Fixed on the timeline — click to follow the clip'
+                              : 'Follows the clip — click to fix it on the timeline'}
                             disabled={readOnly}
                             onClick={e => { e.stopPropagation(); onToggleLayerBound(i, ai) }}
                           >{isLayerBound ? 'LAYER' : 'CLIP'}</button>
                           {auto.id in overrides && (
                             <button className="ovr-chip"
-                              title="Operater je ta parameter premaknil v Resolume; steza ne pošilja. Klikni, da jo vrneš časovnici."
+                              title="The operator moved this parameter in Resolume, so the lane is not sending. Click to hand it back to the timeline."
                               onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>OVR ↺</button>
                           )}
                           <span className="auto-spacer" />
                           <input
                             type="checkbox" className="auto-enable"
                             checked={enabled} disabled={readOnly}
-                            title={enabled ? 'Vklopljeno: steza pošilja (klikni za izklop)' : 'Izklopljeno: steza ne pošilja (klikni za vklop)'}
+                            title={enabled ? 'Enabled: lane is sending (click to disable)' : 'Disabled: lane is not sending (click to enable)'}
                             onClick={e => e.stopPropagation()}
                             onChange={e => onUpdateAutomation(i, ai, { enabled: e.target.checked })}
                           />
                           <button
                             className="lane-tool auto-snap"
-                            title="Zapiši trenutno vrednost iz Resolume na playhead"
+                            title="Write the current Resolume value as a keyframe at the playhead"
                             disabled={readOnly || status?.state !== 'ok'}
                             onClick={e => { e.stopPropagation(); onSnapshot(i, ai) }}
                           >◉</button>
                           {!readOnly && (armedDelete === auto.id ? (
-                            <button className="lane-tool armed" title="Klikni še enkrat za odstranitev"
+                            <button className="lane-tool armed" title="Click again to remove"
                               onMouseLeave={() => setArmedDelete(null)}
-                              onClick={e => { e.stopPropagation(); setArmedDelete(null); onDeleteAutomation(i, ai) }}>Odstrani?</button>
+                              onClick={e => { e.stopPropagation(); setArmedDelete(null); onDeleteAutomation(i, ai) }}>Remove?</button>
                           ) : (
-                            <button className="lane-tool danger" title="Odstrani avtomacijo"
+                            <button className="lane-tool danger" title="Remove automation"
                               onClick={e => { e.stopPropagation(); setArmedDelete(auto.id) }}>✕</button>
                           ))}
                         </div>
@@ -313,12 +313,12 @@ export function LaneHeaders({
   return (
     <div className="lane-headers" style={{ userSelect: resizing ? 'none' : undefined }}>
       <div className="ruler-corner">
-        <span>Sloji</span>
+        <span>Layers</span>
         <button
           className="corner-expand"
-          title={anyExpanded ? 'Skrij avtomacijo vseh layerjev' : 'Pokaži avtomacijo vseh layerjev'}
+          title={anyExpanded ? 'Hide automation on all layers' : 'Show automation on all layers'}
           onClick={() => onSetAllExpanded(!anyExpanded)}
-        >{anyExpanded ? '▸ vse' : '▾ vse'}</button>
+        >{anyExpanded ? '▸ all' : '▾ all'}</button>
         <span className="ruler-corner-count">{tracks.length}</span>
       </div>
 
@@ -331,7 +331,7 @@ export function LaneHeaders({
               <span className="audio-head-icon">♪</span>
               <span className="audio-head-name" title={audioTrack.filePath}>{audioTrack.name}</span>
               {!readOnly && (
-                <button className="lane-tool" title="Naloži drugo avdio datoteko"
+                <button className="lane-tool" title="Load a different audio file"
                   onClick={e => { e.stopPropagation(); onLoadAudio() }}>⇄</button>
               )}
             </div>
@@ -349,7 +349,7 @@ export function LaneHeaders({
         ) : (
           <button className="audio-load" disabled={readOnly}
             onClick={e => { e.stopPropagation(); onLoadAudio() }}>
-            ♪ Naloži avdio
+            ♪ Load audio
           </button>
         )}
       </div>
@@ -376,10 +376,10 @@ export function LaneHeaders({
                     <div className="layer-head">
                       <div className="layer-line">
                         <button className="group-collapse"
-                          title={gt.collapsed ? 'Razpri skupino (pokaži layerje)' : 'Zloži skupino (skrij layerje)'}
+                          title={gt.collapsed ? 'Expand group (show layers)' : 'Collapse group (hide layers)'}
                           onClick={e => { e.stopPropagation(); onToggleGroupCollapsed(i) }}
                         >{gt.collapsed ? '▸' : '▾'}</button>
-                        <span className="group-chip" title={offline ? 'Skupine ni več v Resolume' : `Resolume skupina ${gt.resolumeGroupIndex}`}>
+                        <span className="group-chip" title={offline ? 'Group no longer exists in Resolume' : `Resolume group ${gt.resolumeGroupIndex}`}>
                           {offline ? 'G —' : `G${gt.resolumeGroupIndex}`}
                         </span>
                         <span className="lane-name" title={gt.name}>{gt.name}</span>
@@ -387,19 +387,19 @@ export function LaneHeaders({
                           {!readOnly && (
                             <button
                               className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
-                              title="Dodaj avtomacijo parametra skupine (master, opacity, efekti skupine …)"
+                              title="Add automation for a group parameter (master, opacity, group effects …)"
                               onClick={e => openPicker(e, { ti: i, mode: 'add', key: addKey })}
                             >+</button>
                           )}
                           <button
                             className={`lane-toggle ${gt.muted ? 'on-mute' : ''}`}
-                            title={gt.muted ? 'Utišano: skupina in njeni layerji ne pošiljajo (klikni za vklop)' : 'Utišaj skupino in njene layerje'}
+                            title={gt.muted ? 'Muted: the group and its layers are not sending (click to unmute)' : 'Mute the group and its layers'}
                             disabled={readOnly}
                             onClick={e => { e.stopPropagation(); onToggleMute(i) }}
                           >M</button>
                           <button
                             className={`lane-toggle ${gt.locked ? 'on-lock' : ''}`}
-                            title={gt.locked ? 'Zaklenjeno za urejanje (klikni za odklep)' : 'Zakleni skupino za urejanje'}
+                            title={gt.locked ? 'Locked for editing (click to unlock)' : 'Lock the group for editing'}
                             disabled={readOnly}
                             onClick={e => { e.stopPropagation(); onToggleLock(i) }}
                           >L</button>
@@ -408,12 +408,12 @@ export function LaneHeaders({
                       <div className="layer-line group-sub">
                         <button
                           className={`lane-expand ${nAuto ? '' : 'empty'}`}
-                          title={`${gt.expanded ? 'Skrij avtomacijo skupine' : 'Pokaži avtomacijo skupine'} (${nAuto})`}
+                          title={`${gt.expanded ? 'Hide group automation' : 'Show group automation'} (${nAuto})`}
                           onClick={e => { e.stopPropagation(); onToggleExpand(i) }}
                         >{gt.expanded ? '▾' : '▸'}{nAuto > 0 && <span className="lane-auto-count">{nAuto}</span>}</button>
                         <span className="lane-meta">
-                          Skupina · {members.length} {members.length === 1 ? 'layer' : members.length === 2 ? 'layerja' : 'layerji'}
-                          {gt.collapsed ? ' · zloženo' : ''}
+                          Group · {members.length} {members.length === 1 ? 'layer' : 'layers'}
+                          {gt.collapsed ? ' · collapsed' : ''}
                         </span>
                       </div>
                     </div>
@@ -456,31 +456,31 @@ export function LaneHeaders({
                     <div className="layer-line">
                       <button
                         className={`lane-expand ${nAuto ? '' : 'empty'}`}
-                        title={`${lt.expanded ? 'Skrij avtomacijo' : 'Pokaži avtomacijo'} (${nAuto})`}
+                        title={`${lt.expanded ? 'Hide automation' : 'Show automation'} (${nAuto})`}
                         onClick={e => { e.stopPropagation(); onToggleExpand(i) }}
                       >{lt.expanded ? '▾' : '▸'}{nAuto > 0 && <span className="lane-auto-count">{nAuto}</span>}</button>
                       <span className={`lane-num ${offline ? 'offline' : ''}`}
-                        title={offline ? 'Layerja ni več v Resolume' : `Resolume layer ${lt.resolumeLayerIndex}`}>
+                        title={offline ? 'Layer no longer exists in Resolume' : `Resolume layer ${lt.resolumeLayerIndex}`}>
                         {offline ? '—' : lt.resolumeLayerIndex}
                       </span>
-                      <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clipov'}`}>{lt.name}</span>
+                      <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clips'}`}>{lt.name}</span>
                       <div className="lane-toggles">
                         {!readOnly && (
                           <button
                             className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
-                            title="Dodaj avtomacijo parametra"
+                            title="Add parameter automation"
                             onClick={e => openPicker(e, { ti: i, mode: 'add', key: addKey })}
                           >+</button>
                         )}
                         <button
                           className={`lane-toggle ${lt.muted ? 'on-mute' : ''}`}
-                          title={lt.muted ? 'Utišano: ne pošilja v Resolume (klikni za vklop)' : 'Utišaj layer'}
+                          title={lt.muted ? 'Muted: not sending to Resolume (click to unmute)' : 'Mute layer'}
                           disabled={readOnly}
                           onClick={e => { e.stopPropagation(); onToggleMute(i) }}
                         >M</button>
                         <button
                           className={`lane-toggle ${lt.locked ? 'on-lock' : ''}`}
-                          title={lt.locked ? 'Zaklenjeno za urejanje (klikni za odklep)' : 'Zakleni za urejanje'}
+                          title={lt.locked ? 'Locked for editing (click to unlock)' : 'Lock for editing'}
                           disabled={readOnly}
                           onClick={e => { e.stopPropagation(); onToggleLock(i) }}
                         >L</button>
@@ -512,7 +512,7 @@ function LiveStrip({ layer, expected, offline, connected }: {
   if (!layer) {
     return (
       <div className="live-strip">
-        <span className="live-chip none" title={!connected ? 'Resolume ni povezan' : offline ? 'Layerja ni več v Resolume' : 'Layer ni najden v Resolume'}>—</span>
+        <span className="live-chip none" title={!connected ? 'Resolume not connected' : offline ? 'Layer no longer exists in Resolume' : 'Layer not found in Resolume'}>—</span>
       </div>
     )
   }
@@ -525,16 +525,16 @@ function LiveStrip({ layer, expected, offline, connected }: {
 
   let chip: React.ReactNode
   if (!playing) {
-    chip = <span className="live-chip none" title={`Resolume: — · časovnica: ${expName}`}>—</span>
+    chip = <span className="live-chip none" title={`Resolume: — · timeline: ${expName}`}>—</span>
   } else if (expected && playing.id === expected.clipId) {
     chip = (
-      <span className="live-chip match" title={`Resolume predvaja ${playingName} — ujema se s časovnico`}>
+      <span className="live-chip match" title={`Resolume is playing ${playingName} — matches the timeline`}>
         <span className="live-chip-glyph">▶</span><span className="live-chip-name">{playingName}</span>
       </span>
     )
   } else {
     chip = (
-      <span className="live-chip mismatch" title={`Resolume: ${playingName} · časovnica: ${expName}`}>
+      <span className="live-chip mismatch" title={`Resolume: ${playingName} · timeline: ${expName}`}>
         <span className="live-chip-glyph">≠</span><span className="live-chip-name">{playingName}</span>
       </span>
     )
@@ -543,11 +543,11 @@ function LiveStrip({ layer, expected, offline, connected }: {
   return (
     <div className="live-strip">
       {chip}
-      <span className="live-opacity" title={`Opacity layerja: ${Math.round(op * 100)} %`}>
+      <span className="live-opacity" title={`Layer opacity: ${Math.round(op * 100)}%`}>
         <span className="live-opacity-fill" style={{ width: `${op * 100}%` }} />
       </span>
-      {bypassed && <span className="live-flag" title="Layer je v Resolume bypassan — avtomacija ni vidna">B</span>}
-      {solo && <span className="live-flag" title="Layer je v Resolume solo">S</span>}
+      {bypassed && <span className="live-flag" title="Layer is bypassed in Resolume — automation is not visible">B</span>}
+      {solo && <span className="live-flag" title="Layer is soloed in Resolume">S</span>}
     </div>
   )
 }
