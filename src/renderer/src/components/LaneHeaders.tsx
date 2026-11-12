@@ -334,28 +334,28 @@ export function LaneHeaders({
                           </div>
                         )}
                         <div className="auto-line">
-                          {ovrText != null ? (
-                            <span className="auto-value mono ovr"
-                              title={`Resolume: ${ovrText} (set by hand, the lane is not sending)\nTimeline at the playhead: ${valueText}`}
-                            >{ovrText}</span>
-                          ) : (
+                          {ovrText == null && (
                             <span
                               className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
                               title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}
                             >{valueText}</span>
                           )}
-                          <button
+                          {ovrText == null && <button
                             className={`bind-chip ${isLayerBound ? 'layer' : 'clip'}`}
                             title={isLayerBound
                               ? 'Fixed on the timeline — click to follow the clip'
                               : 'Follows the clip — click to fix it on the timeline'}
                             disabled={readOnly}
                             onClick={e => { e.stopPropagation(); onToggleLayerBound(i, ai) }}
-                          >{isLayerBound ? 'LAYER' : 'CLIP'}</button>
-                          {auto.id in overrides && (
+                          >{isLayerBound ? 'LAYER' : 'CLIP'}</button>}
+                          {ovrText != null && (
+                            // Taken over: the operator's value replaces the playhead value and the
+                            // LAYER/CLIP switch until handed back (the header has no room for all three)
                             <button className="ovr-chip"
-                              title="The operator moved this parameter in Resolume, so the lane is not sending. Click to hand it back to the timeline."
-                              onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>OVR ↺</button>
+                              title={`Set by hand in Resolume: ${ovrText}. The lane is not sending (the timeline is at ${valueText}).\nClick to hand it back to the timeline.`}
+                              onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>
+                              <span className="ovr-tag">OVR</span><span className="ovr-val mono">{ovrText}</span><span>↺</span>
+                            </button>
                           )}
                           <span className="auto-spacer" />
                           <button

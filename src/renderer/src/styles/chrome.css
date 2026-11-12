@@ -455,7 +455,6 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .auto-value.outside { color: var(--text-faint); }
-.auto-value.ovr { color: var(--loop); font-weight: 700; }
 .auto-spacer { flex: 1; }
 .auto-enable { flex-shrink: 0; cursor: pointer; }
 .auto-enable:disabled { cursor: default; }
@@ -549,8 +548,11 @@
 .btn.reenable-btn:hover { background: var(--loop); color: var(--text-on-live); }
 /* Armed REC: red frame around the timeline like Blender/Resolve auto-key */
 .app.rec-armed .timeline-section { box-shadow: inset 0 0 0 2px var(--danger-fill); }
-.ovr-chip { height: 16px; padding: 0 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 800; white-space: nowrap; flex-shrink: 0;
+.ovr-chip { height: 16px; padding: 0 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 800; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px; overflow: hidden;
   background: transparent; color: var(--loop); box-shadow: inset 0 0 0 1px var(--loop); }
+.ovr-chip .ovr-val { font-size: var(--fs-meta); font-weight: 700; color: var(--text-hi); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ovr-chip:hover .ovr-val { color: var(--text-on-live); }
 .ovr-chip:hover { background: var(--loop); color: var(--text-on-live); }
 
 /* ── Layer groups (Arena) ─────────────────────────────────────────────── */
