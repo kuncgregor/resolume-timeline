@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe, ParamRef } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
-import { isValidRundown, type RundownEntry, type ShowEntry, type BreakEntry, type ConcertFile } from '../../shared/concert'
+import { isValidRundown, type RundownEntry, type ShowEntry, type BreakEntry } from '../../shared/concert'
+import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type ShowfileData } from '../../shared/showfile'
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
@@ -227,6 +228,8 @@ function makeBreakEntry(): BreakEntry {
   return { id: newEntryId(), type: 'break', label: 'Break', duration: '00:20:00:00', color: '#333333', notes: '' }
 }
 
+const NEW_SHOWFILE: ShowfileMeta = { name: '', path: null, autosave: true }
+
 // Single module-level initial entry so IDs are stable across renders
 const _initEntry = makeShowEntry({ ...EMPTY_SHOW }, null, 0)
 // Read once at startup: the state left by the previous session (crash, reload, quit)
@@ -243,9 +246,14 @@ const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
 export default function App() {
   const [rundown, setRundown] = useState<RundownEntry[]>(_restored?.rundown ?? [_initEntry])
   const [activeId, setActiveId] = useState<string>(_initActiveId)
-  const [concertFilePath, setConcertFilePath] = useState<string | null>(_restored?.concertFilePath ?? null)
-  const [concertDirty, setConcertDirty] = useState(_restored?.concertDirty ?? false)
-  const [restoredAt, setRestoredAt] = useState<number | null>(_restored?.savedAt ?? null)
+  // The showfile this session is (name, file, autosave) and whether it has unsaved changes
+  const [showfile, setShowfile] = useState<ShowfileMeta>(_restored?.showfile ?? NEW_SHOWFILE)
+  const [showfileDirty, setShowfileDirty] = useState(_restored?.showfileDirty ?? true)
+  // Restored unsaved work is worth a notice only when autosave didn't keep the file up to date
+  const [restoredAt, setRestoredAt] = useState<number | null>(
+    _restored?.showfile && !_restored.showfile.autosave && _restored.showfileDirty ? _restored.savedAt : null)
+  const [showfileSavedAt, setShowfileSavedAt] = useState<number | null>(null)
+  const [showfileError, setShowfileError] = useState<string | null>(null)
   const [autosaveFailed, setAutosaveFailed] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   // SHOW mode locks every editing gesture (QLab Show Mode / console "live" lock)
@@ -316,8 +324,6 @@ export default function App() {
         changed = true
         return { ...se, show: newShow, dirty: true }
       })
-      // Show content lives in its own file; the concert file only references it,
-      // so show edits mark the show dirty, not the concert.
       return changed ? next : prev
     })
   }, [])
@@ -325,8 +331,8 @@ export default function App() {
   // ── Autosave ───────────────────────────────────────────────────────────────
 
   // SHOW mode is part of the session: the lock applies on the tablets too
-  const autosaveRef = useRef({ rundown, activeId, concertFilePath, concertDirty, showMode })
-  autosaveRef.current = { rundown, activeId, concertFilePath, concertDirty, showMode }
+  const autosaveRef = useRef({ rundown, activeId, showfile, showfileDirty, showMode })
+  autosaveRef.current = { rundown, activeId, showfile, showfileDirty, showMode }
   const flushAutosave = useCallback(() => {
     if (REMOTE) return
     setAutosaveFailed(!writeAutosave({ savedAt: Date.now(), ...autosaveRef.current }))
@@ -335,7 +341,7 @@ export default function App() {
   useEffect(() => {
     const t = setTimeout(flushAutosave, 800)
     return () => clearTimeout(t)
-  }, [rundown, activeId, concertFilePath, concertDirty, showMode, flushAutosave])
+  }, [rundown, activeId, showfile, showfileDirty, showMode, flushAutosave])
   useEffect(() => {
     window.addEventListener('pagehide', flushAutosave)
     return () => window.removeEventListener('pagehide', flushAutosave)
@@ -358,14 +364,14 @@ export default function App() {
     const state = {
       rundown: d.rundown as RundownEntry[],
       activeId: d.rundown.some((e: RundownEntry) => e.id === d.activeId) ? d.activeId as string : d.rundown[0].id as string,
-      concertFilePath: (d.concertFilePath ?? null) as string | null,
-      concertDirty: !!d.concertDirty,
+      showfile: (d.showfile ?? NEW_SHOWFILE) as ShowfileMeta,
+      showfileDirty: d.showfileDirty ?? true,
       showMode: !!d.showMode,
     }
     sessionJsonRef.current = JSON.stringify(state)
     activeIdRef.current = state.activeId
     setRundown(state.rundown); setActiveId(state.activeId)
-    setConcertFilePath(state.concertFilePath); setConcertDirty(state.concertDirty)
+    setShowfile(state.showfile); setShowfileDirty(state.showfileDirty)
     setShowMode(state.showMode)
   }, [])
   const pushSession = useCallback(async () => {
@@ -415,14 +421,17 @@ export default function App() {
     if (!sessionReady) return
     const t = setTimeout(pushSession, 250)
     return () => clearTimeout(t)
-  }, [sessionReady, rundown, activeId, concertFilePath, concertDirty, showMode, pushSession])
+  }, [sessionReady, rundown, activeId, showfile, showfileDirty, showMode, pushSession])
 
-  const handleDiscardRestored = useCallback(() => {
+  // Saved-state of the showfile: key of the content last written (null = not known yet)
+  const savedKeyRef = useRef<string | null>(null)
+  const handleNewShowfile = useCallback(() => {
     api.stop(); audioEngineRef.current.stop()
-    const entry = makeShowEntry({ ...EMPTY_SHOW }, null, 0)
+    const entry = makeShowEntry({ ...EMPTY_SHOW, name: 'Timeline 1' }, null, 0)
     clearAutosave()
+    savedKeyRef.current = ''
     setRundown([entry]); setActiveId(entry.id)
-    setConcertFilePath(null); setConcertDirty(false); setRestoredAt(null)
+    setShowfile(NEW_SHOWFILE); setShowfileDirty(true); setRestoredAt(null)
     // Fill the new empty show with the current Resolume layers
     api.getComposition().then((comp: ResolumeComposition | null) => {
       if (comp) setShow(prev => syncLayers(prev, comp))
@@ -564,6 +573,96 @@ export default function App() {
 
   const decks = decksOf(composition)
   const selectedDeck = decks.find(d => d.selected)
+
+  // ── Showfile: name, save, autosave ─────────────────────────────────────────
+  // One file holds every timeline. A new showfile is named after the Resolume composition
+  // and, with autosave on, saved to Documents/Resolume Timeline as soon as it has a name.
+  // Only the app window writes files (a tablet's changes reach it through the session).
+  const compositionName = String(rv((composition as any)?.name, '') ?? '').trim()
+  const compositionNameRef = useRef(compositionName)
+  compositionNameRef.current = compositionName
+  const showfileName = showfile.name || compositionName || 'Untitled showfile'
+  const showfileRef = useRef(showfile)
+  showfileRef.current = showfile
+
+  useEffect(() => {
+    if (!REMOTE && sessionReady && !showfile.name && compositionName) setShowfile(s => s.name ? s : { ...s, name: compositionName })
+  }, [sessionReady, showfile.name, compositionName])
+  useEffect(() => {
+    if (REMOTE || !sessionReady || !showfile.autosave || showfile.path || !showfile.name) return
+    let live = true
+    api.showfileDefaultPath(showfile.name).then((p: string) => {
+      if (live && p) setShowfile(s => s.path ? s : { ...s, path: p })
+    }).catch(() => {})
+    return () => { live = false }
+  }, [sessionReady, showfile.autosave, showfile.path, showfile.name])
+
+  // Unsaved changes: the content differs from what was last written
+  useEffect(() => {
+    if (REMOTE || !sessionReady) return
+    const t = setTimeout(() => {
+      const key = showfileKey(showfile.name, rundown)
+      if (savedKeyRef.current === null) savedKeyRef.current = showfileDirty ? '' : key   // first check after start
+      setShowfileDirty(key !== savedKeyRef.current)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [sessionReady, rundown, showfile.name])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const writeShowfile = useCallback(async (path: string, name: string) => {
+    const { rundown: rd, activeId: aid, showfile: sf } = autosaveRef.current
+    const key = showfileKey(name, rd)
+    let r: { ok: boolean; savedAt?: number; error?: string } | null = null
+    try { r = await api.showfileWrite(path, showfileData(sf, name, rd, aid, compositionNameRef.current || undefined)) } catch (e) { r = { ok: false, error: String(e) } }
+    if (!r?.ok) { setShowfileError(`The showfile could not be saved: ${r?.error ?? 'unknown error'}`); return false }
+    savedKeyRef.current = key
+    setShowfileError(null); setShowfileSavedAt(r.savedAt ?? Date.now())
+    setShowfileDirty(showfileKey(name, autosaveRef.current.rundown) !== key)
+    return true
+  }, [])
+
+  // Autosave: a second after the last change
+  useEffect(() => {
+    if (REMOTE || !sessionReady || !showfile.autosave || !showfile.path || !showfile.name || !showfileDirty) return
+    const t = setTimeout(() => { writeShowfile(showfile.path!, showfile.name) }, 1000)
+    return () => clearTimeout(t)
+  }, [sessionReady, showfile.autosave, showfile.path, showfile.name, showfileDirty, rundown, writeShowfile])
+
+  const handleSaveShowfile = useCallback(async () => {
+    if (REMOTE) return   // files live on the computer running the app
+    const sf = showfileRef.current
+    const name = sf.name || compositionNameRef.current || 'Untitled showfile'
+    const path: string = sf.path ?? await api.showfileDefaultPath(name)
+    if (sf.path !== path || sf.name !== name) setShowfile(s => ({ ...s, name, path }))
+    await writeShowfile(path, name)
+  }, [writeShowfile])
+  const saveRef = useRef(handleSaveShowfile)
+  saveRef.current = handleSaveShowfile
+
+  const handleSaveShowfileAs = useCallback(async () => {
+    if (REMOTE) return
+    const path: string | null = await api.showfileSaveAs(showfileRef.current.name || compositionNameRef.current || 'Untitled showfile')
+    if (!path) return
+    const name = path.split(/[\\/]/).pop()!.replace(/\.rtshow$/i, '')
+    setShowfile(s => ({ ...s, name, path }))
+    await writeShowfile(path, name)
+  }, [writeShowfile])
+
+  // Renaming the showfile renames its file too
+  const handleRenameShowfile = useCallback(async (raw: string) => {
+    const name = raw.trim()
+    const sf = showfileRef.current
+    if (REMOTE || !name || name === sf.name) return
+    let path = sf.path
+    if (path) {
+      const r = await api.showfileRename(path, name).catch(() => null)
+      if (r?.path) path = r.path
+    }
+    setShowfile(s => ({ ...s, name, path }))
+  }, [])
+
+  const handleToggleAutosave = useCallback(() => {
+    setShowfile(s => ({ ...s, autosave: !s.autosave }))
+  }, [])
 
   const [laneStatus, setLaneStatus] = useState<LaneStatusMap>({})
   const laneStatusRef = useRef(laneStatus)
@@ -729,6 +828,12 @@ export default function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // ⌘S / Ctrl+S: save the showfile, from anywhere
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyS' && !e.shiftKey && !e.altKey) {
+        e.preventDefault()
+        saveRef.current()
+        return
+      }
       // Text fields keep their keys; sliders and checkboxes don't (Home/Space on a focused
       // fader would move it to its minimum and auto-key that as a keyframe)
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
@@ -880,20 +985,19 @@ export default function App() {
     const entry = makeShowEntry({ ...EMPTY_SHOW, name: `Timeline ${timelines + 1}` }, null, idx)
     setRundown(prev => [...prev, entry])
     setActiveId(entry.id)
-    setConcertDirty(true)
     api.stop(); audioEngineRef.current.stop()
     clearSelection(); setScrollFrame(0)
   }, [rundown.length])
 
-  const handleOpenShowFile = useCallback(async () => {
+  // Import a timeline exported as a file: it becomes part of this showfile
+  const handleImportTimeline = useCallback(async () => {
     if (REMOTE) return   // files live on the computer running the app
     const result = await api.openShowFile()
     if (!result) return
     const idx = rundown.length
-    const entry = makeShowEntry(result.show, result.filePath, idx)
+    const entry = makeShowEntry(result.show, null, idx)
     setRundown(prev => [...prev, entry])
     setActiveId(entry.id)
-    setConcertDirty(true)
     api.stop(); audioEngineRef.current.stop()
     clearSelection(); setScrollFrame(0)
   }, [rundown.length])
@@ -901,7 +1005,6 @@ export default function App() {
   const handleAddBreak = useCallback(() => {
     const entry = makeBreakEntry()
     setRundown(prev => [...prev, entry])
-    setConcertDirty(true)
   }, [])
 
   const rundownRef = useRef(rundown)
@@ -946,11 +1049,10 @@ export default function App() {
       setActiveId(next[0].id)
     }
     setRundown(next)
-    setConcertDirty(true)
   }, [rundown, clearSelection])
 
   const handleReorder = useCallback((newOrder: RundownEntry[]) => {
-    setRundown(newOrder); setConcertDirty(true)
+    setRundown(newOrder)
   }, [])
 
   const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
@@ -978,62 +1080,33 @@ export default function App() {
       }
       return { ...e, ...updates }
     }))
-    setConcertDirty(true)
   }, [])
 
-  const handleSaveActiveShow = useCallback(async () => {
-    if (REMOTE) return   // files live on the computer running the app
-    if (!activeShowEntry) return
-    const filePath = await api.saveShow(activeShowEntry.show)
-    if (filePath) {
-      setRundown(prev => prev.map(e =>
-        e.id === activeId && e.type === 'show'
-          ? { ...e, dirty: false, filePath } as ShowEntry
-          : e
-      ))
-    }
-  }, [activeShowEntry, activeId])
+  // Export the active timeline as its own file (a copy; the showfile keeps it too)
+  const handleExportTimeline = useCallback(async () => {
+    if (REMOTE || !activeShowEntry) return   // files live on the computer running the app
+    await api.saveShow(activeShowEntry.show)
+  }, [activeShowEntry])
 
-  const handleSaveConcert = useCallback(async () => {
-    if (REMOTE) return   // files live on the computer running the app
-    const data: ConcertFile = {
-      version: 1,
-      name: concertFilePath?.split('/').pop()?.replace(/\.concert\.json$|\.json$/, '') ?? 'Concert',
-      entries: rundown.map(e => e.type === 'show'
-        ? { id: e.id, type: 'show', filePath: (e as ShowEntry).filePath, color: e.color, notes: e.notes }
-        : { id: e.id, type: 'break', label: (e as BreakEntry).label, duration: (e as BreakEntry).duration, color: e.color, notes: e.notes }
-      ),
-    }
-    const newPath = await api.saveConcert(data)
-    if (newPath) { setConcertFilePath(newPath); setConcertDirty(false) }
-  }, [rundown, concertFilePath])
-
-  const handleOpenConcert = useCallback(async () => {
-    if (REMOTE) return   // files live on the computer running the app
-    const result = await api.loadConcert()
+  const handleOpenShowfile = useCallback(async () => {
+    if (REMOTE) return
+    const result = await api.showfileOpen()
     if (!result) return
-    const entries: RundownEntry[] = (result.entries ?? []).map((fe: any, i: number) =>
-      fe.type === 'show'
-        ? {
-            id: fe.id, type: 'show',
-            show: result.shows[fe.id] ?? { ...EMPTY_SHOW, name: fe.filePath?.split('/').pop() ?? 'Show' },
-            filePath: fe.filePath ?? null, dirty: false,
-            color: fe.color ?? ENTRY_COLORS[i % ENTRY_COLORS.length], notes: fe.notes ?? '',
-          } as ShowEntry
-        : {
-            id: fe.id, type: 'break',
-            label: fe.label ?? 'Break', duration: fe.duration ?? '00:20:00:00',
-            color: fe.color ?? '#333333', notes: fe.notes ?? '',
-          } as BreakEntry
-    )
-    const validEntries = entries.length > 0 ? entries : [makeShowEntry({ ...EMPTY_SHOW }, null, 0)]
-    setRundown(validEntries)
-    setActiveId(validEntries[0].id)
-    setConcertFilePath(result.filePath)
-    setConcertDirty(false)
+    if (!isShowfile(result.data)) { setShowfileError('That file is not a showfile.'); return }
+    const d: ShowfileData = result.data
+    const entries = d.entries.map(e => e.type === 'show' ? { ...e, filePath: null, dirty: false } : e)
     api.stop(); audioEngineRef.current.stop()
     clearSelection(); setScrollFrame(0)
-  }, [])
+    const active = entries.some(e => e.id === d.activeId) ? d.activeId : entries[0].id
+    // A converted .concert.json (or a file picked in a browser) has no showfile path yet:
+    // it is saved as a new showfile, the file it came from stays untouched
+    savedKeyRef.current = result.path ? showfileKey(d.name, entries) : ''
+    activeIdRef.current = active
+    setRundown(entries); setActiveId(active)
+    setShowfile({ name: d.name, path: result.path, autosave: d.autosave !== false })
+    setShowfileDirty(!result.path)
+    setShowfileError(null); setRestoredAt(null)
+  }, [clearSelection])
 
   const handleUpdateProjectSettings = useCallback((partial: Partial<Show>) => {
     setShow(prev => ({ ...prev, ...partial }))
@@ -1693,9 +1766,12 @@ export default function App() {
         playing={engineState.playing}
         nowRemaining={endFrame > 0 ? framesToSmpte(Math.max(0, endFrame - engineState.frame), fps) : null}
         showMode={showMode}
-        concertDirty={concertDirty}
-        activeShowDirty={activeShowEntry?.dirty ?? false}
-        concertFilePath={concertFilePath}
+        showfileName={showfileName}
+        showfilePath={showfile.path}
+        showfileDirty={showfileDirty}
+        autosave={showfile.autosave}
+        savedAt={showfileSavedAt}
+        saveError={showfileError}
         resolumeConnected={engineState.resolumeConnected}
         resolumeHost={show.resolume.host}
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
@@ -1707,10 +1783,14 @@ export default function App() {
         onAddBreak={handleAddBreak}
         onEdit={setEditingEntryId}
         onDelete={handleDeleteEntry}
-        onOpenConcert={handleOpenConcert}
-        onSaveConcert={handleSaveConcert}
-        onOpenShowFile={handleOpenShowFile}
-        onSaveActiveShow={handleSaveActiveShow}
+        onNewShowfile={handleNewShowfile}
+        onOpenShowfile={handleOpenShowfile}
+        onSaveShowfile={handleSaveShowfile}
+        onSaveShowfileAs={api.__web ? null : handleSaveShowfileAs}
+        onRenameShowfile={handleRenameShowfile}
+        onToggleAutosave={handleToggleAutosave}
+        onImportTimeline={handleImportTimeline}
+        onExportTimeline={handleExportTimeline}
         onSettings={() => setShowSettings(true)}
         onToggleShowMode={() => setShowMode(m => !m)}
         onReconnect={handleReconnect}
@@ -1720,9 +1800,9 @@ export default function App() {
         <div className={`notice-bar ${autosaveFailed ? 'warn' : ''}`}>
           {autosaveFailed
             ? <span>Autosave failed (not enough storage). Save the timeline manually.</span>
-            : <span>Restored last session ({new Date(restoredAt!).toLocaleString('en-GB')}). Unsaved timelines are marked with a dot.</span>}
+            : <span>Restored unsaved changes from the last session ({new Date(restoredAt!).toLocaleString('en-GB')}). Autosave is off: save with ⌘S.</span>}
           {restoredAt && !autosaveFailed && (
-            <button className="btn-sm" onClick={handleDiscardRestored}>Start fresh</button>
+            <button className="btn-sm" onClick={handleNewShowfile}>New showfile</button>
           )}
           <button className="btn-icon" onClick={() => { setRestoredAt(null); setAutosaveFailed(false) }}>✕</button>
         </div>

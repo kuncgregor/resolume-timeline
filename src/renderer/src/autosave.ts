@@ -1,7 +1,8 @@
-// Crash/refresh recovery: the whole rundown (all open shows, unsaved edits included) is
-// mirrored to localStorage and restored on the next start. Show files on disk are never
-// written by autosave — saving stays an explicit action.
+// Crash/refresh recovery: the whole session (all timelines, unsaved edits included) is
+// mirrored to localStorage and restored on the next start. The showfile on disk is written by
+// its own autosave (App.tsx) or by Save.
 import { isValidRundown, type RundownEntry } from '../../shared/concert'
+import type { ShowfileMeta } from '../../shared/showfile'
 
 const KEY = 'resolume-timeline:autosave:v1'
 
@@ -9,8 +10,8 @@ export interface AutosaveData {
   savedAt: number
   rundown: RundownEntry[]
   activeId: string
-  concertFilePath: string | null
-  concertDirty: boolean
+  showfile?: ShowfileMeta     // missing in sessions from before showfiles
+  showfileDirty?: boolean
   showMode?: boolean
 }
 

@@ -4,7 +4,6 @@
 // remote (window.__TL_REMOTE__): the app on the computer keeps LTC, audio and the show sync.
 // File dialogs are replaced with <input type=file> and downloads.
 import type { Show } from '../../shared/show'
-import type { ConcertFile, LoadedConcert } from '../../shared/concert'
 
 const w = window as any
 
@@ -91,13 +90,17 @@ if (!w.timeline) {
     getRemoteServer: async () => null,
     setRemoteServer: async () => null,
 
-    saveConcert: async (data: ConcertFile) => download(`${data.name ?? 'concert'}.concert.json`, data),
-    // Browser cannot read the referenced show files by path, so shows load empty.
-    loadConcert: async (): Promise<LoadedConcert | null> => {
-      const file = await pickFile('.json,application/json')
+    // Showfiles: written by the engine into its folder; opened from a picked file (a
+    // browser has no file paths, so an opened showfile is saved as a new one)
+    showfileOpen: async () => {
+      const file = await pickFile('.rtshow,.json,application/json')
       if (!file) return null
-      try { return { ...JSON.parse(await file.text()), filePath: file.name, shows: {} } } catch { return null }
+      try { return { data: JSON.parse(await file.text()), path: null } } catch { return null }
     },
+    showfileSaveAs: async () => null,
+    showfileWrite: (path: string, data: unknown) => rpc('showfileWrite', path, data),
+    showfileDefaultPath: (name: string) => rpc('showfileDefaultPath', name),
+    showfileRename: (path: string, name: string) => rpc('showfileRename', path, name),
 
     openAudioFile: async () => {
       const file = await pickFile('audio/*,.wav')

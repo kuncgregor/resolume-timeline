@@ -3,7 +3,8 @@ import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import crypto from 'crypto'
 import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
-import { EngineHost, appDataDir } from './engine-host'
+import { EngineHost, appDataDir, showfilesDir, readShowfile } from './engine-host'
+import { SHOWFILE_EXT, showfileFileName } from '../shared/showfile'
 import { WebServer, lanAddresses } from './web-server'
 import type { Show } from '../shared/show'
 
@@ -27,6 +28,7 @@ const ENGINE_CHANNELS: Record<string, string> = {
   'record:start': 'recordStart', 'record:stop': 'recordStop',
   'show:loadDirect': 'loadShowDirect', 'show:getCurrent': 'getCurrentShow',
   'session:get': 'sessionGet', 'session:set': 'sessionSet',
+  'showfile:write': 'showfileWrite', 'showfile:defaultPath': 'showfileDefaultPath', 'showfile:rename': 'showfileRename',
   'resolume:getComposition': 'getComposition', 'resolume:getThumbnail': 'getThumbnail',
   'resolume:getLayerRaw': 'getLayerRaw', 'resolume:getGroupRaw': 'getGroupRaw',
   'resolume:getClipById': 'getClipById', 'resolume:getClipRaw': 'getClipRaw',
@@ -73,31 +75,21 @@ ipcMain.handle('show:open', async () => {
   catch { return null }
 })
 
-ipcMain.handle('concert:save', async (_e, data: any) => {
-  const { filePath } = await dialog.showSaveDialog({
-    title: 'Save concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }],
-    defaultPath: `${data.name ?? 'concert'}.concert.json`,
+// Showfile: open (also an old .concert.json, converted) and choose where to save it
+ipcMain.handle('showfile:open', async () => {
+  const { filePaths } = await dialog.showOpenDialog({
+    title: 'Open showfile', defaultPath: showfilesDir(),
+    filters: [{ name: 'Showfile', extensions: [SHOWFILE_EXT, 'json'] }], properties: ['openFile'],
   })
-  if (!filePath) return null
-  writeFileSync(filePath, JSON.stringify(data, null, 2))
-  return filePath
+  return filePaths[0] ? readShowfile(filePaths[0]) : null
 })
 
-ipcMain.handle('concert:load', async () => {
-  const { filePaths } = await dialog.showOpenDialog({
-    title: 'Open concert', filters: [{ name: 'Concert JSON', extensions: ['json'] }], properties: ['openFile'],
+ipcMain.handle('showfile:saveAs', async (_e, name: string) => {
+  const { filePath } = await dialog.showSaveDialog({
+    title: 'Save showfile as', defaultPath: join(showfilesDir(), showfileFileName(name)),
+    filters: [{ name: 'Showfile', extensions: [SHOWFILE_EXT] }],
   })
-  if (!filePaths[0]) return null
-  try {
-    const concert = JSON.parse(readFileSync(filePaths[0], 'utf-8'))
-    const shows: Record<string, any> = {}
-    for (const entry of concert.entries ?? []) {
-      if (entry.type === 'show' && entry.filePath) {
-        try { shows[entry.id] = JSON.parse(readFileSync(entry.filePath, 'utf-8')) } catch {}
-      }
-    }
-    return { ...concert, filePath: filePaths[0], shows }
-  } catch { return null }
+  return filePath || null
 })
 
 ipcMain.handle('audio:openFile', async () => {

@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Show, CueEvent, EngineState } from '../shared/show'
 import type { ResolumeComposition } from '../shared/resolume'
-import type { ConcertFile, LoadedConcert } from '../shared/concert'
 
 interface RemoteInfo { enabled: boolean; running: boolean; port: number; urls: string[]; error: string | null }
 
@@ -38,8 +37,12 @@ const api = {
   getRemoteServer: (): Promise<RemoteInfo> => ipcRenderer.invoke('remote:get'),
   setRemoteServer: (enabled: boolean): Promise<RemoteInfo> => ipcRenderer.invoke('remote:set', enabled),
 
-  saveConcert: (data: ConcertFile): Promise<string | null> => ipcRenderer.invoke('concert:save', data),
-  loadConcert: (): Promise<LoadedConcert | null> => ipcRenderer.invoke('concert:load'),
+  showfileOpen: (): Promise<{ data: any; path: string | null } | null> => ipcRenderer.invoke('showfile:open'),
+  showfileSaveAs: (name: string): Promise<string | null> => ipcRenderer.invoke('showfile:saveAs', name),
+  showfileWrite: (path: string, data: unknown): Promise<{ ok: boolean; savedAt?: number; error?: string }> =>
+    ipcRenderer.invoke('showfile:write', path, data),
+  showfileDefaultPath: (name: string): Promise<string> => ipcRenderer.invoke('showfile:defaultPath', name),
+  showfileRename: (path: string, name: string): Promise<{ ok: boolean; path: string }> => ipcRenderer.invoke('showfile:rename', path, name),
 
   openAudioFile: (): Promise<{ filePath: string; data: Uint8Array } | null> =>
     ipcRenderer.invoke('audio:openFile'),

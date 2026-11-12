@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { TabletAccess } from './TabletAccess'
 import type { RundownEntry, ShowEntry, BreakEntry } from '../../../shared/concert'
 
@@ -8,9 +8,13 @@ interface Props {
   playing: boolean
   nowRemaining: string | null    // time to its end, null when empty
   showMode: boolean
-  concertDirty: boolean
-  activeShowDirty: boolean
-  concertFilePath: string | null
+  // The showfile (every timeline in one file)
+  showfileName: string
+  showfilePath: string | null
+  showfileDirty: boolean
+  autosave: boolean
+  savedAt: number | null
+  saveError: string | null
   resolumeConnected: boolean
   resolumeHost: string
   currentDeck: { index: number; name: string; color: string; count: number } | null  // deck selected in Resolume
@@ -22,10 +26,14 @@ interface Props {
   onAddBreak: () => void
   onEdit: (id: string) => void
   onDelete: (id: string) => void
-  onOpenConcert: () => void
-  onSaveConcert: () => void
-  onOpenShowFile: () => void
-  onSaveActiveShow: () => void
+  onNewShowfile: () => void
+  onOpenShowfile: () => void
+  onSaveShowfile: () => void
+  onSaveShowfileAs: (() => void) | null   // null: no file dialog (browser)
+  onRenameShowfile: (name: string) => void
+  onToggleAutosave: () => void
+  onImportTimeline: () => void
+  onExportTimeline: () => void
   onSettings: () => void
   onToggleShowMode: () => void
   onReconnect: () => void
@@ -43,10 +51,12 @@ const entryName = (e: RundownEntry) =>
 const tcSourceLabel = (src: string) => src === 'ltc-b' ? 'LTC B' : src === 'ltc-a' || src === 'ltc' ? 'LTC A' : 'INT'
 
 export function RundownStrip({
-  rundown, activeId, playing, nowRemaining, showMode, concertDirty, activeShowDirty, concertFilePath,
+  rundown, activeId, playing, nowRemaining, showMode,
+  showfileName, showfilePath, showfileDirty, autosave, savedAt, saveError,
   resolumeConnected, resolumeHost, currentDeck,
   onSelect, confirmEntryId, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
-  onOpenConcert, onSaveConcert, onOpenShowFile, onSaveActiveShow, onSettings,
+  onNewShowfile, onOpenShowfile, onSaveShowfile, onSaveShowfileAs, onRenameShowfile, onToggleAutosave,
+  onImportTimeline, onExportTimeline, onSettings,
   onToggleShowMode, onReconnect,
 }: Props) {
   const [menu, setMenu] = useState<'add' | 'file' | null>(null)
@@ -57,9 +67,22 @@ export function RundownStrip({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const concertName = concertFilePath
-    ? concertFilePath.split('/').pop()?.replace(/\.concert\.json$|\.json$/, '') ?? 'Concert'
-    : 'Concert'
+  // Renaming the showfile in place (click its name)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  // New / Open over unsaved changes (autosave off) takes a second click
+  const [confirmReplace, setConfirmReplace] = useState<'new' | 'open' | null>(null)
+  useEffect(() => { if (menu !== 'file') setConfirmReplace(null) }, [menu])
+  const replace = (what: 'new' | 'open') => {
+    if (showfileDirty && !autosave && confirmReplace !== what) { setConfirmReplace(what); return }
+    setMenu(null)
+    if (what === 'new') onNewShowfile(); else onOpenShowfile()
+  }
+  // "Saved 21:04" ticks over to the right minute without a re-render from elsewhere
+  const savedLabel = saveError ? 'Not saved'
+    : showfileDirty ? (autosave && showfilePath ? 'Saving…' : 'Unsaved')
+    : savedAt ? `Saved ${new Date(savedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+    : showfilePath ? 'Saved' : ''
+  const FILES = 'Files are opened and saved on the computer running the app'
 
   const activeIdx = rundown.findIndex(e => e.id === activeId)
   const active = rundown[activeIdx]
@@ -98,11 +121,60 @@ export function RundownStrip({
       {/* ── Top bar: file actions · mode · connection ── */}
       <div className="topbar">
         <div className="topbar-mac-spacer" />
-        <span className="topbar-title" title={concertFilePath ?? undefined}>
-          {concertName}{concertDirty && <span className="dirty-dot" title="Unsaved changes">●</span>}
-        </span>
+        {renaming !== null ? (
+          <input className="topbar-title-edit" autoFocus value={renaming} onFocus={e => e.target.select()}
+            onChange={e => setRenaming(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            onBlur={() => { onRenameShowfile(renaming); setRenaming(null) }}
+            onKeyDown={e => {
+              e.stopPropagation()
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              if (e.key === 'Escape') setRenaming(null)
+            }} />
+        ) : (
+          <button className="topbar-title" disabled={remote || showMode}
+            title={`Showfile: ${showfileName}${showfilePath ? `\n${showfilePath}` : '\nnot saved yet'}${remote || showMode ? '' : '\n\nClick to rename (renames the file too)'}`}
+            onClick={e => { e.stopPropagation(); setMenu(null); setRenaming(showfileName) }}>
+            {showfileName}
+          </button>
+        )}
+        {!remote && (
+          <span className={`save-state ${saveError ? 'danger' : showfileDirty && !(autosave && showfilePath) ? 'dirty' : ''}`}
+            title={saveError ?? (autosave ? 'Autosave is on: every change is saved to the showfile' : 'Autosave is off: save with ⌘S')}>
+            {showfileDirty && !(autosave && showfilePath) && <span className="dirty-dot">●</span>}{savedLabel}{autosave ? ' · auto' : ''}
+          </span>
+        )}
 
         <div className="topbar-group">
+          <div className="menu-anchor">
+            <button className="btn ghost" disabled={remote} title={remote ? FILES : 'Showfile: every timeline of the show in one file'}
+              onClick={e => { e.stopPropagation(); setMenu(m => m === 'file' ? null : 'file') }}>
+              Showfile ▾
+            </button>
+            {menu === 'file' && (
+              <div className="dropdown" onClick={e => e.stopPropagation()}>
+                <button className={`dropdown-item ${confirmReplace === 'new' ? 'confirm' : ''}`} disabled={showMode}
+                  onClick={() => replace('new')}>{confirmReplace === 'new' ? 'Discard unsaved changes? Click again' : 'New showfile'}</button>
+                <button className={`dropdown-item ${confirmReplace === 'open' ? 'confirm' : ''}`} disabled={showMode}
+                  onClick={() => replace('open')}>{confirmReplace === 'open' ? 'Discard unsaved changes? Click again' : 'Open showfile…'}</button>
+                <div className="dropdown-sep" />
+                <button className="dropdown-item" onClick={() => { onSaveShowfile(); setMenu(null) }}>
+                  Save<span className="dropdown-key">⌘S</span>
+                </button>
+                {onSaveShowfileAs && (
+                  <button className="dropdown-item" onClick={() => { onSaveShowfileAs(); setMenu(null) }}>Save as…</button>
+                )}
+                <button className="dropdown-item" disabled={showMode} onClick={() => { setMenu(null); setRenaming(showfileName) }}>Rename…</button>
+                <button className="dropdown-item" aria-checked={autosave} role="menuitemcheckbox" onClick={onToggleAutosave}
+                  title="Save every change to the showfile automatically">
+                  Autosave<span className={`dropdown-key ${autosave ? 'on' : ''}`}>{autosave ? 'On' : 'Off'}</span>
+                </button>
+                <div className="dropdown-sep" />
+                <button className="dropdown-item" onClick={() => { onExportTimeline(); setMenu(null) }}>Export timeline…</button>
+              </div>
+            )}
+          </div>
+
           <div className="menu-anchor">
             <button className="btn ghost" disabled={showMode}
               onClick={e => { e.stopPropagation(); setMenu(m => m === 'add' ? null : 'add') }}>
@@ -111,33 +183,17 @@ export function RundownStrip({
             {menu === 'add' && (
               <div className="dropdown" onClick={e => e.stopPropagation()}>
                 <button className="dropdown-item" onClick={() => { onAddShow(); setMenu(null) }}>New timeline</button>
-                <button className="dropdown-item" disabled={remote} title={remote ? 'Files are opened and saved on the computer running the app' : undefined}
-                  onClick={() => { onOpenShowFile(); setMenu(null) }}>Open timeline from file…</button>
+                <button className="dropdown-item" disabled={remote} title={remote ? FILES : 'Add a timeline exported from another showfile'}
+                  onClick={() => { onImportTimeline(); setMenu(null) }}>Import timeline…</button>
                 <div className="dropdown-sep" />
                 <button className="dropdown-item" onClick={() => { onAddBreak(); setMenu(null) }}>Break</button>
               </div>
             )}
           </div>
 
-          <div className="menu-anchor">
-            <button className="btn ghost" disabled={remote} title={remote ? 'Files are opened and saved on the computer running the app' : undefined}
-              onClick={e => { e.stopPropagation(); setMenu(m => m === 'file' ? null : 'file') }}>
-              Concert ▾
-            </button>
-            {menu === 'file' && (
-              <div className="dropdown" onClick={e => e.stopPropagation()}>
-                <button className="dropdown-item" disabled={showMode}
-                  onClick={() => { onOpenConcert(); setMenu(null) }}>Open concert…</button>
-                <button className="dropdown-item" onClick={() => { onSaveConcert(); setMenu(null) }}>
-                  Save concert{concertDirty ? ' ●' : ''}
-                </button>
-              </div>
-            )}
-          </div>
-
-          <button className={`btn ${activeShowDirty ? '' : 'ghost'}`} onClick={onSaveActiveShow} disabled={remote}
-            title={remote ? 'Files are opened and saved on the computer running the app' : 'Save the active timeline to a file'}>
-            Save timeline{activeShowDirty && <span className="dirty-dot">●</span>}
+          <button className={`btn ${showfileDirty && !(autosave && showfilePath) ? '' : 'ghost'}`} onClick={onSaveShowfile} disabled={remote}
+            title={remote ? FILES : 'Save the showfile (⌘S)'}>
+            Save
           </button>
 
           <button className="btn ghost" onClick={onSettings} disabled={showMode || remote}
@@ -179,7 +235,6 @@ export function RundownStrip({
             const isActive = entry.id === activeId
             const isNext = next?.id === entry.id
             const isLive = isActive && playing && entry.type === 'show'
-            const dirty = entry.type === 'show' && (entry as ShowEntry).dirty
             return (
               <div key={entry.id} className="rd-slot">
                 {dropTargetId === entry.id && dropSide === 'before' && <div className="rd-drop-indicator" />}
@@ -198,7 +253,7 @@ export function RundownStrip({
                   <div className="rd-stripe" style={{ background: entry.color }} />
                   <div className="rd-body">
                     <div className="rd-head">
-                      <span className="rd-num mono">{String(idx + 1).padStart(2, '0')}{dirty ? '*' : ''}</span>
+                      <span className="rd-num mono">{String(idx + 1).padStart(2, '0')}</span>
                       {isLive && <span className="chip live">▶ Live</span>}
                       {isActive && !isLive && <span className="chip">Now</span>}
                       {isNext && <span className="chip next">▷ Next</span>}
@@ -221,9 +276,9 @@ export function RundownStrip({
                       <button className="rd-ctl" title="Edit" onClick={e => { e.stopPropagation(); onEdit(entry.id) }}>✎</button>
                       {confirmDeleteId === entry.id ? (
                         <button className="rd-ctl armed"
-                          title={dirty ? 'Timeline has unsaved changes' : 'Remove from rundown'}
+                          title="Remove from the showfile"
                           onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); onDelete(entry.id) }}>
-                          {dirty ? 'Delete (unsaved)?' : 'Delete?'}
+                          Delete?
                         </button>
                       ) : (
                         <button className="rd-ctl" title="Remove" onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}>✕</button>

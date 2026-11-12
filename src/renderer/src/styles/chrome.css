@@ -29,8 +29,20 @@
 .topbar-mac-spacer { width: 76px; align-self: stretch; flex-shrink: 0; -webkit-app-region: drag; }
 .topbar-title {
   font-size: var(--fs-label); font-weight: 700; color: var(--text-hi);
-  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: transparent; border: none; padding: 2px 4px; margin-left: -4px; cursor: text; font-family: inherit;
 }
+.topbar-title:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--border-field); }
+.topbar-title:disabled { cursor: default; }
+.topbar-title-edit {
+  width: 240px; height: 22px; padding: 0 4px; font-size: var(--fs-label); font-weight: 700; font-family: inherit;
+  background: var(--bg-well); color: var(--text-hi); border: 1px solid var(--focus-ring); outline: none;
+}
+/* Showfile save state next to its name: "Saved 21:04 · auto", "● Unsaved" */
+.save-state { margin-left: 6px; font-size: var(--fs-meta); color: var(--text-faint); white-space: nowrap; }
+.save-state.dirty { color: var(--select); }
+.save-state.danger { color: var(--danger); font-weight: 700; }
+.save-state .dirty-dot { margin-right: 3px; }
 .topbar-group { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
 
 .menu-anchor { position: relative; }
@@ -46,6 +58,10 @@
 .dropdown-item:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
 .dropdown-item:disabled { color: var(--text-faint); cursor: default; }
 .dropdown-sep { height: 1px; background: var(--bg-gutter); margin: 4px 0; }
+.dropdown-item { display: flex; align-items: center; }
+.dropdown-key { margin-left: auto; padding-left: 24px; color: var(--text-faint); font-size: var(--fs-meta); }
+.dropdown-key.on { color: var(--live); font-weight: 700; }
+.dropdown-item.confirm { color: var(--select); font-weight: 700; }
 
 /* SETUP | SHOW segmented switch */
 .mode-switch {

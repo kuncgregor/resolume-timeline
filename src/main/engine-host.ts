@@ -13,6 +13,7 @@ import { ResolumeRest } from './resolume-rest'
 import { Scheduler, type LaneTarget } from './scheduler'
 import { rv } from '../shared/resolume'
 import { isValidRundown } from '../shared/concert'
+import { SHOWFILE_EXT, SHOWFILE_FORMAT, isShowfile, showfileFileName } from '../shared/showfile'
 import type { Show, CueEvent } from '../shared/show'
 
 /** Per-user data folder, the same for the packaged app and the dev bridge. */
@@ -23,6 +24,42 @@ export function appDataDir(): string {
     : path.join(home, '.config', 'resolume-timeline')
   try { fs.mkdirSync(dir, { recursive: true }) } catch { /* read-only: session stays in memory */ }
   return dir
+}
+
+/** Where showfiles go unless the user saves one elsewhere. */
+export function showfilesDir(): string {
+  return path.join(os.homedir(), 'Documents', 'Resolume Timeline')
+}
+
+const isShowfilePath = (p: unknown): p is string =>
+  typeof p === 'string' && path.isAbsolute(p) && p.toLowerCase().endsWith(`.${SHOWFILE_EXT}`)
+
+/** A path for a new showfile with this name that doesn't overwrite another one. */
+export function freeShowfilePath(dir: string, name: string, keep?: string): string {
+  const file = showfileFileName(name)
+  const stem = file.slice(0, -(SHOWFILE_EXT.length + 1))
+  for (let n = 1; ; n++) {
+    const p = path.join(dir, n === 1 ? file : `${stem} ${n}.${SHOWFILE_EXT}`)
+    if (p === keep || !fs.existsSync(p)) return p
+  }
+}
+
+/** Reads a showfile, or an old .concert.json (timelines in their own files) as one. */
+export function readShowfile(file: string): { data: unknown; path: string | null } | null {
+  try {
+    const d = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (isShowfile(d)) return { data: d, path: file }
+    if (!Array.isArray(d?.entries)) return null
+    const entries = d.entries.map((e: any, i: number) => {
+      if (e.type !== 'show') return { id: e.id ?? `b${i}`, type: 'break', label: e.label ?? 'Break', duration: e.duration ?? '00:20:00:00', color: e.color ?? '#333333', notes: e.notes ?? '' }
+      let show = null
+      try { show = e.filePath ? JSON.parse(fs.readFileSync(e.filePath, 'utf8')) : null } catch { /* missing file */ }
+      return show && { id: e.id ?? `s${i}`, type: 'show', show, filePath: null, dirty: false, color: e.color ?? '#56636e', notes: e.notes ?? '' }
+    }).filter(Boolean)
+    const name = d.name || path.basename(file).replace(/\.concert\.json$|\.json$/, '')
+    // Converted: saved as a new showfile (path null), the old files stay as they are
+    return { data: { format: SHOWFILE_FORMAT, version: 1, name, savedAt: Date.now(), activeId: entries[0]?.id, autosave: true, entries }, path: null }
+  } catch { return null }
 }
 
 /** The UI session: what the renderer autosaves (rundown, active timeline, concert file, SHOW mode). */
@@ -147,6 +184,30 @@ export class EngineHost {
     loadShowDirect: (show: Show) => this.loadShow(show),
     getCurrentShow: () => this.currentShow,
     sessionGet: () => this.session && { ...this.session, rev: this.rev },
+
+    // Showfile on disk (only .rtshow files; not reachable from the tablet server)
+    showfileDefaultPath: (name: string) => freeShowfilePath(showfilesDir(), name),
+    showfileWrite: (file: string, data: unknown) => {
+      if (!isShowfilePath(file) || !isShowfile(data)) return { ok: false, error: 'not a showfile' }
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        const tmp = `${file}.tmp`
+        fs.writeFileSync(tmp, JSON.stringify(data, null, 1))
+        fs.renameSync(tmp, file)
+        return { ok: true, savedAt: Date.now() }
+      } catch (e) { return { ok: false, error: String((e as Error).message ?? e) } }
+    },
+    // Renaming the showfile in the app renames its file (same folder, never over another file)
+    showfileRename: (file: string, name: string) => {
+      if (!isShowfilePath(file)) return { ok: false, path: file }
+      const next = freeShowfilePath(path.dirname(file), name, file)
+      if (next === file) return { ok: true, path: file }
+      try {
+        if (fs.existsSync(file)) fs.renameSync(file, next)
+        return { ok: true, path: next }
+      } catch { return { ok: false, path: file } }
+    },
+    showfileRead: (file: string) => readShowfile(file),
     sessionSet: (data: Session, from?: string, baseRev?: number) => this.setSession(data, from, baseRev),
 
     getComposition: () => this.rest.getComposition(),

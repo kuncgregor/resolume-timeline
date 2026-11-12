@@ -65,7 +65,8 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
   if (url.pathname === '/__tl/rpc' && req.method === 'POST' && req.headers['content-type']?.startsWith('application/json')) {
     try {
       const { method, args } = JSON.parse(await readBody(req))
-      const fn = host.methods[method]
+      // Files on this computer: only the app window, never a browser on the network
+      const fn = key !== undefined && LOCAL_ONLY.has(method) ? undefined : host.methods[method]
       res.setHeader('Content-Type', 'application/json')
       if (!fn) { res.statusCode = 404; res.end(JSON.stringify({ error: `unknown method ${method}` })); return true }
       const result = await fn(...(args ?? []))
@@ -80,6 +81,8 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
   res.statusCode = 404; res.end()
   return true
 }
+
+const LOCAL_ONLY = new Set(['showfileDefaultPath', 'showfileWrite', 'showfileRename', 'showfileRead'])
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
