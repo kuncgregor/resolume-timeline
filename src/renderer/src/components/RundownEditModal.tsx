@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useEscape } from './useEscape'
 import type { RundownEntry, BreakEntry, ShowEntry } from '../../../shared/concert'
 import { TAG_COLORS } from '../theme'
+import { framesToSmpte } from './timeUtils'
+import { BPM_MIN, BPM_MAX, BEATS_PER_BAR_MIN, BEATS_PER_BAR_MAX, DEFAULT_BEATS_PER_BAR, roundBpm } from '../grid'
 
 // Muted Resolume-style tags first, then a few saturated ones and neutral greys
 const COLORS = [
@@ -17,6 +19,7 @@ interface Updates {
   duration?: string
   name?: string        // timeline name (show.name)
   clock?: { source: TcSource; offset: string }   // timeline: which timecode it follows
+  tempo?: { bpm?: number; beatsPerBar?: number; downbeat?: string }  // undefined = none / default
 }
 
 export type TcSource = 'internal' | 'ltc-a' | 'ltc-b'
@@ -27,9 +30,12 @@ interface Props {
   entry: RundownEntry
   onSave: (id: string, updates: Updates) => void
   onClose: () => void
+  playheadFrame: number | null   // current playhead (timeline frame) when this is the active timeline
 }
 
-export function RundownEditModal({ entry, otherTimelines, onSave, onClose }: Props) {
+const ZERO_TC = '00:00:00:00'
+
+export function RundownEditModal({ entry, otherTimelines, onSave, onClose, playheadFrame }: Props) {
   useEscape(onClose)
   const [color, setColor] = useState(entry.color)
   const [notes, setNotes] = useState(entry.notes)
@@ -48,12 +54,37 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose }: Pro
   const tcMatch = TC_RE.exec(startTc.trim())
   const tcValid = !!tcMatch && Number(tcMatch[1]) < 24 && Number(tcMatch[4]) < Math.round(fps)
 
+  // Tempo: BPM (empty = none), beats per bar, timeline position of bar 1 (timeline-relative)
+  const showData = entry.type === 'show' ? (entry as ShowEntry).show : null
+  const [bpmText, setBpmText] = useState(showData?.bpm != null ? String(showData.bpm) : '')
+  const [bpbText, setBpbText] = useState(String(showData?.beatsPerBar ?? DEFAULT_BEATS_PER_BAR))
+  const [downbeat, setDownbeat] = useState(showData?.downbeat || ZERO_TC)
+  const bpmNum = bpmText.trim() === '' ? undefined : Number(bpmText.trim().replace(',', '.'))
+  const bpmValid = bpmNum === undefined || (Number.isFinite(bpmNum) && bpmNum >= BPM_MIN && bpmNum <= BPM_MAX)
+  const bpbNum = Number(bpbText.trim())
+  const bpbValid = Number.isInteger(bpbNum) && bpbNum >= BEATS_PER_BAR_MIN && bpbNum <= BEATS_PER_BAR_MAX
+  const dbMatch = TC_RE.exec(downbeat.trim())
+  const dbValid = !!dbMatch && Number(dbMatch[1]) < 24 && Number(dbMatch[4]) < Math.round(fps)
+  const tempoValid = entry.type !== 'show' || (bpmValid && bpbValid && dbValid)
+  const invalidReason = entry.type !== 'show' ? undefined
+    : !tcValid ? `Start TC must be HH:MM:SS:FF (frames below ${Math.round(fps)})`
+    : !bpmValid ? `BPM must be ${BPM_MIN}–${BPM_MAX}, or empty for none`
+    : !bpbValid ? `Beats per bar must be a whole number ${BEATS_PER_BAR_MIN}–${BEATS_PER_BAR_MAX}`
+    : !dbValid ? `Bar 1 at must be HH:MM:SS:FF (frames below ${Math.round(fps)})`
+    : undefined
+
   const handleSave = () => {
     const updates: Updates = { color, notes }
     if (entry.type === 'break') { updates.label = label || 'Break'; updates.duration = duration }
     else {
       if (name.trim()) updates.name = name.trim()
-      if (!tcValid) return
+      if (!tcValid || !tempoValid) return
+      const db = downbeat.trim().replace(';', ':')
+      updates.tempo = {
+        bpm: bpmNum === undefined ? undefined : roundBpm(bpmNum),
+        beatsPerBar: bpbNum === DEFAULT_BEATS_PER_BAR ? undefined : bpbNum,
+        downbeat: db === ZERO_TC ? undefined : db,
+      }
       const offset = startTc.trim().replace(';', ':')
       // Untouched (e.g. only the colour changed): keep a legacy 'ltc' / 'mtc' source as it is
       if (tcSource !== initialSource || offset !== (clock?.offset || '00:00:00:00')) updates.clock = { source: tcSource, offset }
@@ -121,6 +152,50 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose }: Pro
             </div>
           )}
 
+          {entry.type === 'show' && (
+            <div className="modal-section">
+              <div className="modal-section-title">Tempo</div>
+              <div className="modal-row">
+                <span className="modal-label">BPM</span>
+                <input
+                  className={`modal-inp modal-num mono ${bpmValid ? '' : 'invalid'}`} inputMode="decimal"
+                  value={bpmText} placeholder="—"
+                  onChange={e => setBpmText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+                />
+                <span className="modal-hint inline">{BPM_MIN}–{BPM_MAX}, empty = no bar grid</span>
+              </div>
+              <div className="modal-row">
+                <span className="modal-label">Beats per bar</span>
+                <input
+                  type="number" min={BEATS_PER_BAR_MIN} max={BEATS_PER_BAR_MAX} step={1}
+                  className={`modal-inp modal-num mono ${bpbValid ? '' : 'invalid'}`}
+                  value={bpbText}
+                  onChange={e => setBpbText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+                />
+                <span className="modal-hint inline">{bpbValid ? `${bpbNum}/4` : ''}</span>
+              </div>
+              <div className="modal-row">
+                <span className="modal-label">Bar 1 at</span>
+                <input
+                  className={`modal-inp modal-tc mono ${dbValid ? '' : 'invalid'}`}
+                  value={downbeat}
+                  onChange={e => setDownbeat(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+                  placeholder={ZERO_TC}
+                />
+                {playheadFrame != null && (
+                  <button className="btn" onClick={() => setDownbeat(framesToSmpte(playheadFrame, fps))}
+                    title="Use the current playhead position">Playhead</button>
+                )}
+              </div>
+              <div className="modal-hint modal-hint-indent">
+                Timeline position of the first downbeat (after a pickup / intro), counted from the timeline start — the start TC is not included. Earlier bars count down: 0, −1 …
+              </div>
+            </div>
+          )}
+
           {entry.type === 'break' && (
             <div className="modal-section">
               <div className="modal-section-title">Break</div>
@@ -172,10 +247,11 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose }: Pro
           </div>
         </div>
 
+        {invalidReason && <div className="modal-footer-error">{invalidReason}</div>}
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn modal-primary" onClick={handleSave} disabled={entry.type === 'show' && !tcValid}
-            title={entry.type === 'show' && !tcValid ? `Start TC must be HH:MM:SS:FF (frames below ${Math.round(fps)})` : undefined}>Save</button>
+          <button className="btn modal-primary" onClick={handleSave} disabled={!!invalidReason}
+            title={invalidReason}>Save</button>
         </div>
       </div>
     </div>

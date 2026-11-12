@@ -3,7 +3,10 @@ export interface Show {
   name: string
   frameRate: number
   duration: string
-  bpm?: number
+  bpm?: number              // tempo (20–300); none = no musical grid
+  beatsPerBar?: number      // time signature numerator (default 4)
+  downbeat?: string         // SMPTE, timeline position of bar 1 beat 1 (timeline-relative, default 00:00:00:00)
+  rulerMode?: 'timecode' | 'bars'  // ruler/grid view (default: 'bars' when bpm is set, else 'timecode')
   resolume: {
     host: string
     oscPort: number

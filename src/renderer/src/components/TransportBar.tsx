@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from 'react'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
+import { BPM_MIN, BPM_MAX, formatBarBeat, formatBpm, frameToBarBeat, roundBpm, tempoOf, validBpm } from '../grid'
 
 interface Props {
   engineState: EngineState
@@ -23,7 +25,12 @@ interface Props {
   onLocate: (frame: number) => void
   onToggleBrowser: () => void
   browserOpen: boolean
+  onSetBpm: (bpm: number | undefined) => void   // undefined = no BPM
 }
+
+const TAP_RESET_MS = 2000   // idle time after which tapping starts over
+const TAP_MAX_INTERVALS = 8
+const TAP_MIN_TAPS = 4      // BPM is set from the 4th tap on
 
 // Remaining-time thresholds (seconds) for the warning and danger colours
 const WARN_S = 30
@@ -31,13 +38,15 @@ const DANGER_S = 10
 
 export function TransportBar({
   engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord,
-  overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen,
+  overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm,
 }: Props) {
   const { frame, playing, fps } = engineState
   const tc = framesToSmpte(frame + offsetFrames, fps)
   const source = show?.clock.source ?? 'internal'
   const isLtc = source === 'ltc' || source === 'ltc-a' || source === 'ltc-b'
   const ltcName = source === 'ltc-b' ? 'LTC B' : 'LTC A'
+  const tempo = show ? tempoOf(show) : null
+  const barPos = tempo ? formatBarBeat(frameToBarBeat(frame, tempo)) : null
 
   const remaining = Math.max(0, endFrame - frame)
   const remainingS = remaining / fps
@@ -49,6 +58,7 @@ export function TransportBar({
         <div className={`tc-display ${playing ? 'running' : ''}`}>{tc}</div>
         <div className="tc-badges">
           <span className="fps-badge" title="Project frame rate">{fps}</span>
+          {barPos && <span className={`bar-pos mono ${playing ? 'running' : ''}`} title="Musical position at the playhead (bar.beat.sixteenth)">{barPos}</span>}
           {isLtc ? (
             !ltcActive
               ? <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
@@ -97,12 +107,7 @@ export function TransportBar({
         </span>
       </div>
 
-      {show?.bpm != null && (
-        <div className="bpm-block" title="BPM (timeline grid)">
-          <span className="remain-label">BPM</span>
-          <span className="bpm-value mono">{show.bpm}</span>
-        </div>
-      )}
+      <BpmBlock show={show} readOnly={readOnly} onSetBpm={onSetBpm} />
 
       <div className="spacer" />
 
@@ -117,6 +122,105 @@ export function TransportBar({
         title="Show or hide Resolume clips">
         Clips
       </button>
+    </div>
+  )
+}
+
+// BPM display / inline editor + tap tempo. Always visible ("—" without a BPM).
+function BpmBlock({ show, readOnly, onSetBpm }: { show: Show | null; readOnly: boolean; onSetBpm: (bpm: number | undefined) => void }) {
+  const bpm = show?.bpm
+  const has = validBpm(bpm)
+  const tempo = show ? tempoOf(show) : null
+  const sig = `${tempo?.beatsPerBar ?? show?.beatsPerBar ?? 4}/4`
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const closedRef = useRef(false)   // Enter / Esc already handled: the blur that follows must not commit again
+  const taps = useRef<number[]>([])
+  const [tapCount, setTapCount] = useState(0)
+  const tapTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => { if (readOnly) setEditing(false) }, [readOnly])
+  useEffect(() => () => clearTimeout(tapTimer.current), [])
+  useEffect(() => { if (editing) inputRef.current?.select() }, [editing])
+
+  const parsed = text.trim() === '' ? undefined : Number(text.trim().replace(',', '.'))
+  const valid = parsed === undefined || (Number.isFinite(parsed) && parsed >= BPM_MIN && parsed <= BPM_MAX)
+
+  const startEdit = () => {
+    if (readOnly || !show) return
+    setText(has ? String(roundBpm(bpm)) : '')
+    closedRef.current = false
+    setEditing(true)
+  }
+  const commit = () => {
+    if (!valid || closedRef.current) return
+    closedRef.current = true
+    setEditing(false)
+    const next = parsed === undefined ? undefined : roundBpm(parsed)
+    if (next !== bpm) onSetBpm(next)
+  }
+  const step = (delta: number) => {
+    const base = parsed !== undefined && Number.isFinite(parsed) ? parsed : has ? bpm : 120
+    const v = Math.max(BPM_MIN, Math.min(BPM_MAX, Math.round((base + delta) * 10) / 10))
+    setText(String(v))
+  }
+
+  // Festival tracks are whole BPMs: round to 1 (Shift+tap keeps one decimal)
+  const tap = (precise: boolean) => {
+    if (readOnly || !show) return
+    const now = performance.now()
+    const t = taps.current
+    if (t.length && now - t[t.length - 1] > TAP_RESET_MS) t.length = 0
+    t.push(now)
+    if (t.length > TAP_MAX_INTERVALS + 1) t.splice(0, t.length - TAP_MAX_INTERVALS - 1)
+    setTapCount(t.length)
+    clearTimeout(tapTimer.current)
+    tapTimer.current = setTimeout(() => { taps.current = []; setTapCount(0) }, TAP_RESET_MS)
+    if (t.length >= TAP_MIN_TAPS) {
+      const avg = (t[t.length - 1] - t[0]) / (t.length - 1)
+      const v = precise ? Math.round((60000 / avg) * 10) / 10 : Math.round(60000 / avg)
+      if (v >= BPM_MIN && v <= BPM_MAX && v !== bpm) onSetBpm(v)
+    }
+  }
+
+  return (
+    <div className={`bpm-block ${has ? '' : 'none'}`}>
+      <div className="bpm-head">
+        <span className="remain-label">BPM</span>
+        <span className="bpm-sig mono" title="Time signature (beats per bar) — ✎ Edit timeline › Tempo">{has ? sig : ''}</span>
+      </div>
+      <div className="bpm-row">
+        {editing ? (
+          <input
+            ref={inputRef}
+            className={`bpm-input mono ${valid ? '' : 'invalid'}`}
+            value={text} inputMode="decimal" placeholder="—"
+            onChange={e => setText(e.target.value)}
+            onBlur={() => { if (closedRef.current) return; if (valid) commit(); else { closedRef.current = true; setEditing(false) } }}
+            onKeyDown={e => {
+              e.stopPropagation()
+              if (e.key === 'Enter') { e.preventDefault(); commit() }
+              else if (e.key === 'Escape') { e.preventDefault(); closedRef.current = true; setEditing(false) }
+              else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault()
+                step((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 0.1 : 1))
+              }
+            }}
+            title={`BPM ${BPM_MIN}–${BPM_MAX}. Enter = set, Esc = cancel, ↑/↓ ±1, Shift+↑/↓ ±0.1, empty = no BPM`}
+          />
+        ) : (
+          <button className="bpm-value mono" onClick={startEdit} disabled={readOnly || !show}
+            title={readOnly ? 'BPM (locked in SHOW mode)' : has ? 'Click to change the BPM' : 'Click to set a BPM (bar grid on the timeline)'}
+          >{formatBpm(bpm)}</button>
+        )}
+        {/* Never takes keyboard focus: Enter must stay GO, Space play/stop */}
+        <button className={`bpm-tap ${tapCount > 0 ? 'on' : ''}`} tabIndex={-1}
+          onPointerDown={e => { e.preventDefault(); if (e.button === 0) tap(e.shiftKey) }}
+          disabled={readOnly || !show}
+          title={readOnly ? 'Tap tempo (locked in SHOW mode)' : 'Tap tempo: tap 4 or more times on the beat (whole BPM; Shift+tap for decimals; resets after 2 s)'}
+        >{tapCount > 0 && tapCount < TAP_MIN_TAPS ? `TAP ${tapCount}` : 'TAP'}</button>
+      </div>
     </div>
   )
 }

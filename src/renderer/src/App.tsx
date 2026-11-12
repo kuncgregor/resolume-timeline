@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe, ParamRef } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
 import type { RundownEntry, ShowEntry, BreakEntry, ConcertFile } from '../../shared/concert'
@@ -23,6 +23,7 @@ import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
 import { PPF_MIN, PPF_MAX } from './layout'
+import { tempoOf, rulerModeOf } from './grid'
 import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
@@ -287,6 +288,8 @@ export default function App() {
   const activeIsBreak = activeEntry?.type === 'break'
   const fps = show.frameRate
   const offsetFrames = smpteToFrames(show.clock.offset || '00:00:00:00', fps)
+  const tempo = useMemo(() => tempoOf(show), [show.bpm, show.beatsPerBar, show.downbeat, show.frameRate])
+  const rulerMode = rulerModeOf(show)
 
   const [engineState, setEngineState] = useState<EngineState>({
     frame: 0, playing: false, fps: 25, showName: '', resolumeConnected: false,
@@ -760,16 +763,21 @@ export default function App() {
 
   const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
     name?: string; clock?: { source: Show['clock']['source']; offset: string }
+    tempo?: Pick<Show, 'bpm' | 'beatsPerBar' | 'downbeat'>   // undefined fields = none / default
   }) => {
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
       if (e.type === 'show') {
         const renamed = updates.name !== undefined && updates.name !== e.show.name
         const reclocked = !!updates.clock && (updates.clock.source !== e.show.clock.source || updates.clock.offset !== e.show.clock.offset)
-        const show = renamed || reclocked ? {
+        const t = updates.tempo
+        const retimed = !!t && (t.bpm !== e.show.bpm || (t.beatsPerBar ?? 4) !== (e.show.beatsPerBar ?? 4)
+          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00'))
+        const show = renamed || reclocked || retimed ? {
           ...e.show,
           ...(renamed ? { name: updates.name! } : {}),
           ...(reclocked ? { clock: { ...e.show.clock, ...updates.clock } } : {}),
+          ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat } : {}),
         } : e.show
         return {
           ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes,
@@ -1547,6 +1555,7 @@ export default function App() {
         onLocate={handleLocate}
         onToggleBrowser={() => setShowBrowser(b => !b)}
         browserOpen={showBrowser}
+        onSetBpm={bpm => setShow(prev => ({ ...prev, bpm }))}
       />
 
       <div className="main-area">
@@ -1598,9 +1607,12 @@ export default function App() {
               onScrollY={handleScrollY}
               onLoadAudio={handleLoadAudioTrack}
               onUpdateAudio={handleUpdateAudioTrack}
+              rulerMode={rulerMode} hasTempo={!!tempo}
+              onSetRulerMode={m => setShow(prev => ({ ...prev, rulerMode: m }))}
             />
             <TimelineCanvas
-              tracks={show.tracks} markers={show.markers} fps={fps} bpm={show.bpm}
+              tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode}
+              onSetDownbeat={f => setShow(prev => ({ ...prev, downbeat: f > 0 ? framesToSmpte(f, prev.frameRate) : undefined }))}
               readOnly={showMode} laneStatus={laneStatus} overrides={overrides} decks={decks}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
@@ -1668,6 +1680,7 @@ export default function App() {
         <RundownEditModal
           entry={editingEntry}
           onSave={handleEditEntry}
+          playheadFrame={editingEntry.id === activeShowEntry?.id ? engineState.frame : null}
           otherTimelines={rundown.filter((e): e is ShowEntry => e.type === 'show' && e.id !== editingEntry.id)
             .map(e => ({ name: e.show.name, source: e.show.clock.source, offset: e.show.clock.offset || '00:00:00:00' }))}
           onClose={() => setEditingEntryId(null)}

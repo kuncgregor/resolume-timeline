@@ -198,11 +198,16 @@ export function RundownStrip({
                       {confirmEntryId === entry.id && <span className="chip warn blink">Click again</span>}
                     </div>
                     <div className="rd-name" title={`${entryName(entry)}${showMode ? '' : ' — double-click to rename'}`}>{entryName(entry)}</div>
-                    <div className="rd-meta mono">
-                      {entry.type === 'show'
-                        ? <>{tcSourceLabel((entry as ShowEntry).show.clock.source)} · {(entry as ShowEntry).show.clock.offset || '00:00:00:00'}{(entry as ShowEntry).show.bpm ? ` · ${(entry as ShowEntry).show.bpm} BPM` : ''}</>
-                        : <>⏸ {(entry as BreakEntry).duration}</>}
-                    </div>
+                    {entry.type === 'show' ? (() => {
+                      // An internal-clock timeline at 00:00:00:00 needs no start TC: leave room for the BPM
+                      const sh = (entry as ShowEntry).show
+                      const src = tcSourceLabel(sh.clock.source)
+                      const start = sh.clock.offset || '00:00:00:00'
+                      const parts = [src, ...(src === 'INT' && start === '00:00:00:00' ? [] : [start]), ...(sh.bpm ? [`${sh.bpm} BPM`] : [])]
+                      return <div className="rd-meta mono" title={`Clock: ${src} · start ${start}${sh.bpm ? ` · ${sh.bpm} BPM ${sh.beatsPerBar ?? 4}/4` : ''}`}>{parts.join(' · ')}</div>
+                    })() : (
+                      <div className="rd-meta mono">⏸ {(entry as BreakEntry).duration}</div>
+                    )}
                   </div>
                   {!showMode && (
                     <div className={`rd-controls${confirmDeleteId === entry.id ? ' confirming' : ''}`}>

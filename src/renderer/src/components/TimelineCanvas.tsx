@@ -10,6 +10,7 @@ import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { T, TAG_COLORS } from '../theme'
 import { deckOfCue, type DeckInfo } from '../decks'
 import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
+import { type Tempo, musicalSteps, forEachGridLine, frameToBarBeat, formatBarBeat, isBarLine, isBeatLine, isOnStep, snapFrame } from '../grid'
 
 // Picker offers the muted tags first; saturated ones stay for shows that already use them
 const SATURATED_COLORS = ['#E74C3C', '#E2934A', '#F1C40F', '#2ECC71', '#1ABC9C', '#3498DB', '#9B59B6', '#E91E63']
@@ -307,7 +308,9 @@ interface Props {
   tracks: Track[]
   markers: { id: string; time: string; name: string; color: string }[]
   fps: number
-  bpm?: number
+  tempo: Tempo | null                 // musical grid (null = no BPM)
+  onSetDownbeat: (frame: number) => void   // ruler right-click: where bar 1 beat 1 is
+  rulerMode: 'timecode' | 'bars'      // in effect; 'bars' only with a tempo
   frame: number
   pxPerFrame: number
   scrollFrame: number
@@ -356,20 +359,31 @@ interface Props {
 interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number }
 
 export function TimelineCanvas({
-  tracks: tracksProp, markers, fps, bpm, frame, pxPerFrame, scrollFrame, draggingClip,
+  tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
-  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation,
+  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, onSetDownbeat,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
+  const bars = rulerModeProp === 'bars' && tempo ? tempo : null   // musical ruler + grid in effect
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
   const [ctxInputVal, setCtxInputVal] = useState('')
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
+  const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number } | null>(null)
+  // The Bar 1 menu closes on any click outside it (headers, transport, panels) and on Escape
+  useEffect(() => {
+    if (!rulerMenu) return
+    const close = () => setRulerMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
+  }, [rulerMenu])
   const [fadeSeconds, setFadeSeconds] = useState(1)   // clip menu fade length, kept for the session
   const [sel, setSel] = useState<KfHit[]>([])
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
@@ -643,8 +657,10 @@ export function TimelineCanvas({
     ctx.fillStyle = T.well
     ctx.fillRect(0, 0, W, H)
 
-    drawRuler(ctx, W, fps, pxPerFrame, scrollFrame, markers)
+    drawRuler(ctx, W, fps, pxPerFrame, scrollFrame, markers, bars)
     drawAudioLane(ctx, W, audioTrack, fps, pxPerFrame, scrollFrame, audioDuration, waveformInfo ?? null)
+    // Bars mode: bar lines only, very faint, over the waveform, so the downbeat can be checked against the song
+    if (bars) drawBarGrid(ctx, W, RULER_H, AUDIO_LANE_H - 1, pxPerFrame, scrollFrame, bars, true)
 
     // Track area (below ruler + audio lane)
     ctx.save()
@@ -714,10 +730,10 @@ export function TimelineCanvas({
       }
     })
 
-    // Time / beat grid over the tracks
+    // Time grid (TC mode) or bar / beat grid (BARS mode) over the tracks
     if (tracksBottom > TRACKS_TOP) {
       const gh = tracksBottom - TRACKS_TOP
-      if (bpm && bpm > 0) drawBpmGrid(ctx, W, TRACKS_TOP, gh, fps, bpm, pxPerFrame, scrollFrame)
+      if (bars) drawBarGrid(ctx, W, TRACKS_TOP, gh, pxPerFrame, scrollFrame, bars, false)
       else {
         const { major } = rulerSteps(fps, pxPerFrame)
         ctx.fillStyle = 'rgba(255,255,255,0.04)'
@@ -928,7 +944,7 @@ export function TimelineCanvas({
       ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf])
+  }, [tracks, markers, fps, bars, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf])
 
   // ── Resize / DPR ───────────────────────────────────────────────────────────
 
@@ -1012,6 +1028,7 @@ export function TimelineCanvas({
     if (e.button !== 0) return
     setContextMenu(null)
     setClipColorPicker(null)
+    setRulerMenu(null)
     const { x, y } = localXY(e)
     const layout = getLayout()
 
@@ -1144,7 +1161,8 @@ export function TimelineCanvas({
       let snapF: number | null = null
       if (!fine && lock !== 'y') {
         const cands = [...kd.snapTargets, Math.round(frameRef.current)]
-        if (bpm && bpm > 0) { const beatF = (fps * 60) / bpm; cands.push(Math.round(Math.round(rawF / beatF) * beatF)) }
+        // Beats of the visible bar grid (from the downbeat); none in TC mode, where no beat grid is drawn
+        if (bars) cands.push(snapFrame(rawF, bars))
         let best = SNAP_PX / pxPerFrame
         for (const c of cands) { const d = Math.abs(c - rawF); if (d <= best) { best = d; snapF = c } }
         if (snapF != null) tf = snapF
@@ -1222,7 +1240,7 @@ export function TimelineCanvas({
       autoLane ? (canEditLane(autoLane.trackIdx, autoLane.autoIdx) ? 'crosshair' : 'not-allowed') :
       canEdit(ti) ? 'crosshair' : 'not-allowed'
     )
-  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, bpm, pxPerFrame, scrollFrame, readOnly, laneStatus])
+  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, bars, pxPerFrame, scrollFrame, readOnly, laneStatus])
 
   // ── Mouse up ───────────────────────────────────────────────────────────────
 
@@ -1321,6 +1339,11 @@ export function TimelineCanvas({
     e.preventDefault()
     if (readOnly) return
     const { x, y } = localXY(e)
+    // Ruler: tempo menu (bar 1 = the downbeat the bar grid counts from)
+    if (y < RULER_H) {
+      if (tempo) { setRulerMenu({ x, y, frame: Math.max(0, Math.round(scrollFrame + x / pxPerFrame)) }); setContextMenu(null); setClipColorPicker(null) }
+      return
+    }
     const kfHit = hitTestKeyframe(x, y, getLayout(), tracks, fps, frameToX, laneStatus)
     if (kfHit && canEditLane(kfHit.trackIdx, kfHit.autoIdx)) {
       const auto = autoAt(kfHit.trackIdx, kfHit.autoIdx)!
@@ -1340,7 +1363,7 @@ export function TimelineCanvas({
       setClipColorPicker({ x, y, trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx })
       setContextMenu(null)
     }
-  }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip])
+  }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip, tempo, scrollFrame, pxPerFrame])
 
   // ── Keyboard on the selected keyframes ─────────────────────────────────────
   // Capture phase on window, so Delete/Backspace never also reaches the App's clip delete.
@@ -1618,6 +1641,31 @@ export function TimelineCanvas({
         )
       })()}
 
+      {rulerMenu && tempo && (() => {
+        const beatF = (fps * 60) / tempo.bpm
+        const set = (f: number) => { onSetDownbeat(Math.max(0, Math.round(f))); setRulerMenu(null) }
+        const nudge = (df: number) => onSetDownbeat(Math.max(0, Math.round(tempo.downbeatF + df)))
+        return (
+          <div className="ctx-menu" style={clampPos(rulerMenu.x, rulerMenu.y, 230, 190)} onMouseDown={e => e.nativeEvent.stopImmediatePropagation()}>
+            <div className="ctx-title">Bar 1</div>
+            <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
+            <button className="ctx-btn" onClick={() => set(rulerMenu.frame)}>Set bar 1 here ({framesToSmpte(rulerMenu.frame, fps)})</button>
+            <button className="ctx-btn" onClick={() => set(frameRef.current)}>Set bar 1 at playhead</button>
+            <div className="ctx-row">
+              <label>Nudge</label>
+              <div className="ctx-seg">
+                <button className="ctx-seg-btn" title="Bar 1 one beat earlier" onClick={() => nudge(-beatF)}>−beat</button>
+                <button className="ctx-seg-btn" title="Bar 1 one frame earlier" onClick={() => nudge(-1)}>−1 f</button>
+                <button className="ctx-seg-btn" title="Bar 1 one frame later" onClick={() => nudge(1)}>+1 f</button>
+                <button className="ctx-seg-btn" title="Bar 1 one beat later" onClick={() => nudge(beatF)}>+beat</button>
+              </div>
+            </div>
+            <div className="ctx-divider" />
+            <button className="ctx-btn dim" onClick={() => setRulerMenu(null)}>Close</button>
+          </div>
+        )
+      })()}
+
       {clipColorPicker && (
         <div
           className="clip-color-picker"
@@ -1881,12 +1929,19 @@ function forEachStep(step: number, sf: number, W: number, ppf: number, fn: (x: n
 function drawRuler(
   ctx: CanvasRenderingContext2D, W: number, fps: number, ppf: number, sf: number,
   markers: { time: string; name: string; color: string }[],
+  bars: Tempo | null,
 ) {
   ctx.fillStyle = T.header; ctx.fillRect(0, 0, W, RULER_H)
   ctx.fillStyle = T.track; ctx.fillRect(0, TC_BAND_H, W, RULER_H - 1 - TC_BAND_H)
   ctx.fillStyle = T.gutter; ctx.fillRect(0, RULER_H - 1, W, 1)
   if (fps <= 0 || ppf <= 0) return
 
+  if (bars) drawBarsBand(ctx, W, ppf, sf, bars)
+  else drawTcBand(ctx, W, fps, ppf, sf)
+  drawMarkerStrip(ctx, W, fps, ppf, sf, markers)
+}
+
+function drawTcBand(ctx: CanvasRenderingContext2D, W: number, fps: number, ppf: number, sf: number) {
   const { major, minor, showFrames } = rulerSteps(fps, ppf)
   ctx.fillStyle = T.field
   if (minor < major) forEachStep(minor, sf, W, ppf, x => ctx.fillRect(Math.round(x), TC_BAND_H - 4, 1, 4))
@@ -1898,7 +1953,40 @@ function drawRuler(
     const tc = framesToSmpte(Math.round(f), fps)
     ctx.fillStyle = T.textDim; ctx.fillText(showFrames ? tc : tc.slice(0, 8), rx + 4, 9)
   })
+}
 
+// Bars mode timecode band: bar numbers ("17"), beats when zoomed in ("17.3"), sixteenths at the
+// deepest zoom ("17.3.2"); ticks for the finer grid steps. Pre-roll bars (before bar 1) are dimmer.
+function drawBarsBand(ctx: CanvasRenderingContext2D, W: number, ppf: number, sf: number, t: Tempo) {
+  const { major, minor } = musicalSteps(ppf, t)
+  const f0 = sf - 1 / ppf, f1 = sf + (W + 1) / ppf
+  if (minor < major) {
+    ctx.fillStyle = T.field
+    forEachGridLine(t, minor, f0, f1, (f, beats) => {
+      if (isOnStep(beats, major)) return
+      const h = isBarLine(beats, t) ? 8 : isBeatLine(beats) ? 5 : 3
+      ctx.fillRect(Math.round((f - sf) * ppf), TC_BAND_H - h, 1, h)
+    })
+  }
+  ctx.font = `11px ${T.fontTc}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'
+  forEachGridLine(t, major, f0, f1, (f, beats) => {
+    const rx = Math.round((f - sf) * ppf)
+    const bar = isBarLine(beats, t)
+    const pre = beats < 0
+    ctx.fillStyle = bar ? T.textFaint : T.field; ctx.fillRect(rx, 2, 1, TC_BAND_H - 2)
+    if (!isOnStep(beats, 0.25)) return   // 32nds: tick only
+    if (pre && !bar) return              // pre-roll: whole bars only ("−1.2" reads like a decimal)
+    const bb = frameToBarBeat(f, t)
+    const label = formatBarBeat(bb, bar ? 1 : isBeatLine(beats) ? 2 : 3)
+    ctx.fillStyle = pre ? T.textFaint : bar ? T.text : T.textDim
+    ctx.fillText(label, rx + 4, 9)
+  })
+}
+
+function drawMarkerStrip(
+  ctx: CanvasRenderingContext2D, W: number, fps: number, ppf: number, sf: number,
+  markers: { time: string; name: string; color: string }[],
+) {
   // Marker strip: diamond + name, name clipped at the next marker
   const my = TC_BAND_H + (RULER_H - 1 - TC_BAND_H) / 2
   const mks = markers
@@ -1919,16 +2007,25 @@ function drawRuler(
   })
 }
 
-function drawBpmGrid(ctx: CanvasRenderingContext2D, W: number, top: number, h: number, fps: number, bpm: number, ppf: number, sf: number) {
-  if (fps <= 0 || ppf <= 0 || bpm <= 0) return
-  const beatF = (fps * 60) / bpm
-  const barF = beatF * 4
-  if (barF * ppf < 6) return
-  const showBeats = beatF * ppf >= 6
-  forEachStep(showBeats ? beatF : barF, sf, W, ppf, (x, f) => {
-    const isBar = Math.abs(f / barF - Math.round(f / barF)) < 1e-6
-    ctx.fillStyle = isBar ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'
-    ctx.fillRect(Math.round(x), top, 1, h)
+// Bars mode grid from the downbeat, per musicalSteps: bar lines (bar groups stronger when
+// zoomed out), faint beats, very faint subdivisions; pre-roll before bar 1 at half strength.
+// Kept well below markers (35 %) and the mint playhead so clips and automation stay in front.
+function drawBarGrid(
+  ctx: CanvasRenderingContext2D, W: number, top: number, h: number, ppf: number, sf: number, t: Tempo, barsOnly: boolean,
+) {
+  if (ppf <= 0 || h <= 0) return
+  const { major, minor } = musicalSteps(ppf, t)
+  const step = barsOnly ? Math.max(minor, t.beatsPerBar) : minor
+  const groups = step >= t.beatsPerBar && major > step   // zoomed out: every line is a bar
+  forEachGridLine(t, step, sf - 1 / ppf, sf + (W + 1) / ppf, (f, beats) => {
+    let a: number
+    if (isBarLine(beats, t)) a = groups && !isOnStep(beats, major) ? 0.055 : 0.1
+    else if (isBeatLine(beats)) a = 0.045
+    else a = 0.022
+    if (barsOnly) a *= 0.7
+    if (beats < 0) a *= 0.5
+    ctx.fillStyle = `rgba(255,255,255,${a})`
+    ctx.fillRect(Math.round((f - sf) * ppf), top, 1, h)
   })
 }
 

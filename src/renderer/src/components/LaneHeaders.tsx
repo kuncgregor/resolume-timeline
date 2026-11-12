@@ -40,6 +40,9 @@ interface Props {
   onScrollY: (delta: number) => void
   onLoadAudio: () => void
   onUpdateAudio: (updates: Partial<NonNullable<Show['audioTrack']>>) => void
+  rulerMode: 'timecode' | 'bars'          // in effect (always 'timecode' without a tempo)
+  hasTempo: boolean
+  onSetRulerMode: (mode: 'timecode' | 'bars') => void
 }
 
 interface ResizeState { id: string; kind: 'layer' | 'auto'; startY: number; startH: number }
@@ -141,7 +144,7 @@ export function LaneHeaders({
   onSelect, onToggleExpand, onSetAllExpanded, onToggleMute, onToggleLock, onResizeLayer, onResizeAutoLane,
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
-  onLoadAudio, onUpdateAudio,
+  onLoadAudio, onUpdateAudio, rulerMode, hasTempo, onSetRulerMode,
 }: Props) {
   const [resizing, setResizing] = useState<ResizeState | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
@@ -399,13 +402,22 @@ export function LaneHeaders({
   return (
     <div className="lane-headers" style={{ userSelect: resizing ? 'none' : undefined }}>
       <div className="ruler-corner">
-        <span>Layers</span>
+        <span>Layers <span className="ruler-corner-count">{tracks.length}</span></span>
         <button
           className="corner-expand"
           title={anyExpanded ? 'Hide automation on all layers' : 'Show automation on all layers'}
           onClick={() => onSetAllExpanded(!anyExpanded)}
         >{anyExpanded ? '▸ all' : '▾ all'}</button>
-        <span className="ruler-corner-count">{tracks.length}</span>
+        <div className="ruler-mode" role="group" aria-label="Ruler">
+          {([['timecode', 'TC', 'Ruler in timecode'], ['bars', 'BARS', 'Ruler in bars and beats']] as const).map(([m, l, tip]) => (
+            <button key={m} className={`ruler-mode-btn ${rulerMode === m ? 'on' : ''}`}
+              disabled={m === 'bars' && !hasTempo}
+              aria-pressed={rulerMode === m}
+              title={m === 'bars' && !hasTempo ? 'Set a BPM first (transport or ✎ Edit timeline › Tempo)' : tip}
+              onClick={() => { if (rulerMode !== m) onSetRulerMode(m) }}
+            >{l}</button>
+          ))}
+        </div>
       </div>
 
       {/* Audio lane header — pinned under the ruler like the canvas audio lane */}

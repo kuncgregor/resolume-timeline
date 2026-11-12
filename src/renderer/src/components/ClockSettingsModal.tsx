@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useEscape } from './useEscape'
 import type { Show } from '../../../shared/show'
+import { BPM_MIN, BPM_MAX, roundBpm } from '../grid'
 
 type ClockSource = 'internal' | 'ltc-a' | 'ltc-b'
 
@@ -54,7 +55,8 @@ function cleanHost(raw: string): string {
 export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
   useEscape(onClose)
   const [name, setName] = useState(show.name)
-  const [bpm, setBpm] = useState(show.bpm ?? 120)
+  // Text, so an empty field means "no BPM" (a number state turned every saved show into 120 BPM)
+  const [bpm, setBpm] = useState(show.bpm != null ? String(show.bpm) : '')
   const [fps, setFps] = useState(show.frameRate)
   const [source, setSource] = useState<ClockSource>(normalizeSource(show.clock.source))
   const [ltcDeviceA, setLtcDeviceA] = useState(show.clock.ltcDeviceA ?? show.clock.ltcDevice ?? '')
@@ -151,10 +153,14 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
     setParts(prev => prev.ff > fps - 1 ? { ...prev, ff: fps - 1 } : prev)
   }, [fps])
 
+  const bpmNum = bpm.trim() === '' ? undefined : Number(bpm.trim().replace(',', '.'))
+  const bpmValid = bpmNum === undefined || (Number.isFinite(bpmNum) && bpmNum >= BPM_MIN && bpmNum <= BPM_MAX)
+
   const handleSave = () => {
+    if (!bpmValid) return
     onUpdate({
       name,
-      bpm: bpm > 0 ? bpm : undefined,
+      bpm: bpmNum === undefined ? undefined : roundBpm(bpmNum),
       frameRate: fps,
       clock: {
         source,
@@ -193,10 +199,10 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
             </Row>
             <Row label="BPM">
               <input
-                type="number" className="modal-inp modal-num" min={20} max={999} step={1}
-                value={bpm} onChange={e => setBpm(Math.max(1, Number(e.target.value)))}
+                className={`modal-inp modal-num mono ${bpmValid ? '' : 'invalid'}`} inputMode="decimal"
+                value={bpm} onChange={e => setBpm(e.target.value)} placeholder="—"
               />
-              <span className="modal-hint inline">BPM grid on the timeline</span>
+              <span className="modal-hint inline">Empty = no BPM. Bar grid on the timeline ({BPM_MIN}–{BPM_MAX})</span>
             </Row>
           </div>
 
@@ -359,7 +365,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
 
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn modal-primary" onClick={handleSave}>Save</button>
+          <button className="btn modal-primary" onClick={handleSave} disabled={!bpmValid}
+            title={bpmValid ? undefined : `BPM must be ${BPM_MIN}–${BPM_MAX}, or empty for none`}>Save</button>
         </div>
       </div>
     </div>

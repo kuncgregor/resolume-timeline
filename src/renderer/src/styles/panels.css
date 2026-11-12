@@ -302,3 +302,7 @@ input[type=range].bp-slider {
 .deck-val.missing { color: var(--danger); }
 .deck-now { color: var(--text-dim); }
 .modal-check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--fs-ui); cursor: pointer; }
+
+/* Why Save is disabled, next to it (not only in its tooltip) */
+.modal-footer-error { padding: 6px 16px 0; color: var(--danger); font-size: var(--fs-meta); text-align: right; }
+.btn.modal-primary:disabled { opacity: 0.4; cursor: default; }
