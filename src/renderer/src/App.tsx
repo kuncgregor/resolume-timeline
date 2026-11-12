@@ -1280,7 +1280,7 @@ export default function App() {
         {showBrowser && !activeIsBreak && (
           <ClipBrowser
             tracks={show.tracks}
-            selectedDeckId={selectedDeck?.id}
+            liveComposition={composition}
             onClose={() => setShowBrowser(false)}
             onDragStart={setDraggingClip}
             onDragEnd={() => setDraggingClip(null)}

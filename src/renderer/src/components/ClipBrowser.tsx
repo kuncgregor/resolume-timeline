@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import type { ResolumeComposition, ResolumeLayer, ResolumeClip } from '../../../shared/resolume'
 import type { Track, LayerTrack } from '../../../shared/show'
 import type { DragClipData } from '../App'
@@ -12,22 +12,35 @@ const api = (window as any).timeline
 
 interface Props {
   tracks: Track[]
-  selectedDeckId?: number   // from the app's composition polling: refresh when Resolume switches deck
+  liveComposition: ResolumeComposition | null   // the app's 2 s polling: refresh when layers, clips or the deck change
   onClose: () => void
   onDragStart: (data: DragClipData) => void
   onDragEnd: () => void
 }
 
-export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDragEnd }: Props) {
+// What the list shows: deck, layers and their non-empty clips. A change means a refresh.
+function contentKey(comp: ResolumeComposition | null): string {
+  if (!comp) return ''
+  const decks = decksOf(comp).map(d => `${d.id}${d.selected ? '*' : ''}=${d.name}`).join(',')
+  return `${decks}|` + (comp.layers ?? []).filter(Boolean).map(l =>
+    `${l.id}:${rv(l.name, '')}:` + (l.clips ?? []).filter(c => c && !isEmptySlot(c)).map(c => `${c.id}=${rv(c.name, '')}`).join(',')
+  ).join(';')
+}
+
+export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onDragEnd }: Props) {
   const [composition, setComposition] = useState<ResolumeComposition | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({})
+  const thumbsRef = useRef(thumbnails)
+  thumbsRef.current = thumbnails
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set<number>([999999]))
   const [query, setQuery] = useState('')
 
-  const refresh = useCallback(async () => {
-    setLoading(true); setError(null)
+  // quiet: background refresh after a change in Resolume — no "Loading…" flash
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true)
+    setError(null)
     try {
       const comp = await api.getComposition()
       if (!comp) {
@@ -44,7 +57,7 @@ export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDr
         const jobs: Promise<void>[] = []
         for (const layer of comp.layers ?? []) {
           for (const clip of layer?.clips ?? []) {
-            if (!clip || isEmptySlot(clip)) continue
+            if (!clip || isEmptySlot(clip) || thumbsRef.current[`${layer.id}-${clip.id}`]) continue
             jobs.push(api.getThumbnail(layer.id, clip.id).then((t: string | null) => {
               if (t) setThumbnails(prev => ({ ...prev, [`${layer.id}-${clip.id}`]: t }))
             }))
@@ -61,12 +74,13 @@ export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDr
   // Resolume only reports the selected deck's clips, so the list follows the selected deck
   const decks = decksOf(composition)
   const shownDeck = decks.find(d => d.selected)
+  // Follow Resolume: clips added, layers added/renamed, another deck shown
+  const liveKey = contentKey(liveComposition)
   useEffect(() => {
-    if (selectedDeckId !== undefined && shownDeck && selectedDeckId !== shownDeck.id) refresh()
-  }, [selectedDeckId])
+    if (!loading && liveKey && composition && liveKey !== contentKey(composition)) refresh(true)
+  }, [liveKey])
   const showDeck = async (index: number) => {
     await api.selectDeck(index)
-    setThumbnails({})
     refresh()
   }
 
@@ -105,7 +119,7 @@ export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDr
     <div className="clip-browser">
       <div className="browser-header">
         <span className="browser-title">Clips</span>
-        <button className="btn ghost browser-icon" onClick={refresh} disabled={loading} title="Refresh from Resolume">
+        <button className="btn ghost browser-icon" onClick={() => refresh()} disabled={loading} title="Refresh from Resolume">
           {loading ? '…' : '↺'}
         </button>
         <button className="btn ghost browser-icon" onClick={onClose} title="Close">✕</button>
