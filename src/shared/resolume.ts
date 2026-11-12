@@ -49,9 +49,18 @@ export interface ResolumeLayerGroup {
   [key: string]: unknown
 }
 
+export interface ResolumeDeck {
+  id: number
+  name: ResolumeParam<string> | string
+  selected: ResolumeParam<boolean> | boolean
+  colorid?: ResolumeParam<string>
+  [key: string]: unknown
+}
+
 export interface ResolumeComposition {
   name: ResolumeParam<string> | string
   layers: ResolumeLayer[]
+  decks?: ResolumeDeck[]
   layergroups?: ResolumeLayerGroup[]
   columns: ({ id: number; name: ResolumeParam<string> | string } | null)[]
   [key: string]: unknown

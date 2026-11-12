@@ -19,6 +19,7 @@ import { loadAutosave, writeAutosave, clearAutosave } from './autosave'
 import { TAG_COLORS } from './theme'
 import { resolveShow, laneFieldsFor } from './resolver'
 import type { LaneStatusMap } from './laneStatus'
+import { decksOf } from './decks'
 import { sameRef, normalize, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
@@ -26,6 +27,7 @@ const api = (window as any).timeline
 export interface DragClipData {
   layerIndex: number; layerId: number
   clipIndex: number; clipId: number; clipName: string
+  deckId?: number; deckIndex?: number; deckName?: string   // Resolume deck the clip comes from
 }
 
 // New layers and rundown entries get muted Resolume-style tag colours
@@ -376,6 +378,9 @@ export default function App() {
     })
   }), [])
   const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
+
+  const decks = decksOf(composition)
+  const selectedDeck = decks.find(d => d.selected)
 
   const [laneStatus, setLaneStatus] = useState<LaneStatusMap>({})
   const laneStatusRef = useRef(laneStatus)
@@ -784,6 +789,7 @@ export default function App() {
         id: newId(), time: framesToSmpte(frame, prev.frameRate),
         duration, clipIndex: data.clipIndex, clipId: data.clipId,
         clipName: data.clipName, release: true,
+        ...(data.deckId !== undefined ? { deckId: data.deckId, deckIndex: data.deckIndex, deckName: data.deckName } : {}),
       }
       tracks[trackIdx] = {
         ...lt, clips: [...lt.clips, cue].sort(
@@ -1154,6 +1160,7 @@ export default function App() {
         concertFilePath={concertFilePath}
         resolumeConnected={engineState.resolumeConnected}
         resolumeHost={show.resolume.host}
+        currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
         onSelect={handleSelectEntry}
         onGo={handleGo}
         onReorder={handleReorder}
@@ -1244,7 +1251,7 @@ export default function App() {
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} bpm={show.bpm}
-              readOnly={showMode} laneStatus={laneStatus} overrides={overrides}
+              readOnly={showMode} laneStatus={laneStatus} overrides={overrides} decks={decks}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
@@ -1271,6 +1278,7 @@ export default function App() {
         {showBrowser && !activeIsBreak && (
           <ClipBrowser
             tracks={show.tracks}
+            selectedDeckId={selectedDeck?.id}
             onClose={() => setShowBrowser(false)}
             onDragStart={setDraggingClip}
             onDragEnd={() => setDraggingClip(null)}
@@ -1282,6 +1290,7 @@ export default function App() {
         <BottomPanel
           track={selectedTrack} cue={selectedCue} readOnly={showMode}
           group={selectedTrackRaw?.type === 'group' ? selectedTrackRaw as GroupTrack : null}
+          decks={decks}
           frame={engineState.frame}
           onToggleKey={handleToggleKey} onParamEdit={handleParamEdit} onSeek={handleSeek}
           cueIdx={selectedCueIdx} trackIdx={selectedTrackIdx} fps={fps}

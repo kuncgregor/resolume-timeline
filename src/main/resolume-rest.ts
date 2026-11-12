@@ -29,6 +29,22 @@ export class ResolumeRest {
     } catch { return null }
   }
 
+  /** Trigger the clip in a slot of the shown deck (layer/slot 1-based). */
+  async connectClip(layer: number, slot: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/composition/layers/${layer}/clips/${slot}/connect`, { method: 'POST', signal: AbortSignal.timeout(2000) })
+      return res.ok
+    } catch { return false }
+  }
+
+  /** Select a deck (1-based index). Only the selected deck's clips can be triggered. */
+  async selectDeck(index: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/composition/decks/${index}/select`, { method: 'POST', signal: AbortSignal.timeout(2000) })
+      return res.ok
+    } catch { return false }
+  }
+
   async getParamById(id: number): Promise<any | null> {
     return this.getJson(`/parameter/by-id/${id}`)
   }

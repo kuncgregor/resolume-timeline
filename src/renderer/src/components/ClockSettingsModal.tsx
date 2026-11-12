@@ -61,6 +61,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
   const [host, setHost] = useState(show.resolume.host)
   const [oscPort, setOscPort] = useState(show.resolume.oscPort)
   const [restPort, setRestPort] = useState(show.resolume.restPort)
+  const [deckReturn, setDeckReturn] = useState(show.deckReturn !== false)
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([])
   const [channelCountByDevice, setChannelCountByDevice] = useState<Record<string, number>>({})
@@ -162,6 +163,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
         audioOutputChannelR,
       },
       resolume: { ...show.resolume, host, oscPort, restPort },
+      deckReturn,
     })
     onClose()
   }
@@ -337,6 +339,12 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
             <Row label="REST port">
               <input type="number" className="modal-inp modal-num" value={restPort}
                 onChange={e => setRestPort(Number(e.target.value))} />
+            </Row>
+            <Row label="Decks">
+              <label className="modal-check" title="A cue from another deck makes Resolume show that deck to fire its clip. With this on, Resolume goes back to the deck it was showing; the clip keeps playing.">
+                <input type="checkbox" checked={deckReturn} onChange={e => setDeckReturn(e.target.checked)} />
+                <span>Return to the previous deck after firing a cue from another deck</span>
+              </label>
             </Row>
           </div>
         </div>

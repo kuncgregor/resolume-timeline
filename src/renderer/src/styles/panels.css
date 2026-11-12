@@ -270,3 +270,22 @@ input[type=range].bp-slider {
 }
 .btn.modal-primary { background: var(--live-fill); color: var(--text-hi); }
 .btn.modal-primary:hover { background: var(--live-header); }
+
+/* Deck tabs in the clip browser (mirror Resolume's deck bar) */
+.browser-decks { display: flex; gap: 1px; background: var(--bg-gutter); overflow-x: auto; flex-shrink: 0; }
+.deck-tab {
+  flex: 1 1 0; min-width: 64px; height: 28px; padding: 0 8px; border: none; cursor: pointer;
+  display: flex; align-items: center; gap: 5px; background: var(--bg-control); color: var(--text-dim);
+  box-shadow: inset 0 3px 0 color-mix(in srgb, var(--deck-color) 45%, transparent);
+  font-size: var(--fs-meta); white-space: nowrap; overflow: hidden;
+}
+.deck-tab:hover { background: var(--bg-hover); color: var(--text-hi); }
+.deck-tab.on { background: var(--bg-tab-active); color: var(--text-hi); box-shadow: inset 0 3px 0 var(--deck-color); cursor: default; }
+.deck-tab-num { font-family: var(--font-tc); font-weight: 800; color: var(--deck-color); }
+.deck-tab-name { overflow: hidden; text-overflow: ellipsis; }
+/* Cue tab: deck row */
+.deck-val { display: inline-flex; align-items: center; gap: 6px; }
+.deck-val .deck-dot { width: 8px; height: 8px; background: var(--deck-color); flex-shrink: 0; }
+.deck-val.missing { color: var(--danger); }
+.deck-now { color: var(--text-dim); }
+.modal-check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--fs-ui); cursor: pointer; }

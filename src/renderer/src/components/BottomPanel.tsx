@@ -3,6 +3,7 @@ import type { LayerTrack, GroupTrack, ClipCue, AutomationSubTrack } from '../../
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { KIND_GLYPH } from './ParamPicker'
+import { deckOfCue, type DeckInfo } from '../decks'
 
 const api = (window as any).timeline
 
@@ -15,6 +16,7 @@ const pct = (v: number, min: number, max: number) =>
 interface Props {
   track: LayerTrack | null; cue: ClipCue | null
   group: GroupTrack | null      // selected Resolume layer group (Arena)
+  decks: DeckInfo[]
   cueIdx: number | null; trackIdx: number | null; fps: number
   height: number
   readOnly: boolean
@@ -33,7 +35,7 @@ interface Props {
 }
 
 export function BottomPanel({
-  track, cue, group, cueIdx, trackIdx, fps, height, readOnly, onResize, frame,
+  track, cue, group, decks, cueIdx, trackIdx, fps, height, readOnly, onResize, frame,
   onUpdateCue, onDeleteCue, onToggleKey, onParamEdit, onSeek, onSelectCue, onClose,
 }: Props) {
   const [tab, setTab] = useState<'cue' | 'layer' | 'clip'>('cue')
@@ -256,6 +258,21 @@ export function BottomPanel({
             <div className="bp-row">
               <span className="bp-label">Clip slot</span>
               <span className="bp-val mono">{cue.clipIndex}</span>
+            </div>
+            <div className="bp-row">
+              <span className="bp-label">Deck</span>
+              {(() => {
+                const d = deckOfCue(decks, cue)
+                if (cue.deckIndex === undefined && cue.deckId === undefined)
+                  return <span className="bp-val" title="Older cue: fires on whichever deck Resolume shows">Current deck</span>
+                return (
+                  <span className={`bp-val deck-val ${d ? '' : 'missing'}`} style={{ ['--deck-color' as any]: d?.color ?? 'var(--danger)' }}
+                    title={d ? `Fires from deck ${d.index} (${d.name}); the app switches to it when needed` : 'This deck no longer exists in Resolume'}>
+                    <span className="deck-dot" />D{d?.index ?? cue.deckIndex} · {d?.name ?? cue.deckName ?? 'missing'}
+                    {d?.selected && <span className="deck-now"> (shown in Resolume)</span>}
+                  </span>
+                )
+              })()}
             </div>
             <div className="bp-row">
               <span className="bp-label">Start</span>

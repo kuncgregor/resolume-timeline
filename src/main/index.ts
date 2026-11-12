@@ -7,6 +7,7 @@ import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
 import { Scheduler, type LaneTarget } from './scheduler'
 import type { Show, CueEvent } from '../shared/show'
+import { rv } from '../shared/resolume'
 
 const transport = new Transport(25)
 const osc = new OscClient('127.0.0.1', 7000)
@@ -33,7 +34,10 @@ async function checkResolume() {
   }
   if (ok) {
     const comp = await rest.getComposition()
-    if (comp) safeSend('resolume:compositionUpdate', comp)
+    if (comp) {
+      safeSend('resolume:compositionUpdate', comp)
+      scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
+    }
   }
 }
 setInterval(checkResolume, 2000)  // also feeds the live state strip in the layer headers
@@ -186,6 +190,11 @@ ipcMain.handle('resolume:triggerClip', (_e, layer: number, clip: number) => { os
 ipcMain.handle('resolume:triggerColumn', (_e, column: number) => { osc.connectColumn(column); return null })
 ipcMain.handle('resolume:clearLayer', (_e, layer: number) => { osc.clearLayer(layer); return null })
 ipcMain.handle('resolume:sendOsc', (_e, address: string, value: number) => { osc.send(address, value); return null })
+ipcMain.handle('resolume:selectDeck', async (_e, index: number) => {
+  const ok = await rest.selectDeck(index)
+  if (ok) scheduler.noteDeckSelected(index)
+  return ok
+})
 ipcMain.handle('resolume:setParamById', (_e, id: number, value: number | string | boolean) => {
   scheduler.noteSent(id, value)  // inspector fader: the app's own change, not an operator override
   return rest.setParamById(id, value)

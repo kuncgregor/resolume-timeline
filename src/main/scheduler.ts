@@ -1,7 +1,7 @@
 import { Transport, smpteToFrames } from './transport'
 import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
-import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind } from '../shared/show'
+import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind, ClipCue } from '../shared/show'
 import { toFrameKeyframes, sampleLane } from '../shared/automation'
 import { toRestValue, normalize, type LaneTarget } from '../shared/paramTree'
 
@@ -10,6 +10,8 @@ export type { LaneTarget }
 const SEEK_THRESHOLD = 30
 const ECHO_MS = 600        // how long a value we sent may still come back from Resolume
 const RELEASE_MS = 600     // REC: no operator change for this long = parameter released
+const PREROLL_MS = 150     // cross-deck cues: deck switch starts this early (deck load ~100 ms)
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 // Equal within half a percent of the range (Resolume rounds floats), exact for discrete values
 function sameValue(a: number | string | boolean, b: number | string | boolean, t: LaneTarget): boolean {
@@ -47,6 +49,14 @@ export class Scheduler {
   private overridden = new Map<string, number>()   // lane id → operator's value, normalized
   private recordArmed = false
   private watchHandle: NodeJS.Timeout | null = null
+  // Resolume decks as last seen (composition polls). `homeDeck` is the deck the operator is on,
+  // `shownDeck` what Resolume shows right now (we switch it while firing cross-deck cues).
+  private decks: { id: number; name: string }[] = []
+  private homeDeck = 0
+  private shownDeck = 0
+  private deckJobs = 0
+  private deckQueue: Promise<void> = Promise.resolve()
+  private prerolled = new Set<string>()
   private eventCb: ((channel: string, payload: unknown) => void) | null = null
   private tickHandle: NodeJS.Timeout | null = null
   private tickCb: ((frame: number) => void) | null = null
@@ -84,6 +94,71 @@ export class Scheduler {
 
   onTick(cb: (frame: number) => void) { this.tickCb = cb }
   onEvent(cb: (channel: string, payload: unknown) => void) { this.eventCb = cb }
+
+  /** Deck list from the latest composition poll. */
+  setDecks(decks: { id: number; name: string; selected: boolean }[]) {
+    this.decks = decks.map(d => ({ id: d.id, name: d.name }))
+    // While our own deck switches run, the poll may show a transient deck
+    const sel = decks.findIndex(d => d.selected) + 1
+    if (sel > 0 && this.deckJobs === 0) { this.homeDeck = sel; this.shownDeck = sel }
+  }
+
+  /** The app selected a deck itself (clip browser tabs). */
+  noteDeckSelected(index: number) {
+    if (this.deckJobs === 0) { this.homeDeck = index; this.shownDeck = index }
+  }
+
+  // 1-based deck index of a cue's deck: by id, else by name, else the stored index
+  private deckIndexOf(cue: ClipCue): number {
+    if (cue.deckId === undefined && cue.deckIndex === undefined) return 0
+    const byId = this.decks.findIndex(d => d.id === cue.deckId)
+    if (byId >= 0) return byId + 1
+    const byName = cue.deckName ? this.decks.findIndex(d => d.name === cue.deckName) : -1
+    if (byName >= 0) return byName + 1
+    return cue.deckIndex ?? 0
+  }
+
+  // Fire a clip from its deck. Only the shown deck's clips can be triggered and Resolume loads a
+  // deck asynchronously (~100 ms measured), so a cross-deck cue selects the deck, waits until
+  // the slot shows the clip, connects over REST and (by default) returns to the operator's deck;
+  // the clip keeps playing. While such a job runs, every other clip trigger joins the same queue
+  // so it cannot hit the wrong deck. `atMs` delays the connect for cues queued ahead of time.
+  private connectCue(layer: number, cue: ClipCue, releaseMs: number, atMs?: number) {
+    const target = this.deckIndexOf(cue)
+    if (this.deckJobs === 0 && (!target || target === this.shownDeck || !this.decks.length)) {
+      this.osc.connectClip(layer, cue.clipIndex, releaseMs)
+      return
+    }
+    this.deckJobs++
+    this.deckQueue = this.deckQueue.then(async () => {
+      const want = target || this.homeDeck
+      if (want && want !== this.shownDeck) {
+        if (await this.rest.selectDeck(want)) {
+          this.shownDeck = want
+          await this.waitForSlot(layer, cue.clipIndex, cue.clipId)
+        }
+      }
+      if (atMs !== undefined) { const d = atMs - Date.now(); if (d > 0) await sleep(d) }
+      await this.rest.connectClip(layer, cue.clipIndex)
+    }).catch(() => {}).then(async () => {
+      if (--this.deckJobs > 0) return
+      if (this.show?.deckReturn === false) { this.homeDeck = this.shownDeck; return }
+      if (this.homeDeck && this.shownDeck !== this.homeDeck) {
+        await sleep(30)
+        if (await this.rest.selectDeck(this.homeDeck)) this.shownDeck = this.homeDeck
+      }
+    })
+  }
+
+  // Until the slot reports the expected clip (deck loaded), at most 400 ms
+  private async waitForSlot(layer: number, slot: number, clipId: number) {
+    const t0 = Date.now()
+    while (Date.now() - t0 < 400) {
+      const c = await this.rest.getJson(`/composition/layers/${layer}/clips/${slot}`)
+      if (c?.id === clipId) return
+      await sleep(8)
+    }
+  }
 
   /** REC armed: operator changes in Resolume become keyframes instead of overrides. */
   setRecordArmed(armed: boolean) { this.recordArmed = armed }
@@ -205,10 +280,19 @@ export class Scheduler {
             this.activeCue.delete(layer)
           }
         }
+        // Cross-deck cues start their deck switch PREROLL_MS early so they fire on time
+        const pre = Math.ceil((PREROLL_MS / 1000) * fps)
         for (const clip of lt.clips) {
           const sf = smpteToFrames(clip.time, fps)
+          const target = this.deckIndexOf(clip)
+          const crossDeck = target !== 0 && target !== this.homeDeck && this.decks.length > 0
+          if (crossDeck && sf - pre > lo && sf - pre <= hi && !this.prerolled.has(clip.id)) {
+            this.prerolled.add(clip.id)
+            this.connectCue(layer, clip, clip.release ? 40 : 0, Date.now() + ((sf - hi) / fps) * 1000)
+          }
           if (sf > lo && sf <= hi) {
-            this.osc.connectClip(layer, clip.clipIndex, clip.release ? 40 : 0)
+            if (this.prerolled.has(clip.id)) this.prerolled.delete(clip.id)
+            else this.connectCue(layer, clip, clip.release ? 40 : 0)
             this.activeCue.set(layer, clip.id)
           }
         }
@@ -299,6 +383,7 @@ export class Scheduler {
 
   private recallStateAt(T: number) {
     if (!this.show) return
+    this.prerolled.clear()
     const fps = this.show.frameRate
     const mutedGroups = mutedGroupIds(this.show)
     for (const track of this.show.tracks) {
@@ -322,7 +407,7 @@ export class Scheduler {
           const dur = smpteToFrames(last.duration, fps)
           if (dur === 0 || T < sf + dur) {
             // Clip is active at T — trigger it (short release so button doesn't get stuck)
-            this.osc.connectClip(layer, last.clipIndex, 50)
+            this.connectCue(layer, last, 50)
             this.activeCue.set(layer, last.id)
           } else {
             // Clip duration has passed — clear the layer

@@ -3,6 +3,7 @@ import type { ResolumeComposition, ResolumeLayer, ResolumeClip } from '../../../
 import type { Track, LayerTrack } from '../../../shared/show'
 import type { DragClipData } from '../App'
 import { rv, layerDisplayName } from '../../../shared/resolume'
+import { decksOf } from '../decks'
 
 // Empty slots are listed by Resolume too; they cannot be triggered meaningfully
 const isEmptySlot = (clip: ResolumeClip) => rv(clip.connected as any, '') === 'Empty'
@@ -11,12 +12,13 @@ const api = (window as any).timeline
 
 interface Props {
   tracks: Track[]
+  selectedDeckId?: number   // from the app's composition polling: refresh when Resolume switches deck
   onClose: () => void
   onDragStart: (data: DragClipData) => void
   onDragEnd: () => void
 }
 
-export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) {
+export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDragEnd }: Props) {
   const [composition, setComposition] = useState<ResolumeComposition | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,6 +58,18 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
 
   useEffect(() => { refresh() }, [])
 
+  // Resolume only reports the selected deck's clips, so the list follows the selected deck
+  const decks = decksOf(composition)
+  const shownDeck = decks.find(d => d.selected)
+  useEffect(() => {
+    if (selectedDeckId !== undefined && shownDeck && selectedDeckId !== shownDeck.id) refresh()
+  }, [selectedDeckId])
+  const showDeck = async (index: number) => {
+    await api.selectDeck(index)
+    setThumbnails({})
+    refresh()
+  }
+
   const trackedIds = new Set(
     tracks.filter(t => t.type === 'layer').map(t => (t as LayerTrack).resolumeLayerId)
   )
@@ -65,6 +79,7 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
     const data: DragClipData = {
       layerIndex: li + 1, layerId: layer.id,
       clipIndex: ci + 1, clipId: clip.id, clipName,
+      ...(shownDeck ? { deckId: shownDeck.id, deckIndex: shownDeck.index, deckName: shownDeck.name } : {}),
     }
     e.dataTransfer.setData('application/timeline-clip', JSON.stringify(data))
     e.dataTransfer.effectAllowed = 'copy'
@@ -90,6 +105,22 @@ export function ClipBrowser({ tracks, onClose, onDragStart, onDragEnd }: Props) 
         </button>
         <button className="btn ghost browser-icon" onClick={onClose} title="Close">✕</button>
       </div>
+
+      {decks.length > 0 && (
+        <div className="browser-decks" title="Resolume decks. Clips you drag from a deck fire from that deck.">
+          {decks.map(d => (
+            <button key={d.id}
+              className={`deck-tab ${d.selected ? 'on' : ''}`}
+              style={{ ['--deck-color' as any]: d.color }}
+              onClick={() => { if (!d.selected) showDeck(d.index) }}
+              title={d.selected ? `Showing deck ${d.index}: ${d.name}` : `Show deck ${d.index}: ${d.name} (switches the deck in Resolume)`}
+            >
+              <span className="deck-tab-num">D{d.index}</span>
+              <span className="deck-tab-name">{d.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="browser-search">
         <input

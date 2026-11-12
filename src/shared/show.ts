@@ -25,6 +25,7 @@ export interface Show {
   }
   markers: Marker[]
   tracks: Track[]
+  deckReturn?: boolean  // after firing a cue from another deck, select the previous deck again (default true)
   audioTrack?: AudioTrack
 }
 
@@ -93,6 +94,12 @@ export interface ClipCue {
   release: boolean
   color?: string     // override color for this clip (else Resolume clip colour, else layer colour)
   resolumeColor?: string  // colour tag of the clip in Resolume (from sync)
+  // Resolume deck (tab) the clip lives in. Only the selected deck's clips can be triggered,
+  // so the engine selects this deck before firing (and returns afterwards, see Show.deckReturn).
+  // Cues without a deck fire on whatever deck is selected (older shows).
+  deckId?: number      // runtime id (valid while the composition stays loaded)
+  deckIndex?: number   // 1-based position, used when the id is gone
+  deckName?: string
 }
 
 export interface AutomationSubTrack {

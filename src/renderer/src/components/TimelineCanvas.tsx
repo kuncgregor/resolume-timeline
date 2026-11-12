@@ -8,6 +8,7 @@ import type { LaneStatus, LaneStatusMap } from '../laneStatus'
 import { formatValue } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { T, TAG_COLORS } from '../theme'
+import { deckOfCue, type DeckInfo } from '../decks'
 import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
 
 // Picker offers the muted tags first; saturated ones stay for shows that already use them
@@ -315,6 +316,7 @@ interface Props {
   laneStatus: LaneStatusMap  // runtime target state per automation lane id (range, options, broken)
   // lane id → Resolume's current value (normalized 0..1), only while the operator overrides the lane
   overrides: Record<string, number>
+  decks: DeckInfo[]            // Resolume decks; cues show which deck they fire from
   onScrollY: (delta: number) => void
   onScrollFrame: (f: number) => void
   onSeek: (frame: number) => void
@@ -343,7 +345,7 @@ interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: numb
 export function TimelineCanvas({
   tracks: tracksProp, markers, fps, bpm, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
-  scrollY, readOnly, laneStatus, overrides, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
+  scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
@@ -719,7 +721,26 @@ export function TimelineCanvas({
         ctx.fillStyle = capLum(color, 0.18)
         ctx.fillRect(x, by, blockW, titleH)
 
-        const tx = Math.max(0, x) + 4
+        // Deck: coloured left edge + "D2" badge, only when the composition has several decks
+        let badgeW = 0
+        const hasDeck = decks.length > 1 && (clip.deckId !== undefined || clip.deckIndex !== undefined)
+        if (hasDeck) {
+          const deck = deckOfCue(decks, clip)
+          const dc = deck?.color ?? T.danger
+          ctx.fillStyle = dc
+          ctx.fillRect(x, by, 3, bh)
+          if (blockW > 30) {
+            const label = deck ? `D${deck.index}` : 'D?'
+            ctx.font = `bold 10px ${T.fontTc}`
+            badgeW = Math.ceil(ctx.measureText(label).width) + 8
+            const bx = Math.max(0, x) + 5
+            ctx.fillRect(bx, by + 2, badgeW, titleH - 4)
+            ctx.fillStyle = T.textOnLive; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+            ctx.fillText(label, bx + 4, by + titleH / 2 + 0.5)
+            badgeW += 4
+          }
+        }
+        const tx = Math.max(0, x) + 4 + (badgeW ? badgeW + 1 : 0)
         const textW = Math.min(x + blockW, W) - tx - 4
         if (textW > 6) {
           ctx.save()
@@ -835,7 +856,7 @@ export function TimelineCanvas({
       ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, sel, hoverKf])
+  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf])
 
   // ── Resize / DPR ───────────────────────────────────────────────────────────
 

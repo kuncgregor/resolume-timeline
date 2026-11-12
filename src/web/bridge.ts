@@ -8,6 +8,7 @@ import { OscClient } from '../main/osc-client'
 import { ResolumeRest } from '../main/resolume-rest'
 import { Scheduler, type LaneTarget } from '../main/scheduler'
 import { loadAudioFile } from '../main/audio-file'
+import { rv } from '../shared/resolume'
 import type { Show, CueEvent } from '../shared/show'
 
 export function timelineBridge(): Plugin {
@@ -36,7 +37,10 @@ export function timelineBridge(): Plugin {
         }
         if (ok) {
           const comp = await rest.getComposition()
-          if (comp) emit('resolume:compositionUpdate', comp)
+          if (comp) {
+            emit('resolume:compositionUpdate', comp)
+            scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
+          }
         }
       }
       const pingTimer = setInterval(checkResolume, 2000)
@@ -75,6 +79,7 @@ export function timelineBridge(): Plugin {
         triggerColumn: (column: number) => { osc.connectColumn(column); return null },
         clearLayer: (layer: number) => { osc.clearLayer(layer); return null },
         sendOsc: (address: string, value: number) => { osc.send(address, value); return null },
+        selectDeck: async (index: number) => { const ok = await rest.selectDeck(index); if (ok) scheduler.noteDeckSelected(index); return ok },
         setParamById: (id: number, value: number | string | boolean) => { scheduler.noteSent(id, value); return rest.setParamById(id, value) },
         getParamById: (id: number) => rest.getParamById(id),
         setTargets: (map: Record<string, LaneTarget>) => { scheduler.setTargets(map); return null },

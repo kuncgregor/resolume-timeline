@@ -12,6 +12,7 @@ interface Props {
   concertFilePath: string | null
   resolumeConnected: boolean
   resolumeHost: string
+  currentDeck: { index: number; name: string; color: string; count: number } | null  // deck selected in Resolume
   onSelect: (id: string) => void
   onGo: (direction: 1 | -1) => void
   onReorder: (newOrder: RundownEntry[]) => void
@@ -37,7 +38,7 @@ const entryName = (e: RundownEntry) =>
 
 export function RundownStrip({
   rundown, activeId, playing, nowRemaining, showMode, concertDirty, activeShowDirty, concertFilePath,
-  resolumeConnected, resolumeHost,
+  resolumeConnected, resolumeHost, currentDeck,
   onSelect, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
   onOpenConcert, onSaveConcert, onOpenShowFile, onSaveActiveShow, onSettings,
   onToggleShowMode, onReconnect,
@@ -147,6 +148,13 @@ export function RundownStrip({
           <span className={showMode ? '' : 'active'}>Setup</span>
           <span className={showMode ? 'active' : ''}>Show</span>
         </button>
+
+        {currentDeck && currentDeck.count > 1 && (
+          <span className="chip deck-chip" style={{ ['--deck-color' as any]: currentDeck.color }}
+            title={`Resolume is showing deck ${currentDeck.index} of ${currentDeck.count}. Cues from other decks switch to their deck when they fire.`}>
+            Deck {currentDeck.index} · {currentDeck.name}
+          </span>
+        )}
 
         <button className={`chip ${resolumeConnected ? 'live' : 'danger blink'} conn-chip`} onClick={onReconnect}
           title={resolumeConnected ? `Connected to Resolume (${resolumeHost}). Click to reconnect.` : 'Resolume is unreachable. Click to retry.'}>
