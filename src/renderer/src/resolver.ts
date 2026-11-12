@@ -2,7 +2,7 @@
 // every composition update and show change: ids change when Resolume reloads or effects
 // are re-added, paths don't. Old lanes (OSC address / runtime id only) are migrated.
 import type { Show, LayerTrack, GroupTrack, AutomationSubTrack } from '../../shared/show'
-import type { ResolumeComposition } from '../../shared/resolume'
+import { rv, type ResolumeComposition } from '../../shared/resolume'
 import { listParams, resolveRef, findById, oscAddress, type ParamInfo, type LaneTarget } from '../../shared/paramTree'
 import type { LaneStatusMap } from './laneStatus'
 
@@ -12,6 +12,11 @@ export interface Resolution {
   // Lane fields to store back into the show (migration, latest known range/options)
   updates: { trackIdx: number; autoIdx: number; updates: Partial<AutomationSubTrack> }[]
 }
+
+// Resolume's REST lists only the clips of the deck it is showing. Clips seen earlier are
+// remembered by id so lanes on clips of other decks keep their parameters (ids stay valid
+// while the clip plays across a deck switch).
+const clipCache = new Map<number, any>()
 
 const sameList = (a?: string[], b?: string[]) =>
   (a ?? []).length === (b ?? []).length && (a ?? []).every((x, i) => x === b?.[i])
@@ -51,6 +56,9 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
   const targets: Record<string, LaneTarget> = {}
   const updates: Resolution['updates'] = []
 
+  for (const l of comp?.layers ?? []) for (const c of (l as any)?.clips ?? []) if (c?.id != null) clipCache.set(c.id, c)
+  const shownDeck = comp?.decks?.find(d => !!rv((d as any)?.selected, false))?.id
+
   show.tracks.forEach((track, trackIdx) => {
     if (track.type !== 'layer' && track.type !== 'group') return
     const isGroup = track.type === 'group'
@@ -66,8 +74,24 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
 
       let info: ParamInfo | null = null
       if (auto.ref) {
-        const root = auto.ref.scope === 'clip'
+        let root = auto.ref.scope === 'clip'
           ? (layer.clips ?? []).find((c: any) => c?.id === auto.ref!.clipId) : layer
+        if (!root && auto.ref.scope === 'clip') {
+          root = clipCache.get(auto.ref.clipId!)
+          const cue = lt.clips?.find(c => c.id === auto.clipId) ?? lt.clips?.find(c => c.clipId === auto.ref!.clipId)
+          // Missing from the shown deck is only an error when it is the clip's own deck (or
+          // there is just one deck); cues from before deck tagging have no deck to compare
+          const multiDeck = (comp.decks?.length ?? 0) > 1
+          if (!root && multiDeck && cue?.deckId !== shownDeck) {
+            status[auto.id] = {
+              state: 'elsewhere',
+              reason: cue?.deckId != null
+                ? `Clip is in deck ${cue.deckName ?? cue.deckIndex ?? ''} — Resolume is showing another deck`
+                : 'Clip is not in the deck Resolume is showing — show its deck to check it',
+            }
+            return
+          }
+        }
         info = root ? resolveRef(root, auto.ref) : null
         if (!info) {
           status[auto.id] = {

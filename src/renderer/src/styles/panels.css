@@ -272,17 +272,24 @@ input[type=range].bp-slider {
 .btn.modal-primary:hover { background: var(--live-header); }
 
 /* Deck tabs in the clip browser (mirror Resolume's deck bar) */
-.browser-decks { display: flex; gap: 1px; background: var(--bg-gutter); overflow-x: auto; flex-shrink: 0; }
-.deck-tab {
-  flex: 1 1 0; min-width: 64px; height: 28px; padding: 0 8px; border: none; cursor: pointer;
-  display: flex; align-items: center; gap: 5px; background: var(--bg-control); color: var(--text-dim);
-  box-shadow: inset 0 3px 0 color-mix(in srgb, var(--deck-color) 45%, transparent);
-  font-size: var(--fs-meta); white-space: nowrap; overflow: hidden;
+.browser-decks { flex-shrink: 0; background: var(--bg-gutter); display: flex; flex-direction: column; gap: 1px; }
+.deck-keys { display: grid; gap: 1px; }
+.deck-key {
+  position: relative; height: 26px; border: none; cursor: pointer; padding: 0;
+  background: var(--bg-control); color: var(--deck-color);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--deck-color) 40%, transparent);
+  font-family: var(--font-tc); font-size: var(--fs-ui); font-weight: 800;
 }
-.deck-tab:hover { background: var(--bg-hover); color: var(--text-hi); }
-.deck-tab.on { background: var(--bg-tab-active); color: var(--text-hi); box-shadow: inset 0 3px 0 var(--deck-color); cursor: default; }
-.deck-tab-num { font-family: var(--font-tc); font-weight: 800; color: var(--deck-color); }
-.deck-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.deck-key:hover { background: var(--bg-hover); }
+.deck-key.on { background: var(--deck-color); color: var(--bg-gutter); box-shadow: none; cursor: default; }
+.deck-key-dot { position: absolute; top: 3px; right: 3px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.deck-current {
+  height: 22px; padding: 0 8px; display: flex; align-items: center; gap: 6px;
+  background: var(--bg-tab-active); box-shadow: inset 3px 0 0 var(--deck-color); font-size: var(--fs-meta);
+}
+.deck-current-num { font-family: var(--font-tc); font-weight: 800; color: var(--deck-color); }
+.deck-current-name { flex: 1; min-width: 0; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.deck-current-used { color: var(--text-dim); white-space: nowrap; }
 /* Cue tab: deck row */
 .deck-val { display: inline-flex; align-items: center; gap: 6px; }
 .deck-val .deck-dot { width: 8px; height: 8px; background: var(--deck-color); flex-shrink: 0; }

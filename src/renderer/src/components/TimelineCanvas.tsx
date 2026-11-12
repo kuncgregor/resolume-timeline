@@ -119,8 +119,13 @@ function pastedIndices(kfs: Keyframe[], frames: number[], fps: number): number[]
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
+// One entry per automation index (indices stay aligned with track.automations); a hidden
+// lane (auto.visible === false) has h = 0 and is skipped by every draw and hit test.
 interface AutoLaneLayout { y: number; h: number; id: string }
 interface TrackLayout { y: number; totalH: number; autoLanes: AutoLaneLayout[]; hidden?: boolean }
+
+// Rail colour of a group without a Resolume colour tag (tokens.css --group-none)
+const GROUP_NONE = '#7a7a7a'
 
 // What the canvas draws per row. Group tracks are drawn as clip-less rows carrying their own
 // automation lanes (so all lane editing works for them unchanged); members of a collapsed
@@ -137,7 +142,7 @@ function toViewTracks(tracks: Track[]): Track[] {
     const g = t.type === 'layer' && (t as LayerTrack).groupId !== undefined ? groups.get((t as LayerTrack).groupId!) : undefined
     if (!g) return t
     const lt = t as LayerTrack
-    return { ...lt, hidden: !!g.collapsed, groupColor: g.color, muted: lt.muted || g.muted, locked: lt.locked || g.locked } as ViewTrack
+    return { ...lt, hidden: !!g.collapsed, groupColor: g.color ?? GROUP_NONE, muted: lt.muted || g.muted, locked: lt.locked || g.locked } as ViewTrack
   })
 }
 
@@ -154,7 +159,7 @@ function buildLayout(
     if (track.type === 'layer' && (track as LayerTrack).expanded) {
       let ay = y + curClipH
       for (const auto of (track as LayerTrack).automations) {
-        const h = autoH(auto.id)
+        const h = auto.visible === false ? 0 : autoH(auto.id)
         autoLanes.push({ y: ay, h, id: auto.id })
         ay += h
       }
@@ -177,7 +182,7 @@ function getAutoLaneAt(layout: TrackLayout[], y: number): { trackIdx: number; au
   for (let ti = 0; ti < layout.length; ti++) {
     for (let ai = 0; ai < layout[ti].autoLanes.length; ai++) {
       const lane = layout[ti].autoLanes[ai]
-      if (y >= lane.y && y < lane.y + lane.h) return { trackIdx: ti, autoIdx: ai, lane }
+      if (lane.h > 0 && y >= lane.y && y < lane.y + lane.h) return { trackIdx: ti, autoIdx: ai, lane }
     }
   }
   return null
@@ -208,7 +213,7 @@ function hitTestKeyframe(
     const lt = track as LayerTrack
     for (let ai = 0; ai < lt.automations.length; ai++) {
       const lane = layout[ti].autoLanes[ai]
-      if (!lane || cy < lane.y || cy >= lane.y + lane.h) continue
+      if (!lane || lane.h <= 0 || cy < lane.y || cy >= lane.y + lane.h) continue
       const auto = lt.automations[ai]
       const kind = laneKind(auto)
       const opts = laneRange(auto, laneStatus[auto.id]).options ?? []
@@ -264,6 +269,7 @@ function findLane(tracks: Track[], laneId: string): { trackIdx: number; autoIdx:
 function hitTestAutoResize(layout: TrackLayout[], y: number): { autoId: string } | null {
   for (const tl of layout) {
     for (const lane of tl.autoLanes) {
+      if (lane.h <= 0) continue
       const bottom = lane.y + lane.h
       if (Math.abs(y - bottom) <= AUTO_RESIZE_ZONE) return { autoId: lane.id }
     }
@@ -396,7 +402,10 @@ export function TimelineCanvas({
 
   // Keys removed elsewhere (undo, lane deleted) leave the selection
   useEffect(() => {
-    const s = selRef.current.filter(h => !!autoAt(h.trackIdx, h.autoIdx)?.keyframes[h.kfIdx])
+    const s = selRef.current.filter(h => {
+      const a = autoAt(h.trackIdx, h.autoIdx)
+      return !!a?.keyframes[h.kfIdx] && a.visible !== false
+    })
     if (s.length !== selRef.current.length) updateSel(s)
   }, [tracks])
 
@@ -426,6 +435,46 @@ export function TimelineCanvas({
     const dragMap = new Map<string, DragItem>()
     if (kd?.moved) kd.items.forEach(i => dragMap.set(`${laneKey(i)}:${i.kfIdx}`, i))
     const pxToFrame = (px: number) => px / pxPerFrame + scrollFrame
+
+    // Clip automation: the lane's cue spans as boxes in the cue colour, the rest dimmed
+    // (the parameter only matters while the clip plays). Keyframes stay on top, editable.
+    const drawClipScope = (lt: LayerTrack, auto: AutomationSubTrack, lane: AutoLaneLayout, spans: ClipSpan[], trackColor: string) => {
+      const cues = laneCues(lt, auto)
+      const ly = lane.y, lh = lane.h - 1
+      ctx.save()
+      ctx.beginPath(); ctx.rect(0, ly, W, lh); ctx.clip()
+      const boxes = cues.map(ci => {
+        const { sf, shownF } = spans[ci]
+        const x = Math.round(frameToX(sf))
+        return { ci, x, w: Math.round(spanWidth(shownF, pxPerFrame)) }
+      }).sort((a, b) => a.x - b.x)
+      // Dim everything outside the boxes
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'
+      let cx = 0
+      for (const b of boxes) {
+        if (b.x > cx) ctx.fillRect(cx, ly, Math.min(b.x, W) - cx, lh)
+        cx = Math.max(cx, b.x + b.w)
+        if (cx >= W) break
+      }
+      if (cx < W) ctx.fillRect(cx, ly, W - cx, lh)
+      for (const b of boxes) {
+        if (b.x + b.w < 0 || b.x > W) continue
+        const clip = lt.clips[b.ci]
+        const c = clip.color ?? clip.resolumeColor ?? trackColor
+        ctx.fillStyle = rgba(c, 0.14); ctx.fillRect(b.x, ly, b.w, lh)
+        ctx.fillStyle = rgba(c, 0.7); ctx.fillRect(b.x, ly, b.w, 1)
+        const tx = Math.max(b.x, 0) + 4, tw = b.x + b.w - tx - 4
+        if (tw > 6 && lh >= 14) {
+          ctx.save()
+          ctx.beginPath(); ctx.rect(b.x, ly, b.w, lh); ctx.clip()
+          ctx.font = `10px ${T.fontCond}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'
+          ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+          ctx.fillText(fitText(ctx, clip.clipName || `Clip ${clip.clipIndex}`, tw), tx, ly + 3)
+          ctx.restore()
+        }
+      }
+      ctx.restore()
+    }
 
     // One automation lane: curve by kind, keyframe glyphs, playhead dot
     const drawAutoLane = (trackIdx: number, ai: number, auto: AutomationSubTrack, lane: AutoLaneLayout) => {
@@ -609,6 +658,8 @@ export function TimelineCanvas({
         ctx.fillStyle = rgba(vt.group.color ?? T.text, 0.8); ctx.fillRect(0, y, W, 2)
         if (vt.group.collapsed) drawGroupSummary(ctx, tracksProp, vt.group, y + 6, curClipH - 12, W, fps, frameToX)
       } else if (vt.groupColor) {
+        // Group member: faint group tint + the group's rail
+        ctx.fillStyle = rgba(vt.groupColor, 0.03); ctx.fillRect(0, y, W, curClipH - 1)
         ctx.fillStyle = rgba(vt.groupColor, 0.7); ctx.fillRect(0, y, 3, curClipH - 1)
       }
       if (i === selectedTrackIdx) { ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(0, y, W, curClipH - 1) }
@@ -616,10 +667,19 @@ export function TimelineCanvas({
 
       if (track.type === 'layer' && (track as LayerTrack).expanded) {
         const lt = track as LayerTrack
+        // Lanes hang under their parent row: darkened parent background, a faint tint of the
+        // parent colour, and a parent-coloured seam where the first lane meets the row
+        const parentC = vt.group?.color ?? lt.color ?? TAG_COLORS[0]
+        const railW = vt.groupColor ? 3 : 0
+        let first = true
         autoLanes.forEach((lane, ai) => {
+          if (lane.h <= 0) return
           const auto = lt.automations[ai]
           ctx.fillStyle = base; ctx.fillRect(0, lane.y, W, lane.h - 1)
           ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(0, lane.y, W, lane.h - 1)
+          ctx.fillStyle = rgba(parentC, 0.03); ctx.fillRect(0, lane.y, W, lane.h - 1)
+          if (vt.groupColor) { ctx.fillStyle = rgba(vt.groupColor, 0.03); ctx.fillRect(0, lane.y, W, lane.h - 1) }
+          if (first) { ctx.fillStyle = rgba(parentC, 0.35); ctx.fillRect(0, lane.y, W, 1); first = false }
           const kind = auto ? laneKind(auto) : 'range'
           const toY = kfToY(lane)
           if (kind === 'choice') {
@@ -635,9 +695,11 @@ export function TimelineCanvas({
             ;[0.25, 0.5, 0.75].forEach(v => ctx.fillRect(0, Math.round(toY(v)), W, 1))
           }
           if (auto && laneStatus[auto.id]?.state === 'broken') hatch(ctx, 0, lane.y, W, lane.h - 1, rgba(T.danger, 0.08), 8)
+          // Group members: the group rail continues through the lanes, lane accent beside it
+          if (railW) { ctx.fillStyle = rgba(vt.groupColor!, 0.7); ctx.fillRect(0, lane.y, railW, lane.h - 1) }
           // Layer-bound automation (never moves with clips) gets the wider accent
           ctx.fillStyle = rgba(auto?.color ?? T.text, 0.6)
-          ctx.fillRect(0, lane.y, auto?.layerBound ? 4 : 2, lane.h - 1)
+          ctx.fillRect(railW, lane.y, auto?.layerBound ? 4 : 2, lane.h - 1)
           ctx.fillStyle = T.gutter; ctx.fillRect(0, lane.y + lane.h - 1, W, 1)
         })
       }
@@ -820,7 +882,8 @@ export function TimelineCanvas({
       // Automation lanes
       autoLanes.forEach((lane, ai) => {
         const auto = lt.automations[ai]
-        if (!auto || lane.y > H || lane.y + lane.h < TRACKS_TOP) return
+        if (!auto || lane.h <= 0 || lane.y > H || lane.y + lane.h < TRACKS_TOP) return
+        if (isClipLane(auto)) drawClipScope(lt, auto, lane, spans, trackColor)
         drawAutoLane(trackIdx, ai, auto, lane)
       })
     })
@@ -977,7 +1040,7 @@ export function TimelineCanvas({
       const items: DragItem[] = []
       for (const h of next) {
         const a = autoAt(h.trackIdx, h.autoIdx), k = a?.keyframes[h.kfIdx]
-        if (!a || !k || !layout[h.trackIdx]?.autoLanes[h.autoIdx] || !canEditLane(h.trackIdx, h.autoIdx)) continue
+        if (!a || !k || !layout[h.trackIdx]?.autoLanes[h.autoIdx]?.h || !canEditLane(h.trackIdx, h.autoIdx)) continue
         const kind = laneKind(a), opts = laneRange(a, laneStatus[a.id]).options ?? []
         const f0 = smpteToFrames(k.time, fps), v0 = kfValue(kind, k, opts)
         items.push({ ...kfRef(h), kind, opts, f0, v0, f: f0, v: v0, valued: false })
@@ -1279,7 +1342,7 @@ export function TimelineCanvas({
       const lt = tracks[h.trackIdx] as LayerTrack | undefined
       const auto = lt?.type === 'layer' && lt.expanded ? lt.automations[h.autoIdx] : undefined
       const kf = auto?.keyframes[h.kfIdx]
-      return auto && kf ? { h, auto, kf, f: smpteToFrames(kf.time, fps) } : null
+      return auto && kf && auto.visible !== false ? { h, auto, kf, f: smpteToFrames(kf.time, fps) } : null
     })
     .filter((x): x is NonNullable<typeof x> => !!x)
     .sort((a, b) => a.f - b.f)
@@ -1308,7 +1371,7 @@ export function TimelineCanvas({
     const targets = cb.lanes.length === 1 && focus && laneKind(focus.auto) === cb.lanes[0].kind
       ? [{ ...focus, items: cb.lanes[0].items }]
       : cb.lanes.flatMap(l => { const t = findLane(tracks, l.laneId); return t ? [{ ...t, items: l.items }] : [] })
-    const ok = targets.filter(t => canEditLane(t.trackIdx, t.autoIdx))
+    const ok = targets.filter(t => t.auto.visible !== false && canEditLane(t.trackIdx, t.autoIdx))
     if (!ok.length) return false
     const next: KfHit[] = []
     for (const t of ok) {
@@ -1592,6 +1655,19 @@ function clipSpans(
     if (cur.durF > 0 && next.sf < cur.sf + cur.durF) cur.shownF = Math.max(0, next.sf - cur.sf)
   }
   return spans
+}
+
+// Clip automation lanes (clip-scope parameter, or legacy lanes bound to a cue)
+const isClipLane = (auto: AutomationSubTrack) =>
+  auto.ref ? auto.ref.scope === 'clip' : !auto.layerBound && !!auto.clipId
+
+/** Indices of the cues a clip lane belongs to: its own cue, else every cue of the same Resolume clip. */
+function laneCues(lt: LayerTrack, auto: AutomationSubTrack): number[] {
+  const idx = (pred: (c: ClipCue) => boolean) => lt.clips.flatMap((c, i) => (pred(c) ? [i] : []))
+  const own = auto.clipId ? idx(c => c.id === auto.clipId) : []
+  if (own.length) return own
+  const rid = auto.ref?.clipId
+  return rid !== undefined ? idx(c => c.clipId === rid) : []
 }
 
 // Trigger-only (and fully covered) clips still get a small clickable block

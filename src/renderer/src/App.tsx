@@ -866,7 +866,9 @@ export default function App() {
       const lt = tracks[trackIdx] as LayerTrack
       if (!lt || (lt.type !== 'layer' && (lt as Track).type !== 'group')) return prev
       if (lt.automations.some(a => sameRef(a.ref, info.ref))) {
-        tracks[trackIdx] = { ...lt, expanded: true }
+        // A hidden lane comes back into view instead of being duplicated
+        const automations = lt.automations.map(a => sameRef(a.ref, info.ref) && a.visible === false ? { ...a, visible: true } : a)
+        tracks[trackIdx] = { ...lt, expanded: true, automations }
         return { ...prev, tracks }
       }
       const slot = info.ref.scope === 'clip' ? lt.clips?.find(c => c.clipId === info.ref.clipId)?.clipIndex : undefined

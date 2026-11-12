@@ -70,6 +70,11 @@ export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDr
     refresh()
   }
 
+  // Timeline cues per deck: marks the decks the show actually fires from
+  const cuesByDeck = new Map<number, number>()
+  for (const t of tracks) if (t.type === 'layer')
+    for (const c of (t as LayerTrack).clips) if (c.deckId !== undefined) cuesByDeck.set(c.deckId, (cuesByDeck.get(c.deckId) ?? 0) + 1)
+
   const trackedIds = new Set(
     tracks.filter(t => t.type === 'layer').map(t => (t as LayerTrack).resolumeLayerId)
   )
@@ -107,18 +112,36 @@ export function ClipBrowser({ tracks, selectedDeckId, onClose, onDragStart, onDr
       </div>
 
       {decks.length > 0 && (
-        <div className="browser-decks" title="Resolume decks. Clips you drag from a deck fire from that deck.">
-          {decks.map(d => (
-            <button key={d.id}
-              className={`deck-tab ${d.selected ? 'on' : ''}`}
-              style={{ ['--deck-color' as any]: d.color }}
-              onClick={() => { if (!d.selected) showDeck(d.index) }}
-              title={d.selected ? `Showing deck ${d.index}: ${d.name}` : `Show deck ${d.index}: ${d.name} (switches the deck in Resolume)`}
-            >
-              <span className="deck-tab-num">D{d.index}</span>
-              <span className="deck-tab-name">{d.name}</span>
-            </button>
-          ))}
+        // Numbered keys scale to 10+ decks (Resolume's own tabs are names; names don't fit
+        // ten across a side panel). The shown deck's full name sits on the line below.
+        <div className="browser-decks">
+          <div className="deck-keys" title="Resolume decks. Clips you drag from a deck fire from that deck."
+            // Up to 10 per row, rows balanced (12 decks = 2 × 6, not 10 + 2)
+            style={{ gridTemplateColumns: `repeat(${Math.ceil(decks.length / Math.ceil(decks.length / 10))}, 1fr)` }}>
+            {decks.map(d => {
+              const used = cuesByDeck.get(d.id) ?? 0
+              return (
+                <button key={d.id}
+                  className={`deck-key ${d.selected ? 'on' : ''}`}
+                  style={{ ['--deck-color' as any]: d.color }}
+                  onClick={() => { if (!d.selected) showDeck(d.index) }}
+                  title={`Deck ${d.index}: ${d.name}${used ? ` · ${used} ${used === 1 ? 'cue' : 'cues'} on the timeline` : ''}${d.selected ? ' (shown)' : '\nClick: show this deck (switches the deck in Resolume)'}`}
+                >
+                  {d.index}
+                  {used > 0 && <span className="deck-key-dot" />}
+                </button>
+              )
+            })}
+          </div>
+          {shownDeck && (
+            <div className="deck-current" style={{ ['--deck-color' as any]: shownDeck.color }}>
+              <span className="deck-current-num">D{shownDeck.index}</span>
+              <span className="deck-current-name" title={shownDeck.name}>{shownDeck.name}</span>
+              {(cuesByDeck.get(shownDeck.id) ?? 0) > 0 && (
+                <span className="deck-current-used">{cuesByDeck.get(shownDeck.id)} on timeline</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

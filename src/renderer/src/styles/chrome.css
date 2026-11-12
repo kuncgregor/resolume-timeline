@@ -263,7 +263,7 @@
 .lane-row.auto-row { background: var(--bg-well); cursor: default; }
 
 .lane-stripe { width: 4px; flex-shrink: 0; }
-.lane-stripe.auto { width: 2px; margin-left: 12px; }
+.lane-stripe.auto { width: 2px; margin-left: 4px; }
 
 .lane-expand {
   width: 18px; flex-shrink: 0; border: none; background: transparent; cursor: pointer;
@@ -495,7 +495,45 @@
 }
 .group-row .lane-name { text-transform: uppercase; letter-spacing: 0.04em; }
 .group-sub { gap: 6px; }
-.lane-row.in-group { box-shadow: inset 3px 0 0 var(--group-color), inset 0 -1px 0 var(--bg-gutter); padding-left: 3px; }
+.lane-row.in-group { background: color-mix(in srgb, var(--group-color) 4%, var(--bg-lane)); }
+.lane-row.in-group.alt { background: color-mix(in srgb, var(--group-color) 4%, var(--bg-lane-alt)); }
+.lane-row.in-group:hover { background: color-mix(in srgb, var(--group-color) 8%, var(--bg-track)); }
+.lane-row.in-group.selected { background: color-mix(in srgb, var(--group-color) 8%, var(--bg-control)); }
+
+/* Tree: group members sit indented behind a rail in the group colour, automation lanes hang
+   under their layer from a thin rail with an elbow per lane (the canvas mirrors both) */
+.member-block { position: relative; padding-left: 9px; background: color-mix(in srgb, var(--group-color) 14%, var(--bg-gutter)); }
+.member-block::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 3px; background: var(--group-color); }
+.member-block:last-child::after,
+.member-block:has(+ :not(.member-block))::after {
+  content: ''; position: absolute; left: 3px; bottom: 0; width: 9px; height: 2px; background: var(--group-color);
+}
+.auto-block { position: relative; padding-left: 12px; background: var(--bg-well); }
+.auto-block::before {
+  content: ''; position: absolute; left: 6px; top: 0; bottom: 12px; width: 1px;
+  background: color-mix(in srgb, var(--parent-color) 70%, transparent);
+}
+.auto-block > .auto-row::before {
+  content: ''; position: absolute; left: -6px; top: 12px; width: 6px; height: 1px;
+  background: color-mix(in srgb, var(--parent-color) 70%, transparent);
+}
+.auto-block > .auto-row:last-child::before { top: auto; bottom: 12px; }
+
+/* Clip-scope lanes look like their clip: thumbnail + clip-colour tint */
+.lane-row.auto-row.clip-lane { background: color-mix(in srgb, var(--clip-color) 9%, var(--bg-well)); }
+.auto-thumb {
+  width: 28px; height: 16px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-gutter); box-shadow: 0 0 0 1px var(--clip-color); overflow: hidden;
+}
+.auto-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.auto-thumb-ph { font-size: 8px; color: var(--clip-color); }
+.clip-lane .auto-owner { color: color-mix(in srgb, var(--clip-color) 60%, var(--text)); }
+
+/* Hide a lane / show hidden lanes */
+.auto-hide { display: inline-flex; align-items: center; justify-content: center; }
+.auto-row:not(:hover) .auto-hide { opacity: 0.35; }
+.lane-toggle.hidden-chip { width: auto; padding: 0 4px; display: inline-flex; align-items: center; gap: 2px; color: var(--text-dim); font-size: var(--fs-meta); }
+.lane-toggle.hidden-chip:hover { color: var(--text-hi); }
 
 /* ── Decks (Resolume tabs) ────────────────────────────────────────────── */
 .chip.deck-chip { background: transparent; box-shadow: inset 3px 0 0 var(--deck-color), inset 0 0 0 1px var(--bg-splitter); color: var(--text); height: 24px; padding-left: 9px; }

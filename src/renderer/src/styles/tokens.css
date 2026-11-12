@@ -65,7 +65,8 @@
   --tabs-h: 32px;
   --rundown-h: 64px;
   --transport-h: 64px;
-  --headers-w: 200px;
+  --headers-w: 232px;
+  --group-none: #7a7a7a;  /* rail of a group without a Resolume colour tag */
   --browser-w: 260px;
   --radius-chip: 2px;
 

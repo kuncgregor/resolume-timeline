@@ -5,7 +5,7 @@ import { rv, resolumeColor } from '../../shared/resolume'
 
 // Distinct hues that don't collide with the state colours (mint live, yellow select,
 // blue next, orange clip scope, red error)
-const DECK_COLORS = ['#8fb3d9', '#c49bff', '#e88fb4', '#7fd1c7', '#d9b86c', '#a3c46b', '#b0a3e0', '#e0a08a']
+const DECK_COLORS = ['#8fb3d9', '#c49bff', '#e88fb4', '#7fd1c7', '#d9b86c', '#a3c46b', '#b0a3e0', '#e0a08a', '#d0c49a', '#9ccfe6']
 
 export interface DeckInfo { id: number; index: number; name: string; selected: boolean; color: string }
 

@@ -74,6 +74,56 @@ function expectedCue(clips: ClipCue[], frame: number, fps: number): ClipCue | nu
   return dur === 0 || frame < bestF + dur ? best : null
 }
 
+const api = (window as any).timeline
+
+// Clip thumbnails for clip-scope lane headers, shared across renders. Misses are retried
+// after a while (a clip in a deck Resolume isn't showing has no thumbnail until it is shown).
+const thumbCache = new Map<string, string>()
+const thumbMiss = new Map<string, number>()
+function useClipThumb(layerId: number | undefined, clipId: number | undefined): string | null {
+  const key = layerId != null && clipId != null ? `${layerId}-${clipId}` : ''
+  const [thumb, setThumb] = useState<string | null>(() => (key && thumbCache.get(key)) || null)
+  useEffect(() => {
+    if (!key) { setThumb(null); return }
+    const hit = thumbCache.get(key)
+    if (hit) { setThumb(hit); return }
+    setThumb(null)
+    if (Date.now() - (thumbMiss.get(key) ?? 0) < 15000 || !api?.getThumbnail) return
+    let alive = true
+    api.getThumbnail(layerId, clipId).then((t: string | null) => {
+      if (t) { thumbCache.set(key, t); if (alive) setThumb(t) } else thumbMiss.set(key, Date.now())
+    }).catch(() => thumbMiss.set(key, Date.now()))
+    return () => { alive = false }
+  }, [key, layerId, clipId])
+  return thumb
+}
+
+// The cue a clip-scope lane belongs to: its bound cue, else any cue of the same Resolume clip
+export function laneCue(lt: LayerTrack, auto: AutomationSubTrack): ClipCue | null {
+  const isClip = auto.ref ? auto.ref.scope === 'clip' : (!!auto.clipId && !auto.layerBound)
+  if (!isClip || !lt.clips) return null
+  return lt.clips.find(c => c.id === auto.clipId)
+    ?? (auto.ref?.clipId != null ? lt.clips.find(c => c.clipId === auto.ref!.clipId) : undefined)
+    ?? null
+}
+
+function ClipThumb({ layerId, cue, color }: { layerId: number; cue: ClipCue; color: string }) {
+  const thumb = useClipThumb(layerId, cue.clipId)
+  return (
+    <span className="auto-thumb" style={{ ['--clip-color' as any]: color }} title={`Clip: ${cue.clipName}`}>
+      {thumb ? <img src={thumb} alt="" draggable={false} /> : <span className="auto-thumb-ph">▶</span>}
+    </span>
+  )
+}
+
+const EyeOff = () => (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+    <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" />
+    <circle cx="8" cy="8" r="2" />
+    <path d="M2.5 13.5l11-11" />
+  </svg>
+)
+
 function splitLabel(auto: AutomationSubTrack): { owner: string; param: string } {
   const label = auto.ref?.label ?? auto.name
   const at = label.indexOf(' › ')
@@ -188,8 +238,11 @@ export function LaneHeaders({
   }
 
   // Automation lanes under a layer or a group track (same rows for both)
-  const renderAutoLanes = (lt: LayerTrack, i: number) => (
-    lt.expanded && lt.automations.map((auto, ai) => {
+  const renderAutoLanes = (lt: LayerTrack, i: number, parentColor: string) => (
+    lt.expanded && lt.automations.some(a => a.visible !== false) && (
+    <div className="auto-block" style={{ ['--parent-color' as any]: parentColor }}>
+    {lt.automations.map((auto, ai) => {
+                  if (auto.visible === false) return null
                   const autoH = autoLaneHeights[auto.id] ?? DEFAULT_AUTO_H
                   const isEditingThis = editing?.ti === i && editing?.ai === ai
                   const isLayerBound = !!auto.layerBound
@@ -204,20 +257,26 @@ export function LaneHeaders({
                   const at = valueAtFrame(auto.keyframes, frame, fps, kind)
                   const releasedOutside = at != null && !at.inside && auto.outside !== 'hold'
                   const valueText = at ? formatValue(kind, at.value, range, at.option, status?.info?.suffix) : '—'
-                  const { owner, param } = splitLabel(auto)
+                  const { owner: refOwner, param } = splitLabel(auto)
+                  const cue = (lt as Track).type === 'layer' ? laneCue(lt, auto) : null
+                  const cueColor = cue ? (cue.color ?? cue.resolumeColor ?? lt.color ?? 'var(--scope-clip)') : ''
+                  // A clip lane names its clip, not the generic "Clip · …" owner
+                  const sub = refOwner.startsWith('Clip · ') ? refOwner.slice(7) : ''
+                  const owner = cue ? (sub ? `${sub} · ${cue.clipName}` : cue.clipName) : refOwner
                   const retargetKey = `rt:${auto.id}`
                   const labelTip = [
                     auto.ref?.label ?? auto.name,
                     broken ? `✕ ${status?.reason ?? 'target no longer exists in Resolume'}` : null,
                     status?.state === 'offline' ? 'Resolume not connected' : null,
+                    status?.state === 'elsewhere' ? status.reason : null,
                     !enabled ? 'Disabled: not sending' : null,
                     auto.target ? `OSC: ${auto.target}` : null,
                     readOnly ? null : 'Click: retarget to another parameter',
                   ].filter(Boolean).join('\n')
                   return (
                     <div key={auto.id}
-                      className={`lane-row auto-row ${broken ? 'broken' : ''} ${enabled ? '' : 'disabled'}`}
-                      style={{ height: autoH }}>
+                      className={`lane-row auto-row ${broken ? 'broken' : ''} ${enabled ? '' : 'disabled'} ${cue ? 'clip-lane' : ''}`}
+                      style={{ height: autoH, ...(cue ? { ['--clip-color' as any]: cueColor } : {}) }}>
                       <div className="lane-stripe auto" style={{ background: broken ? 'var(--danger)' : auto.color ?? 'var(--live-fill)' }} />
                       <div className="lane-body">
                         {isEditingThis ? (
@@ -236,7 +295,9 @@ export function LaneHeaders({
                           />
                         ) : (
                           <div className="auto-title">
-                            <span className="auto-glyph">{KIND_GLYPH[kind]}</span>
+                            {cue
+                              ? <ClipThumb layerId={lt.resolumeLayerId} cue={cue} color={cueColor} />
+                              : <span className="auto-glyph">{KIND_GLYPH[kind]}</span>}
                             <button
                               className={`auto-label ${picker?.key === retargetKey ? 'open' : ''}`}
                               title={labelTip}
@@ -244,8 +305,12 @@ export function LaneHeaders({
                               onClick={e => openPicker(e, { ti: i, ai, mode: 'retarget', key: retargetKey })}
                             >
                               {broken && <span className="auto-broken">✕ </span>}
-                              {owner && <span className="auto-owner">{owner} › </span>}
-                              <span className="auto-param">{param}</span>
+                              {cue ? (
+                                // Clip lanes: the parameter first, the (long) clip name after it
+                                <><span className="auto-param">{param}</span><span className="auto-owner"> · {owner}</span></>
+                              ) : (
+                                <>{owner && <span className="auto-owner">{owner} › </span>}<span className="auto-param">{param}</span></>
+                              )}
                             </button>
                             {legacy && (
                               <span
@@ -281,6 +346,11 @@ export function LaneHeaders({
                               onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>OVR ↺</button>
                           )}
                           <span className="auto-spacer" />
+                          <button
+                            className="lane-tool auto-hide"
+                            title="Hide this lane (it keeps playing). Show it again from the hidden-lanes button on the layer."
+                            onClick={e => { e.stopPropagation(); onUpdateAutomation(i, ai, { visible: false }) }}
+                          ><EyeOff /></button>
                           <input
                             type="checkbox" className="auto-enable"
                             checked={enabled} disabled={readOnly}
@@ -307,8 +377,24 @@ export function LaneHeaders({
                       {!readOnly && <ResizeHandle onStart={y => setResizing({ id: auto.id, kind: 'auto', startY: y, startH: autoH })} />}
                     </div>
                   )
-                })
-  )
+                })}
+    </div>
+  ))
+
+  // Eye + n: lanes hidden from the view; click shows them all again
+  const hiddenChip = (lt: LayerTrack, i: number) => {
+    const n = lt.automations.filter(a => a.visible === false).length
+    if (!n) return null
+    return (
+      <button className="lane-toggle hidden-chip"
+        title={`${n} hidden automation ${n === 1 ? 'lane' : 'lanes'} (still playing) — click to show`}
+        onClick={e => {
+          e.stopPropagation()
+          lt.automations.forEach((a, ai) => { if (a.visible === false) onUpdateAutomation(i, ai, { visible: true }) })
+          if (!lt.expanded) onToggleExpand(i)
+        }}><EyeOff />{n}</button>
+    )
+  }
 
   return (
     <div className="lane-headers" style={{ userSelect: resizing ? 'none' : undefined }}>
@@ -369,7 +455,7 @@ export function LaneHeaders({
                 <div key={gt.id}>
                   <div
                     className={`lane-row group-row ${isSelected ? 'selected' : ''} ${gt.muted ? 'muted' : ''}`}
-                    style={{ height: h, ['--group-color' as any]: gt.color ?? 'var(--bg-splitter)' }}
+                    style={{ height: h, ['--group-color' as any]: gt.color ?? 'var(--group-none)' }}
                     onClick={() => onSelect(i)}
                   >
                     <div className="lane-stripe group" />
@@ -384,6 +470,7 @@ export function LaneHeaders({
                         </span>
                         <span className="lane-name" title={gt.name}>{gt.name}</span>
                         <div className="lane-toggles">
+                          {hiddenChip(gt as unknown as LayerTrack, i)}
                           {!readOnly && (
                             <button
                               className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
@@ -419,7 +506,7 @@ export function LaneHeaders({
                     </div>
                     {!readOnly && <ResizeHandle onStart={y => setResizing({ id: gt.id, kind: 'layer', startY: y, startH: h })} />}
                   </div>
-                  {renderAutoLanes(gt as unknown as LayerTrack, i)}
+                  {renderAutoLanes(gt as unknown as LayerTrack, i, gt.color ?? 'var(--group-none)')}
                 </div>
               )
             }
@@ -445,10 +532,12 @@ export function LaneHeaders({
             const nAuto = lt.automations.length
             const addKey = `add:${lt.id}`
             return (
-              <div key={lt.id}>
+              <div key={lt.id}
+                className={group ? 'member-block' : undefined}
+                style={group ? { ['--group-color' as any]: group.color ?? 'var(--group-none)' } : undefined}>
                 <div
                   className={`lane-row layer-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''} ${lt.muted || group?.muted ? 'muted' : ''} ${group ? 'in-group' : ''}`}
-                  style={{ height: h, ...(group ? { ['--group-color' as any]: group.color ?? 'var(--bg-splitter)' } : {}) }}
+                  style={{ height: h }}
                   onClick={() => onSelect(i)}
                 >
                   <div className="lane-stripe" style={{ background: lt.color ?? 'var(--bg-splitter)' }} />
@@ -465,6 +554,7 @@ export function LaneHeaders({
                       </span>
                       <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clips'}`}>{lt.name}</span>
                       <div className="lane-toggles">
+                        {hiddenChip(lt, i)}
                         {!readOnly && (
                           <button
                             className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
@@ -494,7 +584,7 @@ export function LaneHeaders({
                   {!readOnly && <ResizeHandle onStart={y => setResizing({ id: lt.id, kind: 'layer', startY: y, startH: h })} />}
                 </div>
 
-                {renderAutoLanes(lt, i)}
+                {renderAutoLanes(lt, i, lt.color ?? 'var(--bg-splitter)')}
               </div>
             )
           })}

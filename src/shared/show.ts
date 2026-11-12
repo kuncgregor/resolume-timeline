@@ -112,6 +112,7 @@ export interface AutomationSubTrack {
   kind?: LaneKind     // default 'range'
   options?: string[]  // ParamChoice option names (last known)
   enabled?: boolean   // false = lane draws but sends nothing (default true)
+  visible?: boolean   // false = lane hidden in the view (still plays)
   outside?: 'release' | 'hold'  // outside the first..last keyframe span: leave the param alone (default) or hold
   paramId?: number   // legacy: id stored by older shows; used only to migrate them to `ref`
   clipId?: string    // if set, automation moves only with this specific clip (else moves with any clip on track)
