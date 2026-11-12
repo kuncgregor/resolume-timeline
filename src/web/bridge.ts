@@ -7,6 +7,7 @@ import { Transport, smpteToFrames } from '../main/transport'
 import { OscClient } from '../main/osc-client'
 import { ResolumeRest } from '../main/resolume-rest'
 import { Scheduler } from '../main/scheduler'
+import { loadAudioFile } from '../main/audio-file'
 import type { Show, CueEvent } from '../shared/show'
 
 export function timelineBridge(): Plugin {
@@ -116,6 +117,15 @@ export function timelineBridge(): Plugin {
         res.write(`event: resolume:status\ndata: ${JSON.stringify({ connected: resolumeConnected })}\n\n`)
         clients.add(res)
         req.on('close', () => clients.delete(res))
+      })
+
+      // Binary, so a long WAV is not inflated through JSON
+      server.middlewares.use('/__tl/audio', async (req, res) => {
+        const filePath = new URL(req.url ?? '', 'http://x').searchParams.get('path') ?? ''
+        const audio = filePath ? await loadAudioFile(filePath) : null
+        if (!audio) { res.statusCode = 404; res.end(); return }
+        res.setHeader('Content-Type', 'audio/wav')
+        res.end(Buffer.from(audio.data.buffer, audio.data.byteOffset, audio.data.byteLength))
       })
 
       server.middlewares.use('/__tl/rpc', async (req, res) => {

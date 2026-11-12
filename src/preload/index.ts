@@ -20,6 +20,8 @@ const api = {
 
   openAudioFile: (): Promise<{ filePath: string; data: Uint8Array } | null> =>
     ipcRenderer.invoke('audio:openFile'),
+  readAudioFile: (filePath: string): Promise<{ filePath: string; data: Uint8Array } | null> =>
+    ipcRenderer.invoke('audio:readFile', filePath),
 
   getComposition: (): Promise<ResolumeComposition | null> => ipcRenderer.invoke('resolume:getComposition'),
   getThumbnail: (layerId: number, clipId: number): Promise<string | null> =>

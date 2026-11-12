@@ -80,6 +80,10 @@ export interface AutomationSubTrack {
   paramId?: number   // Resolume's internal parameter ID — used for by-id REST PUT (most reliable)
   clipId?: string    // if set, automation moves only with this specific clip (else moves with any clip on track)
   layerBound?: boolean  // if true, automation never moves — it is fixed at absolute timeline positions
+  // Resolume parameter range. Keyframe values are normalized 0..1 (what Resolume's OSC
+  // input expects); REST by-id needs the real value min + v * (max - min).
+  min?: number
+  max?: number
   color?: string
   keyframes: Keyframe[]
 }

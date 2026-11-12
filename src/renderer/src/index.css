@@ -46,7 +46,9 @@ html, body, #root {
   display: flex; align-items: stretch;
   height: var(--tabs-h); background: var(--c0);
   border-bottom: 1px solid var(--c5);
-  flex-shrink: 0; overflow: hidden;
+  /* overflow stays visible so the + Dodaj / Concert dropdowns can extend below the strip;
+     the block list scrolls inside .rundown-scroll */
+  flex-shrink: 0; position: relative; z-index: 50;
   -webkit-app-region: drag;
 }
 .project-tab-bar > * { -webkit-app-region: no-drag; }
@@ -144,7 +146,9 @@ html, body, #root {
 .rundown-strip {
   display: flex; flex-direction: column;
   background: var(--c0); border-bottom: 1px solid var(--c5);
-  flex-shrink: 0; overflow: hidden;
+  /* overflow stays visible so the + Dodaj / Concert dropdowns can extend below the strip;
+     the block list scrolls inside .rundown-scroll */
+  flex-shrink: 0; position: relative; z-index: 50;
   -webkit-app-region: drag;
 }
 .rundown-strip > * { -webkit-app-region: no-drag; }
@@ -243,6 +247,9 @@ html, body, #root {
 }
 .rd-block-btn:hover { color: var(--cb); }
 .rd-block-btn-del:hover { color: var(--red2); }
+.rd-block-controls.confirming { display: flex; }
+.rd-block-btn-del.confirm { background: var(--red); color: var(--cb); font-weight: bold; padding: 1px 5px; }
+.rd-block-btn-del.confirm:hover { background: var(--red2); color: var(--cb); }
 
 /* Drop indicator */
 .rd-drop-indicator {
@@ -537,17 +544,17 @@ html, body, #root {
 
 /* ── Parameter grid ───────────────────────────────────────────────── */
 
-.param-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 5px; }
 .param-card {
-  background: var(--c2); border: 1px solid var(--c5);
-  padding: 5px 7px; width: 148px; display: flex; flex-direction: column; gap: 3px;
+  background: var(--c2); border: 1px solid var(--c5); min-width: 0;
+  padding: 5px 7px; display: flex; flex-direction: column; gap: 3px;
 }
 .param-card-header { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
 .param-card-name { font-size: 10px; color: var(--cb); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .param-card-path { font-size: 8px; color: var(--c7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .param-card-control { display: flex; align-items: center; gap: 5px; }
-.param-card-control input[type=range] { flex: 1; }
-.param-card-val { font-size: 9px; color: var(--c9); min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
+.param-card-control input[type=range] { flex: 1; min-width: 0; width: 0; }
+.param-card-val { font-size: 9px; color: var(--c9); flex-shrink: 0; min-width: 40px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* ── Clip browser ─────────────────────────────────────────────────── */
 
@@ -613,6 +620,7 @@ html, body, #root {
   box-shadow: 0 8px 24px rgba(0,0,0,0.8);
   display: flex; flex-direction: column; gap: 2px;
 }
+.ctx-hint { font-size: 9px; color: var(--c9); padding: 2px 4px 4px; font-family: monospace; white-space: nowrap; }
 .ctx-title { font-size: 8px; color: var(--c7); text-transform: uppercase; letter-spacing: 0.07em; padding: 2px 4px 4px; border-bottom: 1px solid var(--c5); margin-bottom: 2px; }
 .ctx-row { display: flex; align-items: center; gap: 5px; padding: 2px 0; }
 .ctx-row label { font-size: 9px; color: var(--c8); min-width: 48px; }
@@ -891,3 +899,12 @@ input[type=checkbox] { cursor: pointer; accent-color: var(--blue2); }
   border-color: #1ABC9C;
   color: #1ABC9C;
 }
+
+/* ── Notice bar (autosave restore / warnings) ─────────────────────────────── */
+.notice-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 14px; font-size: 10px; color: var(--ca);
+  background: #0f1a12; border-bottom: 1px solid #1f3a26;
+}
+.notice-bar span { flex: 1; }
+.notice-bar.warn { background: #1f1408; border-bottom-color: #4a3210; color: #f0b060; }

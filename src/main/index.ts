@@ -1,11 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
-import { tmpdir } from 'os'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
-
-const execFileAsync = promisify(execFile)
+import { readFileSync, writeFileSync } from 'fs'
+import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
 import { Transport, smpteToFrames } from './transport'
 import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
@@ -144,45 +140,15 @@ ipcMain.handle('show:getCurrent', () => currentShow)
 ipcMain.handle('audio:openFile', async () => {
   const { filePaths, canceled } = await dialog.showOpenDialog({
     title: 'Odpri avdio datoteko',
-    filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'aiff', 'opus'] }],
+    filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
     properties: ['openFile'],
   })
   if (canceled || !filePaths[0]) return null
   return loadAudioFile(filePaths[0])
 })
 
-async function loadAudioFile(filePath: string): Promise<{ filePath: string; data: Uint8Array } | null> {
-  // Check if already WAV — skip conversion
-  const isWav = filePath.toLowerCase().endsWith('.wav')
-
-  if (!isWav) {
-    // Convert to WAV via macOS afconvert — handles MP3, AAC, FLAC, AIFF, etc.
-    const tmpPath = join(tmpdir(), `tl_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`)
-    try {
-      await execFileAsync('/usr/bin/afconvert', [
-        '-f', 'WAVE',   // output format: WAV
-        '-d', 'LEI16',  // 16-bit little-endian PCM (preserves original sample rate)
-        filePath,
-        tmpPath,
-      ])
-      const buf = readFileSync(tmpPath)
-      return { filePath, data: new Uint8Array(buf) }
-    } catch (e) {
-      console.error('[main] afconvert error:', e)
-      return null
-    } finally {
-      if (existsSync(tmpPath)) { try { unlinkSync(tmpPath) } catch {} }
-    }
-  }
-
-  try {
-    const buf = readFileSync(filePath)
-    return { filePath, data: new Uint8Array(buf) }
-  } catch (e) {
-    console.error('[main] audio read error:', e)
-    return null
-  }
-}
+// Reload a show's audio track by its saved path (switching shows, restoring autosave)
+ipcMain.handle('audio:readFile', (_e, filePath: string) => loadAudioFile(filePath))
 
 // ── Resolume REST ─────────────────────────────────────────────────────────────
 

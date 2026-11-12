@@ -45,6 +45,8 @@ export class Scheduler {
   private activeCue = new Map<number, string>()
   // Prevents overlapping REST requests for the same parameter
   private restInFlight = new Set<string>()
+  // Parameter ranges by paramId, for converting normalized values to REST values
+  private ranges = new Map<number, { min: number; max: number } | null>()
 
   constructor(transport: Transport, osc: OscClient, rest: ResolumeRest) {
     this.transport = transport
@@ -60,6 +62,13 @@ export class Scheduler {
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
     this.lastSent.clear()
+    for (const track of show.tracks) {
+      if (track.type !== 'layer') continue
+      for (const a of (track as LayerTrack).automations) {
+        if (a.paramId !== undefined && a.min !== undefined && a.max !== undefined)
+          this.ranges.set(a.paramId, { min: a.min, max: a.max })
+      }
+    }
     // Immediately send current automation values (even if not playing)
     this.forceUpdateAutomation()
   }
@@ -194,14 +203,23 @@ export class Scheduler {
     // OSC path (e.g. /composition/layers/6/clips/2/video/effects/strobe/frequency)
     this.osc.setParam(target, value)
 
-    // REST by parameter ID — most reliable, bypasses path naming issues
-    if (paramId !== undefined && !this.restInFlight.has(key)) {
+    // REST by parameter ID — most reliable, bypasses path naming issues.
+    // Needs the real value, so the range must be known (fetched once for older shows).
+    if (paramId === undefined || this.restInFlight.has(key)) return
+    if (!this.ranges.has(paramId)) {
       this.restInFlight.add(key)
-      this.rest.setParamById(paramId, value)
-        .then(ok => { if (!ok) console.warn('[REST by-id FAILED] paramId:', paramId, 'value:', value) })
+      this.rest.getParamRange(paramId)
+        .then(r => { this.ranges.set(paramId, r) })
         .finally(() => this.restInFlight.delete(key))
+      return
     }
-
+    const range = this.ranges.get(paramId)
+    if (!range) return
+    const raw = range.min + value * (range.max - range.min)
+    this.restInFlight.add(key)
+    this.rest.setParamById(paramId, raw)
+      .then(ok => { if (!ok) console.warn('[REST by-id FAILED] paramId:', paramId, 'value:', raw) })
+      .finally(() => this.restInFlight.delete(key))
   }
 
   private recallStateAt(T: number) {

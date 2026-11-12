@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
-import type { Track, LayerTrack, ClipCue, Keyframe, Show } from '../../../shared/show'
+import type { Track, LayerTrack, ClipCue, Keyframe, Show, AutomationSubTrack } from '../../../shared/show'
 import type { WaveformInfo } from '../audio-engine'
 import type { DragClipData } from '../App'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
@@ -271,13 +271,17 @@ export function TimelineCanvas({
       const { y, autoLanes } = layout[trackIdx]
       const color = lt.color ?? '#5599ff'
 
+      const ghostMove = ghostClipRef.current?.trackIdx === trackIdx ? ghostClipRef.current : null
+      const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
+      const spans = clipSpans(lt, fps, ghostMove, ghostDur)
+      const cutOutlines: { x: number; w: number; blockY: number }[] = []
+
       lt.clips.forEach((clip, cueIdx) => {
-        const isGhost = ghostClipRef.current?.trackIdx === trackIdx && ghostClipRef.current?.cueIdx === cueIdx
-        const isDurGhost = ghostDurRef.current?.trackIdx === trackIdx && ghostDurRef.current?.cueIdx === cueIdx
-        const sf = isGhost ? (ghostClipRef.current?.frame ?? 0) : smpteToFrames(clip.time, fps)
-        const durF = isDurGhost ? ghostDurRef.current!.durF : smpteToFrames(clip.duration, fps)
+        const isGhost = ghostMove?.cueIdx === cueIdx
+        const { sf, durF, shownF } = spans[cueIdx]
         const x = frameToX(sf)
-        const blockW = durF > 0 ? Math.max(8, durF * pxPerFrame) : Math.max(10, pxPerFrame * 2)
+        const blockW = spanWidth(shownF, pxPerFrame)
+        const fullW = spanWidth(durF, pxPerFrame)
         const curClipH = clipH(lt.id)
         const blockY = y + (curClipH - CLIP_BLOCK_H) / 2
         if (x + blockW < -2 || x > W + 2) return
@@ -310,11 +314,30 @@ export function TimelineCanvas({
           }
           ctx.restore(); ctx.globalAlpha = 1
         }
+        const isCut = shownF < durF
+        if (isCut) {
+          // Cut by the next clip on this layer: hatched edge marks where it stops showing
+          ctx.save()
+          ctx.beginPath(); ctx.rect(x + blockW - 7, blockY, 7, CLIP_BLOCK_H); ctx.clip()
+          ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 2
+          for (let hy = -8; hy < CLIP_BLOCK_H + 8; hy += 5) {
+            ctx.beginPath(); ctx.moveTo(x + blockW - 8, blockY + hy + 8); ctx.lineTo(x + blockW, blockY + hy); ctx.stroke()
+          }
+          ctx.restore()
+          if (isSel) cutOutlines.push({ x: x + blockW, w: fullW - blockW, blockY })
+        }
         // Resize handle (only where hitTestClip offers one)
-        if (resizeZoneW(durF, blockW) > 0) {
+        if (resizeZoneW(isCut ? 0 : durF, blockW) > 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.22)'
           ctx.fillRect(x + blockW - RESIZE_HANDLE_W, blockY + 5, 3, CLIP_BLOCK_H - 10)
         }
+      })
+
+      // Full length of a selected clip that the next clip cuts off, drawn over the other clips
+      cutOutlines.forEach(o => {
+        ctx.strokeStyle = '#ffffffaa'; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
+        ctx.strokeRect(o.x, o.blockY + 0.5, o.w, CLIP_BLOCK_H - 1)
+        ctx.setLineDash([])
       })
 
       // Automation lines
@@ -377,7 +400,7 @@ export function TimelineCanvas({
           // Value label on hover / drag
           if (kfDragging) {
             ctx.fillStyle = '#ffffffcc'; ctx.font = '9px monospace'
-            ctx.fillText(kfDragRef.current!.anchorValue.toFixed(3), kx + 8, ky - 4)
+            ctx.fillText(formatAutoValue(auto, kfDragRef.current!.anchorValue), kx + 8, ky - 4)
           }
         })
       })
@@ -445,14 +468,14 @@ export function TimelineCanvas({
     if (ti == null || tracks[ti].type !== 'layer') return null
     const lt = tracks[ti] as LayerTrack
     const SLOP = 3
+    const spans = clipSpans(lt, fps, null, null)
     // Later clips are drawn on top, so test them first
     for (let ci = lt.clips.length - 1; ci >= 0; ci--) {
-      const clip = lt.clips[ci]
-      const durF = smpteToFrames(clip.duration, fps)
-      const blockW = durF > 0 ? Math.max(8, durF * pxPerFrame) : Math.max(10, pxPerFrame * 2)
-      const cx = frameToX(smpteToFrames(clip.time, fps))
+      const { sf, durF, shownF } = spans[ci]
+      const blockW = spanWidth(shownF, pxPerFrame)
+      const cx = frameToX(sf)
       if (x >= cx - SLOP && x <= cx + blockW + SLOP) {
-        const zone = resizeZoneW(durF, blockW)
+        const zone = resizeZoneW(shownF < durF ? 0 : durF, blockW)
         return { trackIdx: ti, cueIdx: ci, isResize: zone > 0 && x >= cx + blockW - zone }
       }
     }
@@ -705,6 +728,13 @@ export function TimelineCanvas({
           onMouseDown={e => e.stopPropagation()}
         >
           <div className="ctx-title">Keyframe</div>
+          {(() => {
+            const auto = (tracks[contextMenu.trackIdx] as LayerTrack)?.automations[contextMenu.autoIdx]
+            const v = Math.max(0, Math.min(1, parseFloat(ctxInputVal) || 0))
+            return auto?.max !== undefined && auto.min !== undefined
+              ? <div className="ctx-hint">{auto.name} = {formatAutoValue(auto, v)} (0–1 = {auto.min}…{auto.max})</div>
+              : null
+          })()}
           <div className="ctx-row">
             <label>Vrednost</label>
             <input
@@ -774,6 +804,39 @@ export function TimelineCanvas({
 }
 
 // ── Canvas helpers ────────────────────────────────────────────────────────────
+
+// Start/length of each clip on a layer, plus how much of it is actually shown: a layer
+// plays one clip at a time, so a clip stops showing where the next one starts.
+interface ClipSpan { sf: number; durF: number; shownF: number }
+function clipSpans(
+  lt: LayerTrack, fps: number,
+  ghostMove: { cueIdx: number; frame: number } | null,
+  ghostDur: { cueIdx: number; durF: number } | null,
+): ClipSpan[] {
+  const spans = lt.clips.map((c, i) => {
+    const sf = ghostMove?.cueIdx === i ? ghostMove.frame : smpteToFrames(c.time, fps)
+    const durF = ghostDur?.cueIdx === i ? ghostDur.durF : smpteToFrames(c.duration, fps)
+    return { sf, durF, shownF: durF }
+  })
+  const order = spans.map((_, i) => i).sort((a, b) => spans[a].sf - spans[b].sf || a - b)
+  for (let k = 0; k < order.length - 1; k++) {
+    const cur = spans[order[k]], next = spans[order[k + 1]]
+    if (cur.durF > 0 && next.sf < cur.sf + cur.durF) cur.shownF = Math.max(0, next.sf - cur.sf)
+  }
+  return spans
+}
+
+// Trigger-only (and fully covered) clips still get a small clickable block
+const spanWidth = (frames: number, pxPerFrame: number) =>
+  frames > 0 ? Math.max(8, frames * pxPerFrame) : Math.max(10, pxPerFrame * 2)
+
+// Keyframes are normalized 0..1; show the real Resolume value when the range is known
+function formatAutoValue(auto: AutomationSubTrack | undefined, v: number): string {
+  if (!auto || auto.min === undefined || auto.max === undefined || (auto.min === 0 && auto.max === 1))
+    return v.toFixed(3)
+  const real = auto.min + v * (auto.max - auto.min)
+  return `${v.toFixed(3)} → ${Math.abs(auto.max - auto.min) > 10 ? real.toFixed(0) : real.toFixed(3)}`
+}
 
 // Width of the grab zone at a clip's right edge for changing its duration. Narrow and
 // trigger-only clips get none, otherwise the whole block would resize instead of move.

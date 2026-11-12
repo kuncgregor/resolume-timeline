@@ -96,15 +96,19 @@ export function BottomPanel({
   useEffect(() => {
     if (!track || !cue) { setLayerParams([]); setClipParams([]); return }
     setLoadingParams(true)
+    // A slower response for a previously selected clip must not overwrite this one
+    let cancelled = false
     Promise.all([
       api.getLayerRaw(track.resolumeLayerIndex),
       api.getClipRaw(track.resolumeLayerIndex, cue.clipIndex),
     ]).then(([lr, cr]) => {
+      if (cancelled) return
       const base = `/composition/layers/${track.resolumeLayerIndex}`
       setLayerParams(extractParams(lr, base).filter(p => p.name !== 'name').slice(0, 60))
       setClipParams(extractParams(cr, `${base}/clips/${cue.clipIndex}`).filter(p => p.name !== 'name').slice(0, 60))
       setLoadingParams(false)
     })
+    return () => { cancelled = true }
   }, [track?.resolumeLayerIndex, cue?.clipIndex])
 
   // CUE LIST view — track is selected (LayerTrack) but no specific clip
@@ -168,7 +172,7 @@ export function BottomPanel({
   const addAuto = (p: Param) => {
     onAddAutomation(trackIdx, {
       id: newId(), name: p.name, target: p.oscAddress,
-      paramId: p.paramId,
+      paramId: p.paramId, min: p.min, max: p.max,
       ...(tab === 'layer' ? { layerBound: true } : { clipId: cue.id }),
       color: ACOLS[ci++ % ACOLS.length], keyframes: [],
     })
@@ -287,7 +291,8 @@ function ParamList({ params, loading, onAdd, onSend }: {
                 onChange={e => {
                   const v = Number(e.target.value)
                   setVals(prev => ({ ...prev, [p.oscAddress]: v }))
-                  onSend(p.oscAddress, v)
+                  // Resolume's OSC input takes ranged parameters normalized to 0..1
+                  onSend(p.oscAddress, max > min ? (v - min) / (max - min) : v)
                 }}
               />
               <span className="param-card-val">{val.toFixed(max > 10 ? 0 : 3)}</span>

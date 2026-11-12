@@ -112,10 +112,15 @@ export class LTCDecoder {
   onFrame?: LTCFrameCallback
   onError?: (err: string) => void
 
+  // Bumped by every start()/stop(); an in-flight start() that sees it change abandons its own resources
+  private _gen = 0
+
   get isRunning() { return this.ctx !== null }
 
   async start(deviceId: string | undefined, channelIndex: number, fps: number): Promise<void> {
-    await this.stop()
+    const gen = ++this._gen
+    await this._teardown()
+    if (gen !== this._gen) return
     this._fps = fps
 
     let stream: MediaStream
@@ -129,24 +134,26 @@ export class LTCDecoder {
         },
       })
     } catch (e) {
-      this.onError?.(`Mikrofon zavrnjen: ${e}`)
+      if (gen === this._gen) this.onError?.(`Mikrofon zavrnjen: ${e}`)
       return
     }
+    if (gen !== this._gen) { stream.getTracks().forEach(t => t.stop()); return }
 
     const ctx = new AudioContext({ latencyHint: 'interactive' })
+    const abandon = () => { stream.getTracks().forEach(t => t.stop()); return ctx.close().catch(() => {}) }
 
     const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' })
     const url = URL.createObjectURL(blob)
     try {
       await ctx.audioWorklet.addModule(url)
     } catch (e) {
-      this.onError?.(`AudioWorklet napaka: ${e}`)
-      await ctx.close()
-      stream.getTracks().forEach(t => t.stop())
+      if (gen === this._gen) this.onError?.(`AudioWorklet napaka: ${e}`)
+      await abandon()
       return
     } finally {
       URL.revokeObjectURL(url)
     }
+    if (gen !== this._gen) { await abandon(); return }
 
     const source = ctx.createMediaStreamSource(stream)
     const worklet = new AudioWorkletNode(ctx, 'ltc-processor')
@@ -157,8 +164,9 @@ export class LTCDecoder {
       this.onFrame?.(absFrame, hh, mm, ss, ff)
     }
 
-    // Route the selected channel to the worklet
-    const numCh = source.channelCount
+    // Route the selected channel to the worklet. source.channelCount is the AudioNode
+    // attribute (always 2), not the device's channel count.
+    const numCh = stream.getAudioTracks()[0]?.getSettings().channelCount ?? 2
     if (channelIndex > 0 && numCh > channelIndex) {
       const splitter = ctx.createChannelSplitter(numCh)
       const merger = ctx.createChannelMerger(1)
@@ -178,15 +186,22 @@ export class LTCDecoder {
   }
 
   async stop(): Promise<void> {
-    this.worklet?.port.close()
-    this.worklet?.disconnect()
-    this.merger?.disconnect()
-    this.splitter?.disconnect()
-    this.source?.disconnect()
-    if (this.ctx) { try { await this.ctx.close() } catch {} }
-    this.stream?.getTracks().forEach(t => t.stop())
+    this._gen++
+    await this._teardown()
+  }
+
+  private async _teardown(): Promise<void> {
+    // Detach synchronously so isRunning is false immediately and a later start() can't be clobbered
+    const { ctx, source, splitter, merger, stream, worklet } = this
     this.ctx = null; this.source = null; this.splitter = null; this.merger = null
     this.stream = null; this.worklet = null
+    worklet?.port.close()
+    worklet?.disconnect()
+    merger?.disconnect()
+    splitter?.disconnect()
+    source?.disconnect()
+    stream?.getTracks().forEach(t => t.stop())
+    if (ctx) { try { await ctx.close() } catch {} }
   }
 
   setFps(fps: number) {

@@ -73,6 +73,12 @@ if (!w.timeline) {
       return { filePath: file.name, data: new Uint8Array(await file.arrayBuffer()) }
     },
 
+    readAudioFile: async (filePath: string) => {
+      const res = await fetch(`/__tl/audio?path=${encodeURIComponent(filePath)}`)
+      if (!res.ok) return null
+      return { filePath, data: new Uint8Array(await res.arrayBuffer()) }
+    },
+
     getComposition: () => rpc('getComposition'),
     getThumbnail: (layerId: number, clipId: number) => rpc('getThumbnail', layerId, clipId),
     getLayerRaw: (layerIndex: number) => rpc('getLayerRaw', layerIndex),

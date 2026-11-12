@@ -38,6 +38,8 @@ export function RundownStrip({
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropSide, setDropSide] = useState<'before' | 'after'>('after')
+  // Delete takes two clicks: the first arms the button, the second removes the entry
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const concertName = concertFilePath
@@ -177,6 +179,7 @@ export function RundownStrip({
                 onDragEnd={handleDragEnd}
                 onClick={() => onSelect(entry.id)}
                 onDoubleClick={() => onEdit(entry.id)}
+                onMouseLeave={() => { if (confirmDeleteId === entry.id) setConfirmDeleteId(null) }}
               >
                 <div className="rundown-block-stripe" style={{ background: entry.color }} />
                 <div className="rundown-block-body">
@@ -187,17 +190,26 @@ export function RundownStrip({
                   )}
                 </div>
                 {/* Hover controls */}
-                <div className="rd-block-controls">
+                <div className={`rd-block-controls${confirmDeleteId === entry.id ? ' confirming' : ''}`}>
                   <button
                     className="rd-block-btn"
                     title="Uredi"
                     onClick={e => { e.stopPropagation(); onEdit(entry.id) }}
                   >✎</button>
-                  <button
-                    className="rd-block-btn rd-block-btn-del"
-                    title="Odstrani"
-                    onClick={e => { e.stopPropagation(); onDelete(entry.id) }}
-                  >×</button>
+                  {confirmDeleteId === entry.id ? (
+                    <button
+                      className="rd-block-btn rd-block-btn-del confirm"
+                      title={entry.type === 'show' && (entry as ShowEntry).dirty
+                        ? 'Show ima neshranjene spremembe' : 'Odstrani iz rundowna'}
+                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); onDelete(entry.id) }}
+                    >{entry.type === 'show' && (entry as ShowEntry).dirty ? 'Izbriši (neshranjeno)?' : 'Izbriši?'}</button>
+                  ) : (
+                    <button
+                      className="rd-block-btn rd-block-btn-del"
+                      title="Odstrani"
+                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(entry.id) }}
+                    >×</button>
+                  )}
                 </div>
               </div>
 

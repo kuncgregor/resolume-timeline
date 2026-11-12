@@ -15,6 +15,7 @@ import { framesToSmpte, smpteToFrames } from './components/timeUtils'
 import { LTCDecoder } from './ltc-decoder'
 import { AudioEngine } from './audio-engine'
 import type { WaveformInfo } from './audio-engine'
+import { loadAutosave, writeAutosave, clearAutosave } from './autosave'
 
 const api = (window as any).timeline
 
@@ -114,15 +115,21 @@ function makeBreakEntry(): BreakEntry {
 
 // Single module-level initial entry so IDs are stable across renders
 const _initEntry = makeShowEntry({ ...EMPTY_SHOW }, null, 0)
+// Read once at startup: the state left by the previous session (crash, reload, quit)
+const _restored = loadAutosave()
+const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
+  ? _restored.activeId : (_restored?.rundown[0].id ?? _initEntry.id)
 
 export default function App() {
-  const [rundown, setRundown] = useState<RundownEntry[]>([_initEntry])
-  const [activeId, setActiveId] = useState<string>(_initEntry.id)
-  const [concertFilePath, setConcertFilePath] = useState<string | null>(null)
-  const [concertDirty, setConcertDirty] = useState(false)
+  const [rundown, setRundown] = useState<RundownEntry[]>(_restored?.rundown ?? [_initEntry])
+  const [activeId, setActiveId] = useState<string>(_initActiveId)
+  const [concertFilePath, setConcertFilePath] = useState<string | null>(_restored?.concertFilePath ?? null)
+  const [concertDirty, setConcertDirty] = useState(_restored?.concertDirty ?? false)
+  const [restoredAt, setRestoredAt] = useState<number | null>(_restored?.savedAt ?? null)
+  const [autosaveFailed, setAutosaveFailed] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
-  const activeIdRef = useRef<string>(_initEntry.id)
+  const activeIdRef = useRef<string>(_initActiveId)
   const ltcActiveRef = useRef(false)
 
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
@@ -178,6 +185,35 @@ export default function App() {
       return changed ? next : prev
     })
   }, [])
+
+  // ── Autosave ───────────────────────────────────────────────────────────────
+
+  const autosaveRef = useRef({ rundown, activeId, concertFilePath, concertDirty })
+  autosaveRef.current = { rundown, activeId, concertFilePath, concertDirty }
+  const flushAutosave = useCallback(() => {
+    setAutosaveFailed(!writeAutosave({ savedAt: Date.now(), ...autosaveRef.current }))
+  }, [])
+  // Debounced so dragging a keyframe does not serialize the show on every mouse move
+  useEffect(() => {
+    const t = setTimeout(flushAutosave, 800)
+    return () => clearTimeout(t)
+  }, [rundown, activeId, concertFilePath, concertDirty, flushAutosave])
+  useEffect(() => {
+    window.addEventListener('pagehide', flushAutosave)
+    return () => window.removeEventListener('pagehide', flushAutosave)
+  }, [flushAutosave])
+
+  const handleDiscardRestored = useCallback(() => {
+    api.stop(); audioEngineRef.current.stop()
+    const entry = makeShowEntry({ ...EMPTY_SHOW }, null, 0)
+    clearAutosave()
+    setRundown([entry]); setActiveId(entry.id)
+    setConcertFilePath(null); setConcertDirty(false); setRestoredAt(null)
+    // Fill the new empty show with the current Resolume layers
+    api.getComposition().then((comp: ResolumeComposition | null) => {
+      if (comp) setShow(prev => syncLayers(prev, comp))
+    })
+  }, [setShow])
 
   const [pxPerFrame, setPxPerFrame] = useState(3)
   const [scrollFrame, setScrollFrame] = useState(0)
@@ -236,9 +272,13 @@ export default function App() {
     return unsub
   }, [pxPerFrame])
 
-  // Ticks only arrive while the frame changes, so the connection status needs its own event
-  useEffect(() => api.onResolumeStatus(({ connected }: { connected: boolean }) =>
-    setEngineState(s => ({ ...s, resolumeConnected: connected }))), [])
+  // Ticks only arrive while the frame changes, so the connection status needs its own
+  // event, plus one query at startup in case that event fired before we subscribed
+  useEffect(() => {
+    api.getState().then((s: EngineState | null) => { if (s) setEngineState(s) })
+    return api.onResolumeStatus(({ connected }: { connected: boolean }) =>
+      setEngineState(s => ({ ...s, resolumeConnected: connected })))
+  }, [])
 
   // ── Resolume composition updates ───────────────────────────────────────────
 
@@ -401,17 +441,17 @@ export default function App() {
   }, [activeId, rundown])
 
   const handleDeleteEntry = useCallback((id: string) => {
-    setRundown(prev => {
-      if (prev.length <= 1) return prev  // always keep at least one
-      const next = prev.filter(e => e.id !== id)
-      if (id === activeIdRef.current) {
-        const newActive = next[0]?.id ?? ''
-        setActiveId(newActive)
-      }
-      return next
-    })
+    if (rundown.length <= 1) return  // always keep at least one
+    const next = rundown.filter(e => e.id !== id)
+    if (id === activeIdRef.current) {
+      // The running show is going away: stop before switching to another one
+      api.stop(); audioEngineRef.current.stop()
+      clearSelection(); setScrollFrame(0)
+      setActiveId(next[0].id)
+    }
+    setRundown(next)
     setConcertDirty(true)
-  }, [])
+  }, [rundown, clearSelection])
 
   const handleReorder = useCallback((newOrder: RundownEntry[]) => {
     setRundown(newOrder); setConcertDirty(true)
@@ -483,32 +523,71 @@ export default function App() {
 
   // ── Audio track ────────────────────────────────────────────────────────────
 
+  // The engine holds one decoded file; this is the path it holds for the current show
+  const loadedAudioPathRef = useRef<string | null>(null)
+  const audioLoadGenRef = useRef(0)
+
+  const unloadAudio = useCallback(() => {
+    audioLoadGenRef.current++  // abandons any load still in flight
+    audioEngineRef.current.stop()
+    loadedAudioPathRef.current = null
+    setAudioLoaded(false); setWaveformInfo(null)
+  }, [])
+
+  const loadAudioIntoEngine = useCallback(async (filePath: string, data: Uint8Array, s: Show) => {
+    unloadAudio()
+    const gen = audioLoadGenRef.current
+    const engine = audioEngineRef.current
+    const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+    let ok = false
+    try {
+      ok = await engine.load(buf, s.frameRate, smpteToFrames(s.audioTrack?.startOffset ?? '00:00:00:00', s.frameRate))
+    } catch {}
+    if (!ok || gen !== audioLoadGenRef.current) return false
+    engine.setGain(s.audioTrack?.gain ?? 0.8)
+    if (s.clock.audioOutputDevice) await engine.setOutputDevice(s.clock.audioOutputDevice)
+    engine.setOutputChannels(s.clock.audioOutputChannelL ?? 0, s.clock.audioOutputChannelR ?? 1)
+    if (gen !== audioLoadGenRef.current) return false
+    loadedAudioPathRef.current = filePath
+    setAudioLoaded(true)
+    setAudioDuration(engine.duration)
+    return true
+  }, [unloadAudio])
+
   const handleLoadAudioTrack = useCallback(async () => {
     const result = await api.openAudioFile()
     if (!result) return
-    const engine = audioEngineRef.current
-    const fpsNow = show.frameRate
-    const startOffsetFrames = smpteToFrames(show.audioTrack?.startOffset ?? '00:00:00:00', fpsNow)
-    const arrayBuffer = result.data.buffer
-    let ok: boolean
-    try { ok = await engine.load(arrayBuffer, fpsNow, startOffsetFrames) } catch { return }
-    if (ok) {
-      setAudioLoaded(true)
-      setAudioDuration(engine.duration)
-      setWaveformInfo(null)
-      engine.setGain(show.audioTrack?.gain ?? 0.8)
-      if (show.clock.audioOutputDevice) await engine.setOutputDevice(show.clock.audioOutputDevice)
-      engine.setOutputChannels(show.clock.audioOutputChannelL ?? 0, show.clock.audioOutputChannelR ?? 1)
-      const name = result.filePath.split('/').pop() ?? 'audio'
-      setShow(prev => ({
-        ...prev, audioTrack: {
-          id: prev.audioTrack?.id ?? newId(), type: 'audio', name,
-          filePath: result.filePath, gain: prev.audioTrack?.gain ?? 0.8,
-          color: prev.audioTrack?.color ?? '#1ABC9C', startOffset: prev.audioTrack?.startOffset ?? '00:00:00:00',
-        },
-      }))
-    }
-  }, [show.frameRate, show.audioTrack, show.clock.audioOutputDevice, setShow])
+    if (!await loadAudioIntoEngine(result.filePath, result.data, showRef.current)) return
+    const name = result.filePath.split('/').pop() ?? 'audio'
+    setShow(prev => ({
+      ...prev, audioTrack: {
+        id: prev.audioTrack?.id ?? newId(), type: 'audio', name,
+        filePath: result.filePath, gain: prev.audioTrack?.gain ?? 0.8,
+        color: prev.audioTrack?.color ?? '#1ABC9C', startOffset: prev.audioTrack?.startOffset ?? '00:00:00:00',
+      },
+    }))
+  }, [loadAudioIntoEngine, setShow])
+
+  // Each show has its own audio track: load it when switching shows or after a restore
+  const wantedAudioPath = show.audioTrack?.filePath ?? null
+  useEffect(() => {
+    if (wantedAudioPath === loadedAudioPathRef.current) return
+    unloadAudio()
+    if (!wantedAudioPath) return
+    const gen = audioLoadGenRef.current
+    api.readAudioFile(wantedAudioPath).then((res: { data: Uint8Array } | null) => {
+      if (gen !== audioLoadGenRef.current) return
+      if (!res) { console.warn('[audio] cannot read', wantedAudioPath); return }
+      loadAudioIntoEngine(wantedAudioPath, res.data, showRef.current)
+    })
+  }, [activeId, wantedAudioPath, unloadAudio, loadAudioIntoEngine])
+
+  // Gain and start offset are per show too
+  useEffect(() => {
+    audioEngineRef.current.setGain(show.audioTrack?.gain ?? 0.8)
+    audioEngineRef.current.setStartOffsetFrames(
+      smpteToFrames(show.audioTrack?.startOffset ?? '00:00:00:00', show.frameRate))
+  }, [activeId, show.audioTrack?.gain, show.audioTrack?.startOffset, show.frameRate])
 
   const handleUpdateAudioTrack = useCallback((updates: Partial<NonNullable<Show['audioTrack']>>) => {
     setShow(prev => {
@@ -522,11 +601,11 @@ export default function App() {
 
   useEffect(() => { audioEngineRef.current.setFps(show.frameRate) }, [show.frameRate])
 
+  // Audio that finishes loading while the transport runs joins in at the current frame
   useEffect(() => {
-    if (audioLoaded && show.audioTrack && engineRef.current.playing)
+    if (audioLoaded && engineRef.current.playing)
       audioEngineRef.current.play(engineRef.current.frame)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioLoaded, show.audioTrack])
+  }, [audioLoaded])
 
   useEffect(() => {
     if (!audioLoaded) return
@@ -746,6 +825,18 @@ export default function App() {
         onSettings={() => setShowSettings(true)}
       />
 
+      {(restoredAt || autosaveFailed) && (
+        <div className={`notice-bar ${autosaveFailed ? 'warn' : ''}`}>
+          {autosaveFailed
+            ? <span>Samodejno shranjevanje ni uspelo (premalo prostora). Shrani show ročno.</span>
+            : <span>Obnovljeno zadnje stanje ({new Date(restoredAt!).toLocaleString('sl-SI')}). Neshranjeni showi so označeni s piko.</span>}
+          {restoredAt && !autosaveFailed && (
+            <button className="btn-sm" onClick={handleDiscardRestored}>Začni na novo</button>
+          )}
+          <button className="btn-icon" onClick={() => { setRestoredAt(null); setAutosaveFailed(false) }}>✕</button>
+        </div>
+      )}
+
       <TransportBar
         engineState={engineState}
         show={show}
@@ -791,7 +882,7 @@ export default function App() {
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
               audioTrack={show.audioTrack}
-              audioDuration={audioEngineRef.current.duration}
+              audioDuration={audioLoaded ? audioEngineRef.current.duration : 0}
               waveformInfo={waveformInfo}
               scrollY={scrollY} onScrollY={handleScrollY}
               onScrollFrame={setScrollFrame} onSeek={handleSeek}

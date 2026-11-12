@@ -61,7 +61,16 @@ export class ResolumeRest {
     } catch { return false }
   }
 
-  // Set any parameter by its Resolume internal ID.
+  async getParamRange(id: number): Promise<{ min: number; max: number } | null> {
+    try {
+      const res = await fetch(`${this.base}/parameter/by-id/${id}`, { signal: AbortSignal.timeout(2000) })
+      if (!res.ok) return null
+      const p = await res.json() as { min?: unknown; max?: unknown }
+      return typeof p.min === 'number' && typeof p.max === 'number' ? { min: p.min, max: p.max } : null
+    } catch { return null }
+  }
+
+  // Set any parameter by its Resolume internal ID (real value, not normalized).
   async setParamById(id: number, value: number): Promise<boolean> {
     try {
       const url = `${this.base}/parameter/by-id/${id}`

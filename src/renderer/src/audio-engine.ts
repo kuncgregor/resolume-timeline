@@ -7,6 +7,86 @@ export interface WaveformInfo {
   sampleRate: number
 }
 
+// Pure-JS WAV decoder: PCM 8/16/24/32-bit and float 32/64, plain or WAVE_FORMAT_EXTENSIBLE.
+export function decodeWav(ab: ArrayBuffer, ctx: Pick<BaseAudioContext, 'createBuffer'>): AudioBuffer | null {
+  const dv = new DataView(ab)
+  let numChannels = 0, sampleRate = 0, bitsPerSample = 0, audioFormat = 0
+  let dataOffset = -1, dataSize = 0
+
+  // Walk all RIFF chunks — handles JUNK, bext, and other non-standard chunks
+  let pos = 12
+  while (pos + 8 <= ab.byteLength) {
+    const id = String.fromCharCode(dv.getUint8(pos), dv.getUint8(pos+1), dv.getUint8(pos+2), dv.getUint8(pos+3))
+    const size = dv.getUint32(pos + 4, true)
+    const start = pos + 8
+    if (id === 'fmt ' && start + 16 <= ab.byteLength) {
+      audioFormat  = dv.getUint16(start,      true)
+      numChannels  = dv.getUint16(start + 2,  true)
+      sampleRate   = dv.getUint32(start + 4,  true)
+      bitsPerSample= dv.getUint16(start + 14, true)
+      // WAVE_FORMAT_EXTENSIBLE: real format tag is the first 2 bytes of the sub-format GUID
+      if (audioFormat === 0xFFFE && size >= 26 && start + 26 <= ab.byteLength) audioFormat = dv.getUint16(start + 24, true)
+    } else if (id === 'data') {
+      dataOffset = start
+      // Truncated files / streaming writers (size 0xFFFFFFFF) declare more than is present
+      dataSize   = Math.min(size, ab.byteLength - start)
+      break
+    }
+    pos = start + size + (size & 1)  // word-align to next chunk
+  }
+
+  if (dataOffset < 0 || !numChannels || !sampleRate || !bitsPerSample) {
+    console.error('[AudioEngine] WAV: invalid header', { numChannels, sampleRate, bitsPerSample, dataOffset })
+    return null
+  }
+
+  // Container size; extensible 24-in-32 files declare 32 here with left-justified samples
+  const bytesPerSample = (bitsPerSample + 7) >>> 3
+  const numSamples = Math.floor(dataSize / (bytesPerSample * numChannels))
+  const total = numSamples * numChannels
+  const isPcm = audioFormat === 1, isFloat = audioFormat === 3
+  if (!(isPcm && bytesPerSample <= 4) && !(isFloat && (bytesPerSample === 4 || bytesPerSample === 8))) {
+    console.error(`[AudioEngine] WAV: unsupported format=${audioFormat} bits=${bitsPerSample}`)
+    return null
+  }
+  if (!numSamples) {
+    console.error('[AudioEngine] WAV: no sample data')
+    return null
+  }
+  console.log(`[AudioEngine] WAV: ${numChannels}ch ${sampleRate}Hz ${bitsPerSample}bit format=${audioFormat} samples=${numSamples}`)
+
+  const audioBuffer = ctx.createBuffer(numChannels, numSamples, sampleRate)
+  const channels = Array.from({ length: numChannels }, (_, c) => audioBuffer.getChannelData(c))
+
+  if (isPcm && bytesPerSample === 3) {
+    const raw = new Uint8Array(ab, dataOffset, total * 3)
+    for (let i = 0, j = 0; i < numSamples; i++) {
+      for (let c = 0; c < numChannels; c++, j += 3) {
+        const s = (raw[j] | (raw[j+1] << 8) | (raw[j+2] << 16)) << 8 >> 8
+        channels[c][i] = s / 8388608
+      }
+    }
+    return audioBuffer
+  }
+
+  // Typed-array views need an element-aligned offset (data after an 18-byte fmt chunk isn't), else copy
+  const view = <T>(C: new (b: ArrayBuffer, o: number, n: number) => T): T =>
+    dataOffset % bytesPerSample === 0
+      ? new C(ab, dataOffset, total)
+      : new C(ab.slice(dataOffset, dataOffset + total * bytesPerSample), 0, total)
+  let pcm: ArrayLike<number>, scale = 1, bias = 0
+  if (isFloat) pcm = bytesPerSample === 4 ? view(Float32Array) : view(Float64Array)
+  else if (bytesPerSample === 1) { pcm = new Uint8Array(ab, dataOffset, total); bias = -128; scale = 1 / 128 }
+  else if (bytesPerSample === 2) { pcm = view(Int16Array); scale = 1 / 32768 }
+  else { pcm = view(Int32Array); scale = 1 / 2147483648 }
+
+  // Single-pass deinterleave
+  for (let i = 0, j = 0; i < numSamples; i++) {
+    for (let c = 0; c < numChannels; c++, j++) channels[c][i] = (pcm[j] + bias) * scale
+  }
+  return audioBuffer
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null
   private buffer: AudioBuffer | null = null
@@ -36,7 +116,7 @@ export class AudioEngine {
       // WAV files: decode manually in pure JS to avoid Chromium SIGSEGV bug
       // with certain WAV files (known issue in Chromium 120 / Electron 28)
       if (this._isWav(arrayBuffer)) {
-        const decoded = this._decodeWav(arrayBuffer)
+        const decoded = decodeWav(arrayBuffer, this.ctx)
         if (!decoded) throw new Error('WAV decode failed')
         this.buffer = decoded
       } else {
@@ -58,76 +138,6 @@ export class AudioEngine {
     // "RIFF" at 0, "WAVE" at 8 (both big-endian ASCII read as uint32)
     return dv.getUint32(0, false) === 0x52494646 &&
            dv.getUint32(8, false) === 0x57415645
-  }
-
-  private _decodeWav(ab: ArrayBuffer): AudioBuffer | null {
-    if (!this.ctx) return null
-    const dv = new DataView(ab)
-    let numChannels = 0, sampleRate = 0, bitsPerSample = 0, audioFormat = 0
-    let dataOffset = -1, dataSize = 0
-
-    // Walk all RIFF chunks — handles JUNK, bext, and other non-standard chunks
-    let pos = 12
-    while (pos + 8 <= ab.byteLength) {
-      const id = String.fromCharCode(dv.getUint8(pos), dv.getUint8(pos+1), dv.getUint8(pos+2), dv.getUint8(pos+3))
-      const size = dv.getUint32(pos + 4, true)
-      const start = pos + 8
-      if (id === 'fmt ') {
-        audioFormat  = dv.getUint16(start,      true)
-        numChannels  = dv.getUint16(start + 2,  true)
-        sampleRate   = dv.getUint32(start + 4,  true)
-        bitsPerSample= dv.getUint16(start + 14, true)
-      } else if (id === 'data') {
-        dataOffset = start
-        dataSize   = size
-        break
-      }
-      pos = start + size + (size & 1)  // word-align to next chunk
-    }
-
-    if (dataOffset < 0 || !numChannels || !sampleRate || !bitsPerSample) {
-      console.error('[AudioEngine] WAV: invalid header', { numChannels, sampleRate, bitsPerSample, dataOffset })
-      return null
-    }
-
-    const bytesPerSample = bitsPerSample >>> 3
-    const numSamples = Math.floor(dataSize / (bytesPerSample * numChannels))
-    console.log(`[AudioEngine] WAV: ${numChannels}ch ${sampleRate}Hz ${bitsPerSample}bit format=${audioFormat} samples=${numSamples}`)
-
-    const audioBuffer = this.ctx.createBuffer(numChannels, numSamples, sampleRate)
-    const channels = Array.from({ length: numChannels }, (_, c) => audioBuffer.getChannelData(c))
-
-    // Fast deinterleave using TypedArray — single pass, no per-sample multiplication
-    if (audioFormat === 1 && bitsPerSample === 16) {
-      const pcm = new Int16Array(ab, dataOffset, numSamples * numChannels)
-      for (let i = 0, j = 0; i < numSamples; i++) {
-        for (let c = 0; c < numChannels; c++, j++) channels[c][i] = pcm[j] / 32768
-      }
-    } else if (audioFormat === 1 && bitsPerSample === 24) {
-      const raw = new Uint8Array(ab, dataOffset)
-      for (let i = 0, j = 0; i < numSamples; i++) {
-        for (let c = 0; c < numChannels; c++, j += 3) {
-          const s = (raw[j] | (raw[j+1] << 8) | (raw[j+2] << 16)) << 8 >> 8
-          channels[c][i] = s / 8388608
-        }
-      }
-    } else if (audioFormat === 1 && bitsPerSample === 32) {
-      const pcm = new Int32Array(ab, dataOffset, numSamples * numChannels)
-      for (let i = 0, j = 0; i < numSamples; i++) {
-        for (let c = 0; c < numChannels; c++, j++) channels[c][i] = pcm[j] / 2147483648
-      }
-    } else if (audioFormat === 3 && bitsPerSample === 32) {
-      // IEEE float — direct copy
-      const pcm = new Float32Array(ab, dataOffset, numSamples * numChannels)
-      for (let i = 0, j = 0; i < numSamples; i++) {
-        for (let c = 0; c < numChannels; c++, j++) channels[c][i] = pcm[j]
-      }
-    } else {
-      console.error(`[AudioEngine] WAV: unsupported format=${audioFormat} bits=${bitsPerSample}`)
-      return null
-    }
-
-    return audioBuffer
   }
 
   private async _computeWaveformAsync(gen: number): Promise<void> {
