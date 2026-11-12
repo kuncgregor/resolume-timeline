@@ -545,7 +545,7 @@
 .btn.reenable-btn:hover { background: var(--loop); color: var(--text-on-live); }
 /* Armed REC: red frame around the timeline like Blender/Resolve auto-key */
 .app.rec-armed .timeline-section { box-shadow: inset 0 0 0 2px var(--danger-fill); }
-.ovr-chip { height: 16px; padding: 0 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 800;
+.ovr-chip { height: 16px; padding: 0 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 800; white-space: nowrap; flex-shrink: 0;
   background: transparent; color: var(--loop); box-shadow: inset 0 0 0 1px var(--loop); }
 .ovr-chip:hover { background: var(--loop); color: var(--text-on-live); }
 
@@ -642,10 +642,26 @@
 
 /* BPM ↔ Resolume tempo link */
 .bpm-link {
-  height: 14px; padding: 0 4px; border: none; cursor: pointer; background: transparent;
+  width: 76px; height: 14px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; border: none; cursor: pointer; background: transparent;
   box-shadow: inset 0 0 0 1px var(--bg-splitter); color: var(--text-faint);
   font-size: 9px; font-weight: 800; letter-spacing: 0.06em; white-space: nowrap;
 }
 .bpm-link.on { color: var(--live); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--live) 50%, transparent); }
 .bpm-link.off { color: var(--text-on-live); background: var(--loop); box-shadow: none; }
 .bpm-link:disabled { cursor: default; }
+
+/* Arena recording */
+.tbtn.arena-rec { width: 128px; padding: 0 10px; gap: 6px; }   /* fixed: the label changes */
+.tbtn.arena-rec .arena-rec-icon { color: var(--text-faint); font-size: 15px; }
+.tbtn.arena-rec.armed { box-shadow: inset 0 0 0 2px var(--danger); }
+.tbtn.arena-rec.armed .arena-rec-icon { color: var(--danger); }
+.tbtn.arena-rec.recording { background: var(--danger-fill); color: var(--text-hi); box-shadow: none; }
+.tbtn.arena-rec.recording .arena-rec-icon { color: var(--text-hi); }
+.health-item.rec-armed { background: color-mix(in srgb, var(--danger) 18%, var(--bg-lane)); }
+.health-item.rec-armed b { color: var(--danger); }
+.health-file { color: var(--text); font-size: var(--fs-meta); }
+/* Recording is a normal state for a whole set: dark red tint + solid dot, no blink
+   (full red + blinking stays reserved for alarms like RESOLUME OFFLINE) */
+.health-item.recording { background: color-mix(in srgb, var(--danger) 28%, var(--bg-lane)); color: var(--text-hi); }
+.health-item.recording b { color: var(--text-hi); }
+.health-rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 35%, transparent); }

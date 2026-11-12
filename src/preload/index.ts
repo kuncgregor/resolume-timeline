@@ -5,6 +5,8 @@ import type { ConcertFile, LoadedConcert } from '../shared/concert'
 
 const api = {
   play: () => ipcRenderer.invoke('engine:play'),
+  recordStart: (): Promise<{ ok: boolean; latencyMs: number; file: string | null; dir: string }> => ipcRenderer.invoke('record:start'),
+  recordStop: () => ipcRenderer.invoke('record:stop'),
   stop: () => ipcRenderer.invoke('engine:stop'),
   locate: (frame: number) => ipcRenderer.invoke('engine:locate', frame),
   getState: (): Promise<EngineState> => ipcRenderer.invoke('engine:getState'),

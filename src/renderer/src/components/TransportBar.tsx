@@ -19,6 +19,9 @@ interface Props {
   anyLtcTimeline: boolean     // some timeline follows LTC (Follow TC makes sense)
   recordArmed: boolean
   onToggleRecord: () => void
+  // Arena recording (Arena's own recorder): armed = the next Play records from the timeline start
+  arenaRec: { armed: boolean; state: 'idle' | 'starting' | 'recording' }
+  onToggleArenaRec: () => void
   overrideCount: number       // lanes the operator took over in Resolume
   onReenable: () => void
   readOnly: boolean
@@ -46,7 +49,7 @@ const WARN_S = 30
 const DANGER_S = 10
 
 export function TransportBar({
-  engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord,
+  engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord, arenaRec, onToggleArenaRec,
   overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm, arenaBpm, onToggleLinkTempo, onPushTempo,
   snap, snapAuto, onSetSnap,
 }: Props) {
@@ -102,10 +105,22 @@ export function TransportBar({
         {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume */}
         <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly}
           title={recordArmed
-            ? 'REC armed: changes to automated parameters in Resolume are written as keyframes at the playhead'
-            : 'REC: record changes from Resolume as keyframes (auto-key)'}>
-          <span className="rec-dot">●</span><span className="tbtn-label">REC</span>
+            ? 'KEYS armed (auto-key): changes to automated parameters in Resolume are written as keyframes at the playhead'
+            : 'KEYS (auto-key): record changes you make in Resolume as keyframes — not a video recording (that is REC ARENA)'}>
+          <span className="rec-dot">◆</span><span className="tbtn-label">KEYS</span>
         </button>
+        {/* Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first) */}
+        <button
+          className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
+          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec}
+          title={arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
+            : arenaRec.state === 'starting' ? 'Starting Arena\'s recorder…'
+            : arenaRec.armed ? 'Armed: Play jumps to the timeline start and records in Arena from there (LTC: from its start TC) until the timeline end. Click to disarm.'
+            : 'Record this timeline in Arena: arm, then Play — the recording starts exactly at the timeline start and stops at its end'}
+        ><span className="arena-rec-icon">●</span><span className="tbtn-label">{
+          arenaRec.state === 'recording' ? `REC ${framesToSmpte(frame, fps).slice(3, 8)}`
+          : arenaRec.state === 'starting' ? 'START…'
+          : arenaRec.armed ? 'ARMED' : 'REC ARENA'}</span></button>
       </div>
 
       <div className={`remain ${remainClass}`} title="Time until the end of the last clip or audio">
@@ -124,12 +139,6 @@ export function TransportBar({
 
       <div className="spacer" />
 
-      {overrideCount > 0 && (
-        <button className="btn reenable-btn" onClick={onReenable}
-          title="The operator moved automated parameters in Resolume, so those lanes are not sending. Click to hand them back to the timeline.">
-          ↺ Back to timeline · {overrideCount}
-        </button>
-      )}
 
       <button className={`btn toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
         title="Show or hide Resolume clips">
@@ -150,6 +159,13 @@ function BpmBlock({ show, readOnly, onSetBpm, arenaBpm, onToggleLink, onPush }: 
   const sig = `${tempo?.beatsPerBar ?? show?.beatsPerBar ?? 4}/4`
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState('')
+  // After a BPM change / push Arena reports the old tempo until the next poll (~2 s)
+  const [settling, setSettling] = useState(false)
+  const settleTimer = useRef<ReturnType<typeof setTimeout>>()
+  const lastClickRef = useRef(0)
+  const settle = () => { setSettling(true); clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setSettling(false), 2500) }
+  useEffect(() => { settle() }, [bpm])
+  useEffect(() => () => clearTimeout(settleTimer.current), [])
   const inputRef = useRef<HTMLInputElement>(null)
   const closedRef = useRef(false)   // Enter / Esc already handled: the blur that follows must not commit again
   const taps = useRef<number[]>([])
@@ -208,20 +224,25 @@ function BpmBlock({ show, readOnly, onSetBpm, arenaBpm, onToggleLink, onPush }: 
         {has && (() => {
           // LINK: this timeline's BPM drives Arena's tempo (pushed on load / change, beat
           // resynced at every bar line while playing). Arena at another tempo = amber, click to push.
+          // Right after a change Arena still reports the old tempo until the next poll: no warning then.
           const linked = show?.linkTempo !== false
-          const off = linked && arenaBpm != null && Math.abs(arenaBpm - (bpm as number)) >= 0.01
-          return off ? (
-            <button className="bpm-link off" tabIndex={-1} onMouseDown={e => e.preventDefault()} disabled={readOnly}
-              onClick={onPush}
-              title={`Arena runs at ${arenaBpm} BPM (changed in Resolume). Click to send ${bpm} BPM to Arena again.`}
-            >ARENA {Math.round(arenaBpm! * 10) / 10}</button>
-          ) : (
-            <button className={`bpm-link ${linked ? 'on' : ''}`} tabIndex={-1} onMouseDown={e => e.preventDefault()}
-              onClick={onToggleLink}
-              title={linked
-                ? `Linked to Resolume${arenaBpm == null ? ' (offline)' : ''}: Arena's tempo follows this timeline's BPM and its beat is resynced at every bar line while playing. Click to unlink.`
-                : 'Not linked: Arena keeps its own tempo. Click to link this timeline\'s BPM to Resolume.'}
-            >LINK</button>
+          const off = linked && !settling && arenaBpm != null && Math.abs(arenaBpm - (bpm as number)) >= 0.01
+          const r = (v: number) => Math.round(v * 10) / 10
+          const click = (e: React.MouseEvent) => {
+            if (performance.now() - lastClickRef.current < 600) return   // no double-click push + unlink
+            lastClickRef.current = performance.now()
+            if (e.altKey || !off) { onToggleLink(); return }             // Alt-click: (un)link in any state
+            onPush(); settle()
+          }
+          return (
+            <button className={`bpm-link ${off ? 'off' : linked ? 'on' : ''}`} tabIndex={-1}
+              onMouseDown={e => e.preventDefault()} disabled={readOnly && off} onClick={click}
+              title={off
+                ? `Arena runs at ${arenaBpm} BPM (changed in Resolume). Click: send ${bpm} BPM to Arena. Alt-click: unlink and keep Arena's tempo.`
+                : linked
+                  ? `Linked to Resolume${arenaBpm == null ? ' (offline)' : ''}: Arena's tempo follows this timeline's BPM and its beat is resynced at every bar line while playing. Click to unlink.`
+                  : 'Free: Arena keeps its own tempo. Click to link this timeline\'s BPM to Resolume.'}
+            >{off ? `↻ ${r(arenaBpm!)}→${r(bpm as number)}` : linked ? 'LINK' : 'FREE'}</button>
           )
         })()}
       </div>

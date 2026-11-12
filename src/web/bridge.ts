@@ -1,6 +1,7 @@
 // Dev-only bridge: runs the real engine (Transport + Scheduler + OSC + REST) inside the
 // Vite dev server so the renderer can be opened in a plain browser (Chrome) without Electron.
 // Renderer side: src/renderer/src/web-shim.ts. Start with `npm run web`.
+import { ArenaRecorder } from '../main/recorder'
 import type { Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { Transport, smpteToFrames } from '../main/transport'
@@ -18,6 +19,7 @@ export function timelineBridge(): Plugin {
     configureServer(server) {
       const transport = new Transport(25)
       const osc = new OscClient('127.0.0.1', 7000)
+      const recorder = new ArenaRecorder(osc)
       const rest = new ResolumeRest('127.0.0.1', 8080)
       const scheduler = new Scheduler(transport, osc, rest)
       let currentShow: Show | null = null
@@ -57,6 +59,8 @@ export function timelineBridge(): Plugin {
 
       const methods: Record<string, (...args: any[]) => unknown> = {
         play: () => { transport.play(); scheduler.notify(); return null },
+        recordStart: () => recorder.start(),
+        recordStop: () => { recorder.stop(); return null },
         stop: () => { transport.stop(); scheduler.notify(); return null },
         locate: (frame: number) => { transport.locate(frame); scheduler.notify(); return null },
         getState: () => ({

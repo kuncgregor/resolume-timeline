@@ -49,6 +49,8 @@ if (!w.timeline) {
   w.timeline = {
     __web: true,
     play: () => rpc('play'),
+    recordStart: () => rpc('recordStart'),
+    recordStop: () => rpc('recordStop'),
     stop: () => rpc('stop'),
     locate: (frame: number) => rpc('locate', frame),
     getState: () => rpc('getState'),

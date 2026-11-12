@@ -12,6 +12,9 @@ interface Props {
   brokenLanes: number
   // Automated parameters the operator took over live in Resolume (lane id + readable name)
   manual: { id: string; name: string }[]
+  arenaRec: { armed: boolean; state: 'idle' | 'starting' | 'recording'; file: string | null; error: string | null }
+  recSeconds: number          // take length so far (= timeline position, the take starts at 0)
+  onDismissRecError: () => void
   onReenable: (ids?: string[]) => void
   onReconnect: () => void
 }
@@ -28,7 +31,7 @@ const ago = (since: number, now: number) => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
 }
 
-export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, manual, onReenable, onReconnect }: Props) {
+export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, manual, arenaRec, recSeconds, onDismissRecError, onReenable, onReconnect }: Props) {
   const offline = !resolumeConnected
   const noLtc = ltcSelected && !ltcActive
   const offSince = useSince(offline)
@@ -45,9 +48,31 @@ export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, l
 
   // Manual takeover is shown in SETUP too: a parameter that silently stopped following the
   // timeline is the easiest thing to forget after live VJing
-  if (!manual.length && (!active || (!offline && !noLtc && !ltcNotHere && brokenLanes === 0))) return null
+  const rec = arenaRec.state !== 'idle' || arenaRec.armed || !!arenaRec.error
+  if (!rec && !manual.length && (!active || (!offline && !noLtc && !ltcNotHere && brokenLanes === 0))) return null
   return (
     <div className="health-bar" role="alert">
+      {arenaRec.state === 'recording' && (
+        <div className="health-item recording">
+          <span className="health-rec-dot" />
+          <b>RECORDING IN ARENA</b>
+          <span className="mono">{ago(Date.now() - recSeconds * 1000, Date.now())}</span>
+          <span className="health-file">{arenaRec.file ? arenaRec.file.split('/').pop() : ''}</span>
+        </div>
+      )}
+      {arenaRec.state === 'idle' && arenaRec.armed && !arenaRec.error && (
+        <div className="health-item rec-armed">
+          <b>ARENA REC ARMED</b>
+          <span>the next Play records from the timeline start until its end</span>
+        </div>
+      )}
+      {arenaRec.error && (
+        <div className="health-item danger">
+          <b>ARENA REC</b>
+          <span>{arenaRec.error}</span>
+          <button className="btn-sm" onClick={onDismissRecError}>OK</button>
+        </div>
+      )}
       {active && offline && (
         <div className="health-item danger">
           <span className="health-dot" />

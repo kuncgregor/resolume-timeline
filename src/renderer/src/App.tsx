@@ -72,6 +72,7 @@ const shallowSame = (a: object, b: object) =>
 // gone are kept (they hold cues/automation). Returns `show` unchanged when nothing differs, so
 // the periodic sync does not mark the show dirty.
 const FOLLOW_TC_KEY = 'resolume-timeline:followTc'
+const ARENA_REC_LATENCY_MS = 40   // Arena starts writing ~38 ms after the record command (measured, 7.24)
 const STOP_CONFIRM_MS = 1500   // SHOW mode: second Space / ■ within this stops
 
 /** LTC input a clock source listens to ('ltc' = legacy A). */
@@ -579,7 +580,20 @@ export default function App() {
       const f = fpsRef.current
       const ltcFps = f > 30 ? f / 2 : f
       const active = activeIdRef.current
-      const owner = ltcOwner(rundownRef.current, hh * 3600 + mm * 60 + ss + ff / ltcFps, ltcInputRef.current, active)
+      const tcSec = hh * 3600 + mm * 60 + ss + ff / ltcFps
+      const owner = ltcOwner(rundownRef.current, tcSec, ltcInputRef.current, active)
+      // Arena recording armed on an LTC timeline: start the recorder just ahead of its start TC
+      // (Arena needs ~40 ms), so the take begins on the timeline's first frame
+      const rec = arenaRecRef.current
+      const sh = showRef.current
+      if (rec.armed && rec.state === 'idle' && isLtcSource(sh.clock.source)) {
+        const startSec = smpteToFrames(sh.clock.offset || '00:00:00:00', sh.frameRate) / sh.frameRate
+        const dt = startSec - tcSec
+        if (dt > 0 && dt <= 1) {
+          setArenaRec({ state: 'starting' })
+          setTimeout(() => { beginArenaRecordingRef.current() }, Math.max(0, dt * 1000 - ARENA_REC_LATENCY_MS))
+        }
+      }
       // One switch request per owner while the active id catches up (it updates a render
       // later); after that, request again (the operator may have picked another timeline)
       const now = performance.now()
@@ -636,8 +650,7 @@ export default function App() {
         if (engineRef.current.playing) {
           stopRef.current()
         } else {
-          api.play()
-          if (audioLoadedRef.current) audioEngineRef.current.play(engineRef.current.frame)
+          playRef.current()
         }
       }
       if (e.code === 'Home' && showLockedRef()) { e.preventDefault(); return }
@@ -667,9 +680,60 @@ export default function App() {
   // ── Transport ──────────────────────────────────────────────────────────────
 
   const handlePlay = useCallback(() => {
+    if (arenaRecRef.current.armed && arenaRecRef.current.state === 'idle' && !isLtcSource(showRef.current.clock.source)) {
+      startAlignedRecording()
+      return
+    }
     api.play()
     if (audioLoadedRef.current) audioEngineRef.current.play(engineRef.current.frame)
   }, [])
+  const playRef = useRef(handlePlay)
+  playRef.current = handlePlay
+
+  // ── Arena recording (Arena's Record button, over OSC) ───────────────────────
+  // Armed + Play: the timeline goes to its start, Arena starts recording, and the timeline
+  // starts the moment Arena has created the file (~40 ms) — so the recording's first frame is
+  // the timeline start. With LTC the command is sent just before the start TC instead.
+  // Recording stops at the timeline end or on Stop, then the arm is released (one take).
+  type ArenaRec = { armed: boolean; state: 'idle' | 'starting' | 'recording'; file: string | null; error: string | null }
+  const [arenaRec, setArenaRecState] = useState<ArenaRec>({ armed: false, state: 'idle', file: null, error: null })
+  const arenaRecRef = useRef(arenaRec)
+  const setArenaRec = useCallback((patch: Partial<ArenaRec>) => {
+    arenaRecRef.current = { ...arenaRecRef.current, ...patch }
+    setArenaRecState(arenaRecRef.current)
+  }, [])
+  const recSeenPlayingRef = useRef(false)
+  const beginArenaRecordingRef = useRef<() => Promise<boolean>>(async () => false)
+
+  const beginArenaRecording = useCallback(async (): Promise<boolean> => {
+    setArenaRec({ state: 'starting', error: null })
+    recSeenPlayingRef.current = false
+    const r = await api.recordStart()
+    if (!r?.ok) {
+      // No file within 1.5 s: don't run a take that may not be recording (or is misaligned)
+      api.recordStop()
+      setArenaRec({ state: 'idle', error: `Arena did not start recording (watched ${r?.dir ?? 'the recordings folder'}). Check Arena's Record panel.` })
+      return false
+    }
+    setArenaRec({ state: 'recording', file: r.file })
+    return true
+  }, [setArenaRec])
+
+  beginArenaRecordingRef.current = beginArenaRecording
+
+  const startAlignedRecording = useCallback(async () => {
+    api.stop(); audioEngineRef.current.stop()
+    api.locate(0); setScrollFrame(0); autoScrollRef.current = true
+    if (!(await beginArenaRecording())) return
+    api.play()
+    if (audioLoadedRef.current) audioEngineRef.current.play(0)
+  }, [beginArenaRecording])
+
+  const stopArenaRecording = useCallback(() => {
+    if (arenaRecRef.current.state === 'idle') return
+    api.recordStop()
+    setArenaRec({ state: 'idle', armed: false })
+  }, [setArenaRec])
 
   const handleStop = useCallback(() => {
     api.stop(); autoScrollRef.current = true; audioEngineRef.current.stop()
@@ -1514,6 +1578,15 @@ export default function App() {
     return end
   })()
 
+  // End of the take: the timeline end, or the transport stopped (Stop, LTC gone)
+  useEffect(() => {
+    if (arenaRec.state !== 'recording') return
+    if (engineState.playing) { recSeenPlayingRef.current = true }
+    const atEnd = endFrame > 0 && engineState.frame >= endFrame
+    if (atEnd || (recSeenPlayingRef.current && !engineState.playing)) stopArenaRecording()
+  }, [engineState.frame, engineState.playing, arenaRec.state, endFrame, stopArenaRecording])
+
+
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
 
   return (
@@ -1559,18 +1632,6 @@ export default function App() {
         </div>
       )}
 
-      <HealthBar
-        active={showMode || engineState.playing}
-        resolumeConnected={engineState.resolumeConnected}
-        ltcSelected={isLtcSource(show.clock.source)}
-        ltcActive={ltcActive}
-        ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
-          ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}
-        brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
-        manual={manualLanes}
-        onReenable={handleReenable}
-        onReconnect={handleReconnect}
-      />
 
       <TransportBar
         engineState={engineState}
@@ -1585,6 +1646,11 @@ export default function App() {
         anyLtcTimeline={ltcShouldRun}
         recordArmed={recordArmed}
         onToggleRecord={() => setRecordArmed(r => !r)}
+        arenaRec={arenaRec}
+        onToggleArenaRec={() => {
+          if (arenaRecRef.current.state !== 'idle') { stopArenaRecording(); api.stop(); audioEngineRef.current.stop(); return }
+          setArenaRec({ armed: !arenaRecRef.current.armed, error: null })
+        }}
         overrideCount={Object.keys(overrides).length}
         onReenable={() => handleReenable()}
         readOnly={showMode}
@@ -1601,6 +1667,22 @@ export default function App() {
         snap={snap}
         snapAuto={formatSnapStep(gridSnapOf({ on: true, grid: 'auto' }, tempo, rulerMode, pxPerFrame, fps)!, fps)}
         onSetSnap={setSnap}
+      />
+
+      <HealthBar
+        active={showMode || engineState.playing}
+        resolumeConnected={engineState.resolumeConnected}
+        ltcSelected={isLtcSource(show.clock.source)}
+        ltcActive={ltcActive}
+        ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
+          ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}
+        brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
+        manual={manualLanes}
+        arenaRec={arenaRec}
+        recSeconds={engineState.frame / fps}
+        onDismissRecError={() => setArenaRec({ error: null })}
+        onReenable={handleReenable}
+        onReconnect={handleReconnect}
       />
 
       <div className="main-area">

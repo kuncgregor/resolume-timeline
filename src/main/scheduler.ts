@@ -117,7 +117,9 @@ export class Scheduler {
 
   private pushTempo() {
     const bpm = this.linkedBpm()
-    if (bpm == null || !this.arenaTempo) return
+    // Unlinked (or no BPM): forget the last push, so linking again sends the tempo at once
+    if (bpm == null) { this.tempoPushed = ''; return }
+    if (!this.arenaTempo) return
     const key = `${this.show!.name}|${bpm}|${this.arenaTempo.id}`
     if (key === this.tempoPushed) return
     this.tempoPushed = key

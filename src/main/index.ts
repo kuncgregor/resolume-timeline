@@ -1,3 +1,4 @@
+import { ArenaRecorder } from './recorder'
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
@@ -11,6 +12,7 @@ import { rv } from '../shared/resolume'
 
 const transport = new Transport(25)
 const osc = new OscClient('127.0.0.1', 7000)
+const recorder = new ArenaRecorder(osc)
 const rest = new ResolumeRest('127.0.0.1', 8080)
 const scheduler = new Scheduler(transport, osc, rest)
 
@@ -171,6 +173,10 @@ ipcMain.handle('resolume:getGroupRaw', (_e, groupIndex: number) =>
   rest.getJson(`/composition/layergroups/${groupIndex}`))
 
 // By clip id: also reaches a clip of a deck Resolume isn't showing, while it is playing
+// Arena recorder: start resolves once Arena created the file (the timeline starts then)
+ipcMain.handle('record:start', () => recorder.start())
+ipcMain.handle('record:stop', () => { recorder.stop(); return null })
+
 ipcMain.handle('resolume:getClipById', (_e, clipId: number) =>
   rest.getJson(`/composition/clips/by-id/${clipId}`))
 
