@@ -72,7 +72,10 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
   useEffect(() => { refresh() }, [])
 
   // Resolume only reports the selected deck's clips, so the list follows the selected deck
-  const decks = decksOf(composition)
+  // The deck clicked shows as selected at once: loading the new deck's composition takes
+  // up to ~1.5 s, and a key that didn't react looked like the click was lost
+  const [pendingDeck, setPendingDeck] = useState<number | null>(null)
+  const decks = decksOf(composition).map(d => pendingDeck == null ? d : { ...d, selected: d.index === pendingDeck })
   const shownDeck = decks.find(d => d.selected)
   // Follow Resolume: clips added, layers added/renamed, another deck shown
   const liveKey = contentKey(liveComposition)
@@ -80,8 +83,18 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
     if (!loading && liveKey && composition && liveKey !== contentKey(composition)) refresh(true)
   }, [liveKey])
   const showDeck = async (index: number) => {
-    await api.selectDeck(index)
-    refresh()
+    setPendingDeck(index)
+    try {
+      if (!(await api.selectDeck(index))) return
+      // Resolume reports the previous deck for ~100 ms after the switch (it loads the deck):
+      // reading too early showed the old deck again, as if the click was lost
+      for (let t0 = Date.now(); Date.now() - t0 < 2000;) {
+        const comp = await api.getComposition()
+        if (decksOf(comp).find(d => d.selected)?.index === index) break
+        await new Promise(r => setTimeout(r, 100))
+      }
+      await refresh(true)
+    } finally { setPendingDeck(p => p === index ? null : p) }
   }
 
   // Timeline cues per deck: marks the decks the show actually fires from
