@@ -6,7 +6,8 @@ import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type Showfile
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
-import { TimelineCanvas, convertItems, type CueCopy } from './components/TimelineCanvas'
+import { TimelineCanvas } from './components/TimelineCanvas'
+import { convertItems } from './material'
 import { OverviewBar } from './components/OverviewBar'
 import { BottomPanel } from './components/BottomPanel'
 import { ClipBrowser } from './components/ClipBrowser'
@@ -244,6 +245,9 @@ const _restored = REMOTE ? null : renameDefault(loadAutosave())
 const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
   ? _restored.activeId : (_restored?.rundown[0].id ?? _initEntry.id)
 
+const UNDO_GROUP_MS = 300   // edits closer together than this are one undo step
+const UNDO_STEPS = 100
+
 /** Engine states that differ only in the frame (the frame store has that). */
 const sameEngineState = (a: EngineState, b: EngineState) =>
   a.playing === b.playing && a.fps === b.fps && a.showName === b.showName && a.resolumeConnected === b.resolumeConnected
@@ -317,8 +321,27 @@ export default function App() {
   useEffect(() => { engineRef.current = engineState }, [engineState])
 
   // ── setShow — updates active show entry ────────────────────────────────────
+  // setShow is for the user's edits: each one can be undone (⌘Z) and redone (⌘⇧Z), per
+  // timeline. syncShow is for what follows Resolume (layers, colours, resolved targets).
 
+  const historyRef = useRef(new Map<string, { past: Show[]; future: Show[] }>())
+  const [historyTick, setHistoryTick] = useState(0)
+  const lastEditRef = useRef(0)
   const setShow = useCallback((updater: Show | ((prev: Show) => Show)) => {
+    // Edits close together (one gesture, a fader writing keyframes) are one undo step
+    const now = Date.now()
+    if (now - lastEditRef.current > UNDO_GROUP_MS) {
+      const id = activeIdRef.current
+      const h = historyRef.current.get(id) ?? { past: [], future: [] }
+      h.past.push(showRef.current)
+      if (h.past.length > UNDO_STEPS) h.past.shift()
+      h.future = []
+      historyRef.current.set(id, h)
+    }
+    lastEditRef.current = now
+    syncShow(updater)
+  }, [])
+  const syncShow = useCallback((updater: Show | ((prev: Show) => Show)) => {
     setRundown(prev => {
       let changed = false
       const next = prev.map(e => {
@@ -440,7 +463,7 @@ export default function App() {
     setShowfile(NEW_SHOWFILE); setShowfileDirty(true); setRestoredAt(null)
     // Fill the new empty show with the current Resolume layers
     api.getComposition().then((comp: ResolumeComposition | null) => {
-      if (comp) setShow(prev => syncLayers(prev, comp))
+      if (comp) syncShow(prev => syncLayers(prev, comp))
     })
   }, [setShow])
 
@@ -455,6 +478,27 @@ export default function App() {
     { trackId: null, cueId: null })
   const showRef = useRef(show)
   showRef.current = show
+
+  /** ⌘Z / ⌘⇧Z: the timeline as it was before the last edit / after the last undo. */
+  const undo = useCallback((redo: boolean) => {
+    const h = historyRef.current.get(activeIdRef.current)
+    if (!h) return
+    const from = redo ? h.future : h.past, to = redo ? h.past : h.future
+    let target = from.pop()
+    while (target && target === showRef.current) target = from.pop()
+    if (!target) return
+    to.push(showRef.current)
+    lastEditRef.current = 0
+    setHistoryTick(n => n + 1)
+    // View and edit settings stay as they are now (they are not undo steps), and so does
+    // what Resolume says now (layer names, colours)
+    const cur = showRef.current
+    const restored = { ...target, snap: cur.snap, rulerMode: cur.rulerMode, lockEnvelopes: cur.lockEnvelopes }
+    const comp = compositionRef.current
+    syncShow(comp ? syncLayers(restored, comp) : restored)
+  }, [syncShow])
+  const undoRef = useRef(undo)
+  undoRef.current = undo
   const selectedTrackIdx = (() => {
     const i = show.tracks.findIndex(t => t.id === selection.trackId)
     return i >= 0 ? i : null
@@ -526,11 +570,13 @@ export default function App() {
   // Latest composition JSON: drives layer sync, the parameter picker, the live strip in
   // the layer headers and the automation target resolver
   const [composition, setComposition] = useState<ResolumeComposition | null>(null)
+  const compositionRef = useRef(composition)
+  compositionRef.current = composition
 
   useEffect(() => {
     const unsub = api.onCompositionUpdate((comp: ResolumeComposition) => {
       setComposition(comp)
-      setShow(prev => syncLayers(prev, comp))
+      syncShow(prev => syncLayers(prev, comp))
     })
     return unsub
   }, [setShow])
@@ -539,7 +585,7 @@ export default function App() {
     api.getComposition().then((comp: ResolumeComposition | null) => {
       if (!comp) return
       setComposition(comp)
-      setShow(prev => syncLayers(prev, comp))
+      syncShow(prev => syncLayers(prev, comp))
     })
   }, [setShow])
 
@@ -683,7 +729,7 @@ export default function App() {
     const { status, targets, updates } = resolveShow(show, composition)
     if (updates.length) {
       // Migration of old lanes / refreshed ranges; the effect runs again with the new show
-      setShow(prev => {
+      syncShow(prev => {
         const tracks = [...prev.tracks]
         for (const u of updates) {
           const lt = tracks[u.trackIdx] as LayerTrack
@@ -826,11 +872,11 @@ export default function App() {
 
   // The stored grid is kept as is: a musical grid survives removing and re-setting the BPM
   const setSnap = useCallback((patch: { on?: boolean; grid?: SnapGrid }) => {
-    setShow(prev => ({ ...prev, snap: { on: snapOf(prev).on, grid: prev.snap?.grid ?? 'auto', ...patch } }))
+    syncShow(prev => ({ ...prev, snap: { on: snapOf(prev).on, grid: prev.snap?.grid ?? 'auto', ...patch } }))
   }, [setShow])
   const toggleSnapRef = useRef(() => {})
   toggleSnapRef.current = () => {
-    if (activeShowEntry) setShow(prev => ({ ...prev, snap: { on: !snapOf(prev).on, grid: prev.snap?.grid ?? 'auto' } }))
+    if (activeShowEntry) syncShow(prev => ({ ...prev, snap: { on: !snapOf(prev).on, grid: prev.snap?.grid ?? 'auto' } }))
   }
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
@@ -847,6 +893,12 @@ export default function App() {
       // fader would move it to its minimum and auto-key that as a keyframe)
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       if (e.target instanceof HTMLInputElement && !['range', 'checkbox'].includes(e.target.type)) return
+      // ⌘Z / ⌘⇧Z: undo / redo the timeline edits (text fields keep their own undo)
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ' && !e.altKey) {
+        e.preventDefault()
+        if (!showModeRef.current) undoRef.current(e.shiftKey)
+        return
+      }
       if (e.code === 'Space') {
         e.preventDefault()
         // Auto-repeat of a held key is not a second press (it would confirm the SHOW stop)
@@ -1280,65 +1332,6 @@ export default function App() {
     })
   }, [setShow])
 
-  // Several clips at once (canvas multi-selection). Lanes bound to a clip move with it; the
-  // old unbound lanes (neither clip- nor layer-bound) move once per layer, as with one clip.
-  const handleMoveCues = useCallback((moves: { trackIdx: number; cueId: string; frame: number }[]) => {
-    setShow(prev => {
-      const fr = prev.frameRate
-      const tracks = [...prev.tracks]
-      for (const ti of new Set(moves.map(m => m.trackIdx))) {
-        const lt = tracks[ti] as LayerTrack
-        if (!lt || lt.type !== 'layer') continue
-        const delta = new Map<string, number>()
-        const clips = lt.clips.map(c => {
-          const m = moves.find(x => x.trackIdx === ti && x.cueId === c.id)
-          if (!m) return c
-          delta.set(c.id, m.frame - smpteToFrames(c.time, fr))
-          return { ...c, time: framesToSmpte(m.frame, fr) }
-        }).sort((a, b) => smpteToFrames(a.time, fr) - smpteToFrames(b.time, fr))
-        const anyDelta = [...delta.values()][0] ?? 0
-        const automations = lt.automations.map(auto => {
-          if (auto.layerBound) return auto
-          const d = auto.clipId ? delta.get(auto.clipId) : anyDelta
-          if (!d) return auto
-          return { ...auto, keyframes: auto.keyframes.map(kf => ({ ...kf, time: framesToSmpte(Math.max(0, smpteToFrames(kf.time, fr) + d), fr) })) }
-        })
-        tracks[ti] = { ...lt, clips, automations }
-      }
-      return { ...prev, tracks }
-    })
-  }, [setShow])
-
-  // Copies of clips (Alt-drag, ⌘V, ⌘D) on their own layers, each with copies of the lanes bound
-  // to it (keyframes moved by the same amount). Returns the new cue ids, in order.
-  const handleInsertCues = useCallback((items: CueCopy[]): string[] => {
-    const ids = items.map(() => newId())
-    setShow(prev => {
-      const fr = prev.frameRate
-      const tracks = [...prev.tracks]
-      items.forEach((it, n) => {
-        const ti = tracks.findIndex(t => t.id === it.trackId)
-        const lt = tracks[ti] as LayerTrack
-        if (!lt || lt.type !== 'layer') return
-        const d = it.frame - smpteToFrames(it.cue.time, fr)
-        const cue: ClipCue = { ...it.cue, id: ids[n], time: framesToSmpte(it.frame, fr) }
-        const lanes = it.lanes.map(a => ({
-          ...a, id: `auto-${Date.now()}-${uid++}`, clipId: ids[n],
-          keyframes: a.keyframes.map(kf => ({ ...kf, time: framesToSmpte(Math.max(0, smpteToFrames(kf.time, fr) + d), fr) })),
-        }))
-        tracks[ti] = {
-          ...lt,
-          clips: [...lt.clips, cue].sort((a, b) => smpteToFrames(a.time, fr) - smpteToFrames(b.time, fr)),
-          automations: [...lt.automations, ...lanes],
-        }
-      })
-      return { ...prev, tracks }
-    })
-    // The inspector shows the first copy (the copies are the new selection)
-    if (items.length) setSelection({ trackId: items[0].trackId, cueId: ids[0] })
-    return ids
-  }, [setShow])
-
   // Deleting a clip deletes the lanes bound to it (they can't play without it)
   const handleDeleteCues = useCallback((cueIds: string[]) => {
     const gone = new Set(cueIds)
@@ -1356,6 +1349,14 @@ export default function App() {
       }),
     }))
     setSelection(sel => (sel.cueId && gone.has(sel.cueId) ? { ...sel, cueId: null } : sel))
+  }, [setShow])
+
+  // Selection edits from the timeline (move, copy, paste, delete, split…): one change
+  const handleEditTracks = useCallback((edit: (tracks: Track[]) => Track[]) => {
+    setShow(prev => {
+      const tracks = edit(prev.tracks)
+      return tracks === prev.tracks ? prev : { ...prev, tracks }
+    })
   }, [setShow])
 
   const handleDeleteCue = useCallback((trackIdx: number, cueIdx: number) => {
@@ -2021,6 +2022,8 @@ export default function App() {
         snap={snap}
         snapAuto={formatSnapStep(gridSnapOf({ on: true, grid: 'auto' }, tempo, rulerMode, pxPerFrame, fps)!, fps)}
         onSetSnap={setSnap}
+        lockEnvelopes={!!show.lockEnvelopes}
+        onToggleLockEnvelopes={() => syncShow(prev => ({ ...prev, lockEnvelopes: prev.lockEnvelopes ? undefined : true }))}
       />
 
       <HealthBar
@@ -2089,7 +2092,7 @@ export default function App() {
               onLoadAudio={handleLoadAudioTrack}
               onUpdateAudio={handleUpdateAudioTrack}
               rulerMode={rulerMode} hasTempo={!!tempo}
-              onSetRulerMode={m => setShow(prev => ({ ...prev, rulerMode: m }))}
+              onSetRulerMode={m => syncShow(prev => ({ ...prev, rulerMode: m }))}
               laneClipboard={laneClipboard} onCopyLane={handleCopyLane}
               onPasteLane={ti => handlePasteLane(ti)} onPasteCurve={handlePasteCurve}
             />
@@ -2108,13 +2111,12 @@ export default function App() {
               onZoom={f => setPxPerFrame(p => Math.max(PPF_MIN, Math.min(PPF_MAX, p * f)))}
               onSelectCue={selectCue}
               onDropClip={handleDropClip} onUpdateCue={handleUpdateCue}
-              onMoveCues={handleMoveCues} onInsertCues={handleInsertCues} onDeleteCues={handleDeleteCues}
+              onEditTracks={handleEditTracks} historyTick={historyTick} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}
               onUpdateKeyframes={handleUpdateKeyframes}
               onDeleteKeyframes={handleDeleteKeyframes}
-              onPasteKeyframes={handlePasteKeyframes}
               onClipFade={handleClipFade} clipFadeUnavailable={clipFadeUnavailable}
               onCopyClipAutomation={handleCopyClipAutomation}
               onPasteClipAutomation={handlePasteClipAutomation}

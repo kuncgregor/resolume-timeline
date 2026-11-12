@@ -12,6 +12,7 @@ export interface Show {
   linkTempo?: boolean       // push bpm to Resolume's composition tempo + resync its beat at bar lines (default true)
   rulerMode?: 'timecode' | 'bars'  // ruler/grid view (default: 'bars' when bpm is set, else 'timecode')
   snap?: { on: boolean; grid: SnapGrid }  // snap to grid (default: on, 'auto')
+  lockEnvelopes?: boolean  // Ableton Live's Lock Envelopes: automation stays put when clips move
   resolume: {
     host: string
     oscPort: number
@@ -169,6 +170,9 @@ export interface Keyframe {
   value: number      // normalized 0..1 (choice: index / (n - 1), boolean: 0 | 1)
   ease: Curve | string  // curve of the segment from this keyframe to the next; unknown strings = linear
   option?: string    // choice lanes: the option name (survives Resolume adding/removing options)
+  // Curvature of the segment to the next keyframe, -1..1 (Option-drag on the segment, as in
+  // Ableton Live): replaces the named curve with a power curve. 0 / absent = the named curve.
+  bend?: number
 }
 
 // Curve from a keyframe to the next one. 'easeInCubic' etc. are accepted from older shows.

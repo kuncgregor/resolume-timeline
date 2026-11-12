@@ -58,11 +58,14 @@ export function curveLabel(c: CurveName): string {
   return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2] === 'InOut' ? 'In-Out' : m[2]}` : c
 }
 
-export interface FrameKeyframe { frame: number; value: number; curve: CurveName; option?: string }
+export interface FrameKeyframe { frame: number; value: number; curve: CurveName; option?: string; bend?: number }
+
+/** Shape of a bent segment (Keyframe.bend): t^p, p from 1/8 to 8. Positive bends start slow. */
+export const bendShape = (bend: number) => (t: number) => Math.pow(t, Math.pow(2, bend * 3))
 
 export function toFrameKeyframes(kfs: Keyframe[], toFrames: (smpte: string) => number): FrameKeyframe[] {
   return kfs
-    .map(k => ({ frame: toFrames(k.time), value: k.value, curve: curveOf(k.ease), option: k.option }))
+    .map(k => ({ frame: toFrames(k.time), value: k.value, curve: curveOf(k.ease), option: k.option, ...(k.bend ? { bend: k.bend } : {}) }))
     .sort((a, b) => a.frame - b.frame)
 }
 
@@ -106,5 +109,5 @@ export function sampleLane(
   if (kind !== 'range' || k0.curve === 'hold' || k1.frame === k0.frame)
     return frame >= k1.frame ? { value: k1.value, option: k1.option } : { value: k0.value, option: k0.option }
   const t = (frame - k0.frame) / (k1.frame - k0.frame)
-  return { value: k0.value + (k1.value - k0.value) * SHAPE[k0.curve](t) }
+  return { value: k0.value + (k1.value - k0.value) * (k0.bend ? bendShape(k0.bend)(t) : SHAPE[k0.curve](t)) }
 }

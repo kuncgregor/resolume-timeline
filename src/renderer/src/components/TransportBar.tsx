@@ -42,6 +42,8 @@ interface Props {
   snap: SnapSettings                             // in effect (see snapOf)
   snapAuto: string                               // what 'auto' snaps to at the current zoom ("1/4 beat")
   onSetSnap: (patch: { on?: boolean; grid?: SnapGrid }) => void
+  lockEnvelopes: boolean                         // Live's Lock Envelopes (see Show.lockEnvelopes)
+  onToggleLockEnvelopes: () => void
 }
 
 const TAP_RESET_MS = 2000   // idle time after which tapping starts over
@@ -55,7 +57,7 @@ const DANGER_S = 10
 export function TransportBar({
   engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord, arenaRec, onToggleArenaRec,
   overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm, arenaBpm, onToggleLinkTempo, onPushTempo,
-  snap, snapAuto, onSetSnap,
+  snap, snapAuto, onSetSnap, lockEnvelopes, onToggleLockEnvelopes,
 }: Props) {
   const { playing, fps } = engineState
   const frame = useFrame()
@@ -140,7 +142,8 @@ export function TransportBar({
       <BpmBlock show={show} readOnly={readOnly} onSetBpm={onSetBpm}
         arenaBpm={arenaBpm} onToggleLink={onToggleLinkTempo} onPush={onPushTempo} />
 
-      <SnapBlock snap={snap} hasTempo={!!tempo} grids={show ? snapGridsFor(show) : TC_SNAP_GRIDS} autoText={snapAuto} disabled={readOnly || !show} readOnly={readOnly} onSetSnap={onSetSnap} />
+      <SnapBlock snap={snap} hasTempo={!!tempo} grids={show ? snapGridsFor(show) : TC_SNAP_GRIDS} autoText={snapAuto} disabled={readOnly || !show} readOnly={readOnly} onSetSnap={onSetSnap}
+        lockEnvelopes={lockEnvelopes} onToggleLockEnvelopes={onToggleLockEnvelopes} />
 
       <div className="spacer" />
 
@@ -300,9 +303,10 @@ function shortStep(t: string): string {
   return `${n}F`
 }
 
-function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetSnap }: {
+function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetSnap, lockEnvelopes, onToggleLockEnvelopes }: {
   snap: SnapSettings; hasTempo: boolean; grids: readonly SnapGrid[]; autoText: string; disabled: boolean; readOnly: boolean
   onSetSnap: (patch: { on?: boolean; grid?: SnapGrid }) => void
+  lockEnvelopes: boolean; onToggleLockEnvelopes: () => void
 }) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -323,7 +327,7 @@ function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetS
 
   const label = (g: SnapGrid) => SNAP_GRID_LABEL[g]
   const toggleTitle = readOnly ? 'Snap to grid (locked in SHOW mode)'
-    : `Snap to grid (N) — hold ⌘ to place freely, Alt to copy. ${snap.on ? 'On' : 'Off'}`
+    : `Snap to grid (N) — hold ⌘ to place freely, Option to copy. ${snap.on ? 'On' : 'Off'}`
   const gridTitle = readOnly ? 'Snap grid size (locked in SHOW mode)'
     : `Snap grid size${snap.grid === 'auto' ? ` — Auto follows the zoom (now ${autoText})` : ''}${musical ? '' : hasTempo ? '. BARS ruler for bar and beat grids' : '. Set a BPM for bar and beat grids'}`
 
@@ -347,6 +351,16 @@ function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetS
           <span className="snap-grid-label">{snap.grid === 'auto' ? <>A<span className="snap-grid-auto">·{autoShort}</span></> : label(snap.grid)}</span>
           <span className="snap-grid-caret">▾</span>
         </button>
+        {/* Ableton Live's Lock Envelopes */}
+        <button className={`snap-toggle lock-env ${lockEnvelopes ? 'on' : ''}`} tabIndex={-1} disabled={disabled}
+          onMouseDown={e => e.preventDefault()}
+          onClick={onToggleLockEnvelopes}
+          aria-pressed={lockEnvelopes}
+          title={readOnly ? 'Lock Envelopes (locked in SHOW mode)'
+            : `Lock Envelopes (as in Ableton Live): ${lockEnvelopes
+              ? 'on — moving, copying or deleting clips leaves the layer automation where it is'
+              : 'off — the layer automation under a clip moves, copies and deletes with it'}`}
+        >LOCK</button>
       </div>
       {open && (
         <div className="ctx-menu snap-menu" role="menu">

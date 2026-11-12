@@ -260,6 +260,7 @@
   color: var(--text-dim); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; white-space: nowrap;
 }
 .snap-toggle { width: 40px; }
+.snap-toggle.lock-env { width: 44px; letter-spacing: 0.04em; }
 .snap-toggle.on { background: var(--select); color: var(--text-on-live); }   /* filled: readable at a glance */
 .snap-block.off .remain-label { color: var(--text-faint); }
 .snap-grid-auto { color: var(--text-dim); }
