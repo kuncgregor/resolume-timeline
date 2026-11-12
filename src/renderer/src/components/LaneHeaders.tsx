@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Track, LayerTrack, GroupTrack, Show, AutomationSubTrack, Keyframe, LaneKind, ClipCue } from '../../../shared/show'
 import type { ResolumeComposition, ResolumeLayer } from '../../../shared/resolume'
 import { formatValue, type ParamInfo } from '../../../shared/paramTree'
+import { laneColor } from '../laneColor'
 import { toFrameKeyframes, sampleLane } from '../../../shared/automation'
 import type { LaneStatusMap } from '../laneStatus'
 import { DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_LANE_H, MIN_AUTO_H } from '../layout'
@@ -288,7 +289,8 @@ export function LaneHeaders({
                     <div key={auto.id}
                       className={`lane-row auto-row ${broken ? 'broken' : ''} ${enabled ? '' : 'disabled'} ${cue ? 'clip-lane' : ''}`}
                       style={{ height: autoH, ...(cue ? { ['--clip-color' as any]: cueColor } : {}) }}>
-                      <div className="lane-stripe auto" style={{ background: broken ? 'var(--danger)' : auto.color ?? 'var(--live-fill)' }} />
+                      <div className="lane-stripe auto" style={{ background: broken ? 'var(--danger)' : laneColor(auto, lt, 'var(--live-fill)') }} />
+                      {cue && <ClipThumb layerId={lt.resolumeLayerId} cue={cue} color={cueColor} height={autoH - 1} />}
                       <div className="lane-body">
                         {isEditingThis ? (
                           <input

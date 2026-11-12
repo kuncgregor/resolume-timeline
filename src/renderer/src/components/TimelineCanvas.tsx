@@ -8,6 +8,7 @@ import type { LaneStatus, LaneStatusMap } from '../laneStatus'
 import { formatValue } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { T, TAG_COLORS } from '../theme'
+import { laneColor } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
 import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
 import { type Tempo, type SnapSettings, musicalSteps, forEachGridLine, frameToBarBeat, formatBarBeat, isBarLine, isBeatLine, isOnStep, snapFrame, rulerSteps, gridSnapOf, snapToGrid } from '../grid'
@@ -534,7 +535,7 @@ export function TimelineCanvas({
       const ovr = overrides[auto.id]
       const overridden = typeof ovr === 'number' && Number.isFinite(ovr)
       const faded = broken || disabled || overridden
-      const laneC = auto.color ?? T.text
+      const laneC = laneColor(auto, tracks[trackIdx] as LayerTrack, T.text)
       const lineC = faded ? T.textFaint : laneC
       const kfC = broken ? T.textFaint : laneC
       const toY = kfToY(lane)

@@ -3,6 +3,7 @@ import type { LayerTrack, GroupTrack, ClipCue, AutomationSubTrack } from '../../
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { KIND_GLYPH } from './ParamPicker'
+import { trackTag, shade } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
 
 const api = (window as any).timeline
@@ -152,7 +153,7 @@ export function BottomPanel({
         </div>
         <div className="bp-body">
           <ParamList
-            scope="layer"
+            scope="layer" tag={trackTag(group)}
             params={groupParams}
             live={groupLive}
             loading={false}
@@ -308,7 +309,7 @@ export function BottomPanel({
         {(tab === 'layer' || tab === 'clip') && (
           <ParamList
             key={tab}
-            scope={tab}
+            scope={tab} tag={tab === 'clip' ? cue?.resolumeColor : trackTag(track)}
             params={tab === 'layer' ? layerParams : clipParams}
             live={live}
             loading={loadingParams}
@@ -327,8 +328,10 @@ export function BottomPanel({
 
 type Real = number | string | boolean
 
-function ParamList({ scope, params, live, loading, lanes, frame, fps, readOnly, onToggleKey, onEdit, onSeek }: {
-  scope: 'layer' | 'clip'; params: ParamInfo[]; live: Record<number, Real>; loading: boolean
+function ParamList({ scope, tag, params, live, loading, lanes, frame, fps, readOnly, onToggleKey, onEdit, onSeek }: {
+  scope: 'layer' | 'clip'
+  tag?: string   // Resolume colour tag of the layer / group / clip: faders take its colour
+  params: ParamInfo[]; live: Record<number, Real>; loading: boolean
   lanes: AutomationSubTrack[]; frame: number; fps: number; readOnly: boolean
   onToggleKey: (p: ParamInfo, real: Real) => void
   onEdit: (p: ParamInfo, real: Real) => void
@@ -352,7 +355,8 @@ function ParamList({ scope, params, live, loading, lanes, frame, fps, readOnly, 
   const release = (p: ParamInfo) => setHeld(prev => { const n = { ...prev }; delete n[p.id]; return n })
 
   return (
-    <div className={`bp-params scope-${scope}`}>
+    <div className={`bp-params scope-${scope}`}
+      style={tag ? { ['--scope' as any]: tag, ['--scope-fill' as any]: shade(tag, 0.75) } : undefined}>
       {[...groups].map(([g, ps]) => {
         const open = !collapsed.has(g)
         return (
