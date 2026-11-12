@@ -321,7 +321,7 @@ function SnapBlock({ snap, hasTempo, grids, autoText, disabled, readOnly, onSetS
 
   const label = (g: SnapGrid) => SNAP_GRID_LABEL[g]
   const toggleTitle = readOnly ? 'Snap to grid (locked in SHOW mode)'
-    : `Snap to grid (N) — hold Alt to place freely. ${snap.on ? 'On' : 'Off'}`
+    : `Snap to grid (N) — hold ⌘ to place freely, Alt to copy. ${snap.on ? 'On' : 'Off'}`
   const gridTitle = readOnly ? 'Snap grid size (locked in SHOW mode)'
     : `Snap grid size${snap.grid === 'auto' ? ` — Auto follows the zoom (now ${autoText})` : ''}${musical ? '' : hasTempo ? '. BARS ruler for bar and beat grids' : '. Set a BPM for bar and beat grids'}`
 

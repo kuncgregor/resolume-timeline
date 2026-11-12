@@ -6,7 +6,7 @@ import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type Showfile
 import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
-import { TimelineCanvas } from './components/TimelineCanvas'
+import { TimelineCanvas, type CueCopy } from './components/TimelineCanvas'
 import { OverviewBar } from './components/OverviewBar'
 import { BottomPanel } from './components/BottomPanel'
 import { ClipBrowser } from './components/ClipBrowser'
@@ -400,7 +400,8 @@ export default function App() {
     // tablet always shows the engine's
     if (!startup || REMOTE || !_restored || (s.savedAt ?? 0) > _restored.savedAt) {
       adoptSession(s, s.rev ?? null)
-      if (startup && !REMOTE) setRestoredAt(s.savedAt ?? null)
+      // Notice only for unsaved work that autosave didn't write
+      if (startup && !REMOTE) setRestoredAt(s.showfile && !s.showfile.autosave && s.showfileDirty ? s.savedAt ?? null : null)
     } else sessionRevRef.current = s.rev ?? null
   }, [adoptSession])
   useEffect(() => {
@@ -862,15 +863,11 @@ export default function App() {
         e.preventDefault()
         toggleSnapRef.current()
       }
-      if ((e.code === 'Delete' || e.code === 'Backspace') && !showModeRef.current) {
-        if (selectedTrackIdx != null && selectedCueIdx != null) {
-          handleDeleteCue(selectedTrackIdx, selectedCueIdx)
-        }
-      }
+      // Delete / Backspace on clips: the timeline canvas deletes its clip selection
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedTrackIdx, selectedCueIdx])
+  }, [])
 
   // ── Transport ──────────────────────────────────────────────────────────────
 
@@ -1275,15 +1272,88 @@ export default function App() {
     })
   }, [setShow])
 
-  const handleDeleteCue = useCallback((trackIdx: number, cueIdx: number) => {
+  // Several clips at once (canvas multi-selection). Lanes bound to a clip move with it; the
+  // old unbound lanes (neither clip- nor layer-bound) move once per layer, as with one clip.
+  const handleMoveCues = useCallback((moves: { trackIdx: number; cueId: string; frame: number }[]) => {
     setShow(prev => {
+      const fr = prev.frameRate
       const tracks = [...prev.tracks]
-      const lt = tracks[trackIdx] as LayerTrack
-      tracks[trackIdx] = { ...lt, clips: lt.clips.filter((_, i) => i !== cueIdx) }
+      for (const ti of new Set(moves.map(m => m.trackIdx))) {
+        const lt = tracks[ti] as LayerTrack
+        if (!lt || lt.type !== 'layer') continue
+        const delta = new Map<string, number>()
+        const clips = lt.clips.map(c => {
+          const m = moves.find(x => x.trackIdx === ti && x.cueId === c.id)
+          if (!m) return c
+          delta.set(c.id, m.frame - smpteToFrames(c.time, fr))
+          return { ...c, time: framesToSmpte(m.frame, fr) }
+        }).sort((a, b) => smpteToFrames(a.time, fr) - smpteToFrames(b.time, fr))
+        const anyDelta = [...delta.values()][0] ?? 0
+        const automations = lt.automations.map(auto => {
+          if (auto.layerBound) return auto
+          const d = auto.clipId ? delta.get(auto.clipId) : anyDelta
+          if (!d) return auto
+          return { ...auto, keyframes: auto.keyframes.map(kf => ({ ...kf, time: framesToSmpte(Math.max(0, smpteToFrames(kf.time, fr) + d), fr) })) }
+        })
+        tracks[ti] = { ...lt, clips, automations }
+      }
       return { ...prev, tracks }
     })
-    setSelection(sel => ({ ...sel, cueId: null }))
   }, [setShow])
+
+  // Copies of clips (Alt-drag, ⌘V, ⌘D) on their own layers, each with copies of the lanes bound
+  // to it (keyframes moved by the same amount). Returns the new cue ids, in order.
+  const handleInsertCues = useCallback((items: CueCopy[]): string[] => {
+    const ids = items.map(() => newId())
+    setShow(prev => {
+      const fr = prev.frameRate
+      const tracks = [...prev.tracks]
+      items.forEach((it, n) => {
+        const ti = tracks.findIndex(t => t.id === it.trackId)
+        const lt = tracks[ti] as LayerTrack
+        if (!lt || lt.type !== 'layer') return
+        const d = it.frame - smpteToFrames(it.cue.time, fr)
+        const cue: ClipCue = { ...it.cue, id: ids[n], time: framesToSmpte(it.frame, fr) }
+        const lanes = it.lanes.map(a => ({
+          ...a, id: `auto-${Date.now()}-${uid++}`, clipId: ids[n],
+          keyframes: a.keyframes.map(kf => ({ ...kf, time: framesToSmpte(Math.max(0, smpteToFrames(kf.time, fr) + d), fr) })),
+        }))
+        tracks[ti] = {
+          ...lt,
+          clips: [...lt.clips, cue].sort((a, b) => smpteToFrames(a.time, fr) - smpteToFrames(b.time, fr)),
+          automations: [...lt.automations, ...lanes],
+        }
+      })
+      return { ...prev, tracks }
+    })
+    // The inspector shows the first copy (the copies are the new selection)
+    if (items.length) setSelection({ trackId: items[0].trackId, cueId: ids[0] })
+    return ids
+  }, [setShow])
+
+  // Deleting a clip deletes the lanes bound to it (they can't play without it)
+  const handleDeleteCues = useCallback((cueIds: string[]) => {
+    const gone = new Set(cueIds)
+    setShow(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.type !== 'layer') return t
+        const lt = t as LayerTrack
+        if (!lt.clips.some(c => gone.has(c.id))) return t
+        return {
+          ...lt,
+          clips: lt.clips.filter(c => !gone.has(c.id)),
+          automations: lt.automations.filter(a => !(a.clipId && gone.has(a.clipId) && !a.layerBound)),
+        }
+      }),
+    }))
+    setSelection(sel => (sel.cueId && gone.has(sel.cueId) ? { ...sel, cueId: null } : sel))
+  }, [setShow])
+
+  const handleDeleteCue = useCallback((trackIdx: number, cueIdx: number) => {
+    const id = (showRef.current.tracks[trackIdx] as LayerTrack | undefined)?.clips?.[cueIdx]?.id
+    if (id) handleDeleteCues([id])
+  }, [handleDeleteCues])
 
   const updateAutomation = useCallback((trackIdx: number, autoIdx: number, updates: Partial<AutomationSubTrack>) => {
     setShow(prev => {
@@ -1928,6 +1998,7 @@ export default function App() {
               onZoom={f => setPxPerFrame(p => Math.max(PPF_MIN, Math.min(PPF_MAX, p * f)))}
               onSelectCue={selectCue}
               onDropClip={handleDropClip} onUpdateCue={handleUpdateCue}
+              onMoveCues={handleMoveCues} onInsertCues={handleInsertCues} onDeleteCues={handleDeleteCues}
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}

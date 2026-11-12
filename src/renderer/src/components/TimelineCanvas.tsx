@@ -120,6 +120,17 @@ function pastedIndices(kfs: Keyframe[], frames: number[], fps: number): number[]
   return all.flatMap((e, i) => (e.j >= 0 ? [i] : []))
 }
 
+/** Copied keyframe values for a lane of another kind: range ↔ choice ↔ on/off by the same
+ *  0..1 position (a choice lane takes the option at that position). */
+function convertItems(items: KeyframePasteItem[], from: LaneKind, to: LaneKind, opts: string[]): KeyframePasteItem[] {
+  if (from === to && to !== 'choice') return items
+  return items.map(i => {
+    const value = snapValue(to, i.value, opts.length)
+    const option = to === 'choice' ? (from === 'choice' && i.option && opts.includes(i.option) ? i.option : optionAt(value, opts)) : undefined
+    return { offsetFrames: i.offsetFrames, value, ease: to === 'range' ? i.ease : 'hold', ...(option !== undefined ? { option } : {}) }
+  })
+}
+
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 // One entry per automation index (indices stay aligned with track.automations); a hidden
@@ -294,7 +305,8 @@ interface KfDrag {
   accX: number; accY: number           // movement in px, already scaled by fine mode
   axis: 'x' | 'y' | null; moved: boolean
   click: 'remove' | 'collapse' | null  // what a click without movement does to the selection
-  altDelete: boolean                   // Alt-click (no movement) deletes; Alt+drag = free drag
+  altDelete: boolean                   // Alt-click (no movement) deletes
+  copy: boolean                        // Alt held while dragging: drop copies, the originals stay
   snapTargets: number[]; snapF: number | null
 }
 interface Marquee {
@@ -304,6 +316,11 @@ interface Marquee {
 interface KfClipboard { lanes: { laneId: string; kind: LaneKind; items: KeyframePasteItem[] }[] }
 // Module level: survives the canvas remounting on view switches
 let kfClipboard: KfClipboard | null = null
+/** A clip copied (⌘C, ⌘D, Alt-drag) with the automation lanes that move with it. */
+export interface CueCopy { trackId: string; cue: ClipCue; lanes: AutomationSubTrack[]; frame: number }
+let clipClipboard: CueCopy[] | null = null
+// ⌘V pastes what was copied last: keyframes or clips
+let lastCopied: 'keys' | 'clips' | null = null
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -314,7 +331,7 @@ interface Props {
   tempo: Tempo | null                 // musical grid (null = no BPM)
   onSetDownbeat: (frame: number) => void   // ruler right-click: where bar 1 beat 1 is
   rulerMode: 'timecode' | 'bars'      // in effect; 'bars' only with a tempo
-  snap: SnapSettings                  // snap to grid in effect (Alt during a drag = free)
+  snap: SnapSettings                  // snap to grid in effect (⌘ during a drag = free; Alt = copy)
   frame: number
   pxPerFrame: number
   scrollFrame: number
@@ -337,6 +354,11 @@ interface Props {
   onSelectCue: (trackIdx: number, cueIdx: number) => void
   onDropClip: (trackIdx: number, frame: number, data: DragClipData) => void
   onUpdateCue: (trackIdx: number, cueIdx: number, updates: Partial<ClipCue>) => void
+  // Several clips at once (multi-selection): move to new start frames, insert copies (returns
+  // the new cue ids, in order), delete with the lanes bound to them
+  onMoveCues: (moves: { trackIdx: number; cueId: string; frame: number }[]) => void
+  onInsertCues: (items: CueCopy[]) => string[]
+  onDeleteCues: (cueIds: string[]) => void
   // option: choice lanes, the option name of the snapped value
   onAddKeyframe: (trackIdx: number, autoIdx: number, frame: number, value: number, option?: string) => void
   // updates may carry time, value, ease (Curve) and option (choice lanes)
@@ -366,7 +388,7 @@ export function TimelineCanvas({
   tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
-  onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
+  onDropClip, onUpdateCue, onMoveCues, onInsertCues, onDeleteCues, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
   onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, onSetDownbeat,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
@@ -401,6 +423,33 @@ export function TimelineCanvas({
   // Last clicked automation lane (by id): paste target for a single-lane clipboard
   const focusLaneRef = useRef<string | null>(null)
 
+  // Clip multi-selection (cue ids). The App's selected cue (inspector) is one of them.
+  const [clipSel, setClipSel] = useState<string[]>([])
+  const clipSelRef = useRef(clipSel)
+  const updateClipSel = (next: string[]) => { clipSelRef.current = next; setClipSel(next) }
+  const primaryCueId = selectedTrackIdx != null && selectedCueIdx != null
+    ? (tracksProp[selectedTrackIdx] as LayerTrack | undefined)?.clips?.[selectedCueIdx]?.id ?? null : null
+  useEffect(() => {
+    if (primaryCueId && !clipSelRef.current.includes(primaryCueId)) updateClipSel([primaryCueId])
+  }, [primaryCueId])
+  /** Where a cue is now (indices change when clips are re-sorted). */
+  const cueById = (id: string): { trackIdx: number; cueIdx: number; lt: LayerTrack; cue: ClipCue } | null => {
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const lt = tracks[ti] as LayerTrack
+      if (lt.type !== 'layer') continue
+      const ci = lt.clips.findIndex(c => c.id === id)
+      if (ci >= 0) return { trackIdx: ti, cueIdx: ci, lt, cue: lt.clips[ci] }
+    }
+    return null
+  }
+  /** Copies of clips with the lanes that move with them (bound to the cue). */
+  const snapshotCues = (ids: string[]): CueCopy[] => ids.flatMap(id => {
+    const at = cueById(id)
+    if (!at) return []
+    const lanes = at.lt.automations.filter(a => a.clipId === id && !a.layerBound)
+    return [{ trackId: at.lt.id, cue: at.cue, lanes, frame: smpteToFrames(at.cue.time, fps) }]
+  })
+
   const autoH = (id: string) => autoLaneHeights[id] ?? DEFAULT_AUTO_H
   const clipH = (id: string) => layerRowHeights[id] ?? DEFAULT_LANE_H
   const canEdit = (ti: number) => !readOnly && !(tracks[ti] as LayerTrack | undefined)?.locked
@@ -415,21 +464,29 @@ export function TimelineCanvas({
   // Drag state refs
   const isDraggingPlayhead = useRef(false)
   // anchorMouseFrame: fractional frame under the cursor at mousedown (cursor-to-start offset)
-  const moveClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; moved: boolean; anchorMouseFrame: number; anchorCueFrame: number } | null>(null)
+  // group: every selected clip moves with the one dragged; collapse: a click without movement
+  // on a clip of a multi-selection selects just that clip
+  const moveClipRef = useRef<{
+    trackIdx: number; cueIdx: number; startX: number; moved: boolean; anchorMouseFrame: number; anchorCueFrame: number
+    group: { trackIdx: number; cueIdx: number; f0: number }[]; collapse: string | null
+  } | null>(null)
   const resizeClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; moved: boolean; startF: number; startDurF: number } | null>(null)
   // Snap guide of a clip move / resize / clip-browser drop (keyframe drags keep theirs in KfDrag)
   const snapGuideRef = useRef<number | null>(null)
   const kfDragRef = useRef<KfDrag | null>(null)
   const marqueeRef = useRef<Marquee | null>(null)
   const autoResizeRef = useRef<{ autoId: string; startY: number; startH: number } | null>(null)
-  const ghostClipRef = useRef<{ trackIdx: number; cueIdx: number; frame: number } | null>(null)
+  // Clips being dragged at their new start; copy: Alt held, the originals stay where they are
+  const ghostClipRef = useRef<{ copy: boolean; items: { trackIdx: number; cueIdx: number; frame: number }[] } | null>(null)
+  // Marquee over clip rows: selects every clip it touches (base: selection it adds to, Shift)
+  const clipMarqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number; base: string[] } | null>(null)
   const ghostDurRef = useRef<{ trackIdx: number; cueIdx: number; durF: number } | null>(null)
 
   const frameToX = (f: number) => (f - scrollFrame) * pxPerFrame
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
 
   /** Where a dragged clip edge / dropped clip / new key lands. Snap on: the nearest grid line, or a
-   *  marker / the playhead within SNAP_PX when that is nearer. Snap off or free (Alt): the whole
+   *  marker / the playhead within SNAP_PX when that is nearer. Snap off or free (⌘): the whole
    *  frame under the cursor, no snapping. guide = the frame to draw the snap line at. */
   const snapDrag = (rawF: number, free: boolean): { f: number; guide: number | null } => {
     if (free || !gridSnap) return { f: Math.max(0, Math.round(rawF)), guide: null }
@@ -481,7 +538,8 @@ export function TimelineCanvas({
     const tips: { text: string; x: number; y: number }[] = []
     const kd = kfDragRef.current
     const dragMap = new Map<string, DragItem>()
-    if (kd?.moved) kd.items.forEach(i => dragMap.set(`${laneKey(i)}:${i.kfIdx}`, i))
+    // A copy-drag leaves the originals in place: the copies are drawn as ghosts
+    if (kd?.moved && !kd.copy) kd.items.forEach(i => dragMap.set(`${laneKey(i)}:${i.kfIdx}`, i))
     const pxToFrame = (px: number) => px / pxPerFrame + scrollFrame
 
     // Clip automation: the lane's cue spans as boxes in the cue colour, the rest dimmed
@@ -668,6 +726,17 @@ export function TimelineCanvas({
           tips.push({ text: `${paramName}: ${formatValue(kind, k.v, range, k.kf.option, range.suffix)} · ${k.kf.time}`, x: k.x, y: k.y })
       })
 
+      // Alt-drag: the copies at their drop position
+      if (kd?.moved && kd.copy) kd.items.forEach(i => {
+        if (i.trackIdx !== trackIdx || i.autoIdx !== ai) return
+        const src = auto.keyframes[i.kfIdx]
+        const gx = frameToX(i.f), gy = toY(i.v)
+        kfGlyph(ctx, kind === 'range' && src ? curveOf(src.ease) : 'hold', gx, gy, KF_R + 1)
+        ctx.fillStyle = rgba(T.select, 0.55); ctx.fill()
+        ctx.strokeStyle = T.select; ctx.lineWidth = 1; ctx.stroke()
+        if (i === kd.primary) tips.push({ text: `+ copy  ${formatValue(kind, i.v, range, undefined, range.suffix)} · ${framesToSmpte(i.f, fps)}${kd.items.length > 1 ? `  (${kd.items.length})` : ''}`, x: gx, y: gy })
+      })
+
       // Value at the playhead
       const cur = sampleLane(fks, frame, kind)?.value
       const lx = frameToX(frame)
@@ -808,19 +877,21 @@ export function TimelineCanvas({
       const by = y + CLIP_PAD, bh = curClipH - 1 - CLIP_PAD * 2
       const titleH = Math.min(CLIP_TITLE_H, bh)
 
-      const ghostMove = ghostClipRef.current?.trackIdx === trackIdx ? ghostClipRef.current : null
+      const gc = ghostClipRef.current
+      const ghostMove = gc && !gc.copy
+        ? new Map(gc.items.filter(g => g.trackIdx === trackIdx).map(g => [g.cueIdx, g.frame])) : null
       const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
       const spans = clipSpans(lt, fps, ghostMove, ghostDur)
       const cutOutlines: { x: number; w: number }[] = []
 
       lt.clips.forEach((clip, cueIdx) => {
-        const isGhost = ghostMove?.cueIdx === cueIdx
+        const isGhost = !!ghostMove?.has(cueIdx)
         const { sf, durF, shownF } = spans[cueIdx]
         const x = Math.round(frameToX(sf))
         const blockW = Math.round(spanWidth(shownF, pxPerFrame))
         const fullW = Math.round(spanWidth(durF, pxPerFrame))
         if (x + blockW < -4 || x > W + 4) return
-        const isSel = trackIdx === selectedTrackIdx && cueIdx === selectedCueIdx
+        const isSel = clipSel.includes(clip.id)
         const isLive = !muted && !isGhost && shownF > 0 && frame >= sf && frame < sf + shownF
         const isCut = shownF < durF
         const color = clip.color ?? clip.resolumeColor ?? trackColor
@@ -920,6 +991,21 @@ export function TimelineCanvas({
         ctx.globalAlpha = 1
       })
 
+      // Alt-drag: the copies at their drop position, the originals stay
+      if (gc?.copy) gc.items.forEach(g => {
+        if (g.trackIdx !== trackIdx || !lt.clips[g.cueIdx]) return
+        const c = lt.clips[g.cueIdx]
+        const gx = Math.round(frameToX(g.frame)), gw = Math.round(spanWidth(smpteToFrames(c.duration, fps), pxPerFrame))
+        ctx.fillStyle = rgba(capLum(c.color ?? c.resolumeColor ?? trackColor, 0.18), 0.6)
+        ctx.fillRect(gx, by, gw, bh)
+        ctx.strokeStyle = T.select; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
+        ctx.strokeRect(gx + 0.5, by + 0.5, gw - 1, bh - 1); ctx.setLineDash([])
+        if (gw > 14) {
+          ctx.fillStyle = T.select; ctx.font = `bold 12px ${T.fontCond}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+          ctx.fillText('+', gx + 4, by + titleH / 2 + 0.5)
+        }
+      })
+
       // Full length of a selected clip that the next clip cuts off, drawn over the other clips
       cutOutlines.forEach(o => {
         ctx.strokeStyle = rgba(T.select, 0.7); ctx.lineWidth = 1; ctx.setLineDash([4, 3])
@@ -959,6 +1045,17 @@ export function TimelineCanvas({
       }
     }
 
+    const cm = clipMarqueeRef.current
+    if (cm) {
+      const x0 = Math.min(cm.x0, cm.x1), x1 = Math.max(cm.x0, cm.x1)
+      const y0 = Math.max(TRACKS_TOP, Math.min(cm.y0, cm.y1)), y1 = Math.max(cm.y0, cm.y1)
+      if (x1 - x0 >= 1 && y1 - y0 >= 1) {
+        ctx.fillStyle = rgba(T.select, 0.08); ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
+        ctx.strokeStyle = T.select; ctx.lineWidth = 1
+        ctx.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0) - 1, Math.round(y1 - y0) - 1)
+      }
+    }
+
     // Tooltips / drag labels over every lane
     tips.forEach(t => drawTip(ctx, t.text, t.x, t.y, W, TRACKS_TOP))
 
@@ -971,7 +1068,7 @@ export function TimelineCanvas({
       ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bars, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf])
+  }, [tracks, markers, fps, bars, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf, clipSel])
 
   // ── Resize / DPR ───────────────────────────────────────────────────────────
 
@@ -1109,8 +1206,9 @@ export function TimelineCanvas({
         primary, items, lane: layout[kfHit.trackIdx].autoLanes[kfHit.autoIdx],
         startX: x, startY: y, lastX: x, lastY: y, accX: 0, accY: 0, axis: null, moved: false,
         click: e.shiftKey ? (already ? 'remove' : null) : (already && cur.length > 1 ? 'collapse' : null),
-        altDelete: e.altKey, snapTargets, snapF: null,
+        altDelete: e.altKey, copy: false, snapTargets, snapF: null,
       }
+      updateClipSel([])
       return
     }
 
@@ -1127,21 +1225,42 @@ export function TimelineCanvas({
     if (kfHit) return
 
     const clipHit = hitTestClip(x, y)
-    if (clipHit) {
-      onSelectCue(clipHit.trackIdx, clipHit.cueIdx)
-      if (!canEdit(clipHit.trackIdx)) return
+    if (!clipHit) {
+      // Empty clip row: marquee over clips (Shift / ⌘ add to the selection)
+      const add = e.shiftKey || e.metaKey || e.ctrlKey
+      if (!add) updateClipSel([])
+      if (!readOnly && getTrackAtY(layout, y) != null)
+        clipMarqueeRef.current = { x0: x, y0: y, x1: x, y1: y, base: add ? clipSelRef.current : [] }
+      return
+    }
+    {
       const lt = tracks[clipHit.trackIdx] as LayerTrack
       const clip = lt.clips[clipHit.cueIdx]
+      // Shift / ⌘ click adds or removes a clip; a plain click on a selected clip keeps the
+      // selection, so the drag moves all of it
+      const toggle = e.shiftKey || e.metaKey || e.ctrlKey
+      const cur = clipSelRef.current
+      const next = toggle ? (cur.includes(clip.id) ? cur.filter(id => id !== clip.id) : [...cur, clip.id])
+        : cur.includes(clip.id) ? cur : [clip.id]
+      if (next !== cur) updateClipSel(next)
+      if (!next.includes(clip.id)) return
+      onSelectCue(clipHit.trackIdx, clipHit.cueIdx)
+      if (!canEdit(clipHit.trackIdx)) return
       if (clipHit.isResize) {
         resizeClipRef.current = {
           trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, startX: x, moved: false,
           startF: smpteToFrames(clip.time, fps), startDurF: smpteToFrames(clip.duration, fps),
         }
       } else {
+        const group = next.flatMap(id => {
+          const at = cueById(id)
+          return at && canEdit(at.trackIdx) ? [{ trackIdx: at.trackIdx, cueIdx: at.cueIdx, f0: smpteToFrames(at.cue.time, fps) }] : []
+        })
         moveClipRef.current = {
           trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, startX: x, moved: false,
           anchorMouseFrame: x / pxPerFrame + scrollFrame,
           anchorCueFrame: smpteToFrames(clip.time, fps),
+          group, collapse: !toggle && next.length > 1 ? clip.id : null,
         }
       }
     }
@@ -1168,6 +1287,7 @@ export function TimelineCanvas({
       if (!kd.moved && Math.abs(x - kd.startX) < 3 && Math.abs(y - kd.startY) < 3) return
       kd.moved = true
       const fine = e.metaKey || e.ctrlKey
+      kd.copy = e.altKey
       // Accumulated per event, so toggling fine mode mid-drag does not jump
       const k = fine ? FINE : 1
       kd.accX += (x - kd.lastX) * k; kd.accY += (y - kd.lastY) * k
@@ -1179,11 +1299,11 @@ export function TimelineCanvas({
 
       // Time: whole frames. Snap on: the dragged key goes to the nearest grid line, or to a nearby
       // target (marker, clip edge, other key, playhead) when that is nearer. Snap off: nearby targets
-      // only. Fine (Cmd/Ctrl) and Alt drag freely.
+      // only. Fine (Cmd/Ctrl) drags freely; Alt copies.
       const rawF = p.f0 + (lock === 'y' ? 0 : kd.accX / pxPerFrame)
       let tf = Math.round(rawF)
       let snapF: number | null = null
-      if (!fine && !e.altKey && lock !== 'y') {
+      if (!fine && lock !== 'y') {
         const cands = [...kd.snapTargets, Math.round(frameRef.current)]
         let best = SNAP_PX / pxPerFrame
         if (gridSnap) {
@@ -1211,7 +1331,7 @@ export function TimelineCanvas({
         i.v = !i.valued ? i.v0 : i.kind === 'range' ? clamp01(i.v0 + dv) : snapValue(i.kind, i.v0 + dvRaw, i.opts.length)
       })
       draw()
-      setCursor('crosshair')
+      setCursor(kd.copy ? 'copy' : 'crosshair')
       return
     }
 
@@ -1240,13 +1360,38 @@ export function TimelineCanvas({
       const mc = moveClipRef.current
       if (!mc.moved && Math.abs(x - mc.startX) < DRAG_START_PX) return
       mc.moved = true
-      // The clip start keeps its offset to the cursor; the start is what snaps
+      // The clip start keeps its offset to the cursor; the start is what snaps (⌘ = free).
+      // Every selected clip moves by the same amount; none goes before 0.
       const rawStart = mc.anchorCueFrame + (x / pxPerFrame + scrollFrame - mc.anchorMouseFrame)
-      const { f, guide } = snapDrag(rawStart, e.altKey)
-      snapGuideRef.current = guide
-      ghostClipRef.current = { trackIdx: mc.trackIdx, cueIdx: mc.cueIdx, frame: f }
+      const { f, guide } = snapDrag(rawStart, e.metaKey || e.ctrlKey)
+      const df = Math.max(-Math.min(...mc.group.map(g => g.f0)), f - mc.anchorCueFrame)
+      snapGuideRef.current = guide != null && mc.anchorCueFrame + df === guide ? guide : null
+      ghostClipRef.current = { copy: e.altKey, items: mc.group.map(g => ({ trackIdx: g.trackIdx, cueIdx: g.cueIdx, frame: g.f0 + df })) }
       draw()
-      setCursor('grabbing')
+      setCursor(e.altKey ? 'copy' : 'grabbing')
+      return
+    }
+
+    if (clipMarqueeRef.current) {
+      const m = clipMarqueeRef.current
+      m.x1 = x; m.y1 = y
+      const xa = Math.min(m.x0, x), xb = Math.max(m.x0, x), ya = Math.min(m.y0, y), yb = Math.max(m.y0, y)
+      const layout = getLayout()
+      const inside: string[] = []
+      tracks.forEach((t, ti) => {
+        if (t.type !== 'layer' || layout[ti]?.hidden) return
+        const lt = t as LayerTrack
+        const top = layout[ti].y + CLIP_PAD, bottom = layout[ti].y + clipH(lt.id) - 1 - CLIP_PAD
+        if (bottom < ya || top > yb) return
+        clipSpans(lt, fps, null, null).forEach((sp, ci) => {
+          const cx = frameToX(sp.sf), cw = Math.max(4, spanWidth(sp.shownF, pxPerFrame))
+          if (cx <= xb && cx + cw >= xa) inside.push(lt.clips[ci].id)
+        })
+      })
+      const next = [...m.base, ...inside.filter(id => !m.base.includes(id))]
+      if (next.length !== clipSelRef.current.length || next.some((id, i) => id !== clipSelRef.current[i])) updateClipSel(next)
+      draw()
+      setCursor('crosshair')
       return
     }
 
@@ -1255,7 +1400,7 @@ export function TimelineCanvas({
       if (!rs.moved && Math.abs(x - rs.startX) < DRAG_START_PX) return
       rs.moved = true
       // The right edge (clip end) is what snaps; never shorter than one frame
-      const { f, guide } = snapDrag(rs.startF + rs.startDurF + (x - rs.startX) / pxPerFrame, e.altKey)
+      const { f, guide } = snapDrag(rs.startF + rs.startDurF + (x - rs.startX) / pxPerFrame, e.metaKey || e.ctrlKey)
       const newDur = Math.max(1, f - rs.startF)
       snapGuideRef.current = guide != null && rs.startF + newDur === guide ? guide : null
       ghostDurRef.current = { trackIdx: rs.trackIdx, cueIdx: rs.cueIdx, durF: newDur }
@@ -1291,6 +1436,29 @@ export function TimelineCanvas({
     if (kfDragRef.current) {
       const kd = kfDragRef.current
       kfDragRef.current = null
+      if (kd.moved && kd.copy) {
+        // Alt-drag: copies at the drop position (per lane, keeping their spacing)
+        const byLane = new Map<string, DragItem[]>()
+        kd.items.forEach(i => { const k = laneKey(i); byLane.set(k, [...(byLane.get(k) ?? []), i]) })
+        const next: KfHit[] = []
+        byLane.forEach(items => {
+          const { trackIdx, autoIdx } = items[0]
+          const auto = autoAt(trackIdx, autoIdx)
+          if (!auto) return
+          const base = Math.min(...items.map(i => i.f))
+          const paste = items.map(i => {
+            const src = auto.keyframes[i.kfIdx]
+            const value = parseFloat((i.valued ? i.v : i.v0).toFixed(i.kind === 'range' ? 4 : 6))
+            const option = i.kind === 'choice' && i.opts.length ? optionAt(value, i.opts) : src?.option
+            return { offsetFrames: i.f - base, value, ease: src?.ease ?? 'linear', ...(option !== undefined ? { option } : {}) }
+          })
+          onPasteKeyframes(trackIdx, autoIdx, base, paste)
+          pastedIndices(auto.keyframes, paste.map(p => base + p.offsetFrames), fps)
+            .forEach(kfIdx => next.push({ trackIdx, autoIdx, kfIdx }))
+        })
+        updateSel(next)
+        draw()
+      } else {
       const ups: KeyframeUpdate[] = []
       if (kd.moved) kd.items.forEach(i => {
         if (!autoAt(i.trackIdx, i.autoIdx)?.keyframes[i.kfIdx]) return
@@ -1307,8 +1475,7 @@ export function TimelineCanvas({
         // The App re-sorts the lanes by time: keep the moved keys selected
         updateSel(selAfterUpdates(selRef.current, ups, tracks, fps))
       } else if (!kd.moved && kd.altDelete) {
-        // Alt-click deletes only when the key didn't move: holding Alt to place freely
-        // (snap off for that drag) must never delete
+        // Alt-click deletes only when the key didn't move (Alt + drag copies)
         onDeleteKeyframe(kd.primary.trackIdx, kd.primary.autoIdx, kd.primary.kfIdx)
         updateSel(selAfterDelete(selRef.current, [kd.primary]))
       } else {
@@ -1316,14 +1483,26 @@ export function TimelineCanvas({
         else if (!kd.moved && kd.click === 'collapse') updateSel([kfRef(kd.primary)])
         draw()
       }
+      }
     }
     if (marqueeRef.current) { marqueeRef.current = null; draw() }
 
-    const mc = moveClipRef.current, rs = resizeClipRef.current
-    if (mc && ghostClipRef.current && ghostClipRef.current.frame !== mc.anchorCueFrame) {
-      onUpdateCue(mc.trackIdx, mc.cueIdx, {
-        time: framesToSmpte(ghostClipRef.current.frame, fps),
-      })
+    if (clipMarqueeRef.current) { clipMarqueeRef.current = null; draw() }
+
+    const mc = moveClipRef.current, rs = resizeClipRef.current, gc = ghostClipRef.current
+    if (mc && gc && mc.moved) {
+      const at = (g: { trackIdx: number; cueIdx: number }) => (tracks[g.trackIdx] as LayerTrack).clips[g.cueIdx]
+      if (gc.copy) {
+        // Alt-drag: copies (with their lanes) at the drop position, which become the selection
+        const copies = snapshotCues(gc.items.map(g => at(g)?.id).filter(Boolean) as string[])
+          .map((c, i) => ({ ...c, frame: gc.items[i].frame }))
+        const ids = onInsertCues(copies)
+        if (ids.length) updateClipSel(ids)
+      } else if (gc.items.some((g, i) => g.frame !== mc.group[i].f0)) {
+        onMoveCues(gc.items.map(g => ({ trackIdx: g.trackIdx, cueId: at(g).id, frame: g.frame })))
+      }
+    } else if (mc && !mc.moved && mc.collapse) {
+      updateClipSel([mc.collapse])
     }
     if (rs && ghostDurRef.current && ghostDurRef.current.durF !== rs.startDurF) {
       onUpdateCue(rs.trackIdx, rs.cueIdx, {
@@ -1338,14 +1517,14 @@ export function TimelineCanvas({
     snapGuideRef.current = null
     if (hadGhost) draw()
     if (canvasRef.current) canvasRef.current.style.cursor = 'default'
-  }, [onUpdateCue, onUpdateKeyframes, fps, tracks, draw])
+  }, [onUpdateCue, onMoveCues, onInsertCues, onPasteKeyframes, onUpdateKeyframes, fps, tracks, draw])
 
   // While a drag is active, follow the mouse on the window so leaving the canvas
   // neither drops nor freezes the drag.
   const dragHandlersRef = useRef({ move: handleMouseMove, up: handleMouseUp })
   dragHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
   const isDragging = () => !!(isDraggingPlayhead.current || autoResizeRef.current ||
-    kfDragRef.current || marqueeRef.current || moveClipRef.current || resizeClipRef.current)
+    kfDragRef.current || marqueeRef.current || clipMarqueeRef.current || moveClipRef.current || resizeClipRef.current)
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     handleMouseDown(e)
@@ -1372,8 +1551,8 @@ export function TimelineCanvas({
     const kind = laneKind(auto)
     const opts = laneRange(auto, laneStatus[auto.id]).options ?? []
     const raw = kfFromY(info.lane, y)
-    // Time snaps to the grid (Alt = exactly under the cursor)
-    const at = snapDrag(x / pxPerFrame + scrollFrame, e.altKey).f
+    // Time snaps to the grid (⌘ = exactly under the cursor)
+    const at = snapDrag(x / pxPerFrame + scrollFrame, e.metaKey || e.ctrlKey).f
     if (kind === 'range') {
       onAddKeyframe(info.trackIdx, info.autoIdx, at, parseFloat(raw.toFixed(3)))
     } else {
@@ -1442,17 +1621,67 @@ export function TimelineCanvas({
       l.items.push({ offsetFrames: f - f0, value: kf.value, ease: kf.ease, ...(kf.option !== undefined ? { option: kf.option } : {}) })
     }
     kfClipboard = { lanes }
+    lastCopied = 'keys'
+    return true
+  }
+
+  // ── Clips: copy / paste / duplicate / delete / select all ──
+  const copyClips = (): boolean => {
+    const copies = snapshotCues(clipSelRef.current)
+    if (!copies.length) return false
+    clipClipboard = copies
+    lastCopied = 'clips'
+    return true
+  }
+  /** Copies placed so the earliest starts at `at` (each on its own layer). */
+  const insertCopies = (copies: CueCopy[], at: number) => {
+    const f0 = Math.min(...copies.map(c => c.frame))
+    const ok = copies.filter(c => { const ti = tracks.findIndex(t => t.id === c.trackId); return ti >= 0 && canEdit(ti) })
+    if (!ok.length) return false
+    const ids = onInsertCues(ok.map(c => ({ ...c, frame: Math.max(0, at + c.frame - f0) })))
+    if (ids.length) updateClipSel(ids)
+    return true
+  }
+  const pasteClips = (): boolean => !!clipClipboard?.length && !readOnly
+    && insertCopies(clipClipboard, Math.max(0, Math.round(frameRef.current)))
+  // ⌘D: copies right after the selection (as in Ableton Live)
+  const duplicateClips = (): boolean => {
+    const copies = snapshotCues(clipSelRef.current)
+    if (!copies.length || readOnly) return false
+    const end = Math.max(...copies.map(c => c.frame + Math.max(1, smpteToFrames(c.cue.duration, fps))))
+    return insertCopies(copies, end)
+  }
+  const deleteClips = (): boolean => {
+    const ids = clipSelRef.current.filter(id => { const at = cueById(id); return at && canEdit(at.trackIdx) })
+    if (!ids.length) return false
+    onDeleteCues(ids)
+    updateClipSel([])
+    return true
+  }
+  // ⌘A: every key of the lane last clicked, else every clip
+  const selectAll = (): boolean => {
+    const focus = focusLaneRef.current ? findLane(tracks, focusLaneRef.current) : null
+    if (focus && focus.auto.visible !== false && (tracks[focus.trackIdx] as LayerTrack).expanded) {
+      updateSel(focus.auto.keyframes.map((_, kfIdx) => ({ trackIdx: focus.trackIdx, autoIdx: focus.autoIdx, kfIdx })))
+      updateClipSel([])
+      return true
+    }
+    const ids = tracks.flatMap((t, ti) => t.type === 'layer' && canEdit(ti) ? (t as LayerTrack).clips.map(c => c.id) : [])
+    if (!ids.length) return false
+    updateSel([]); updateClipSel(ids)
     return true
   }
 
   const pasteClipboard = (): boolean => {
+    if (lastCopied === 'clips') return pasteClips()
     const cb = kfClipboard
     if (!cb || readOnly) return false
     const at = Math.max(0, Math.round(frameRef.current))
     const focus = focusLaneRef.current ? findLane(tracks, focusLaneRef.current) : null
-    // A single-lane clipboard goes to the focused lane when it is of the same kind
-    const targets = cb.lanes.length === 1 && focus && laneKind(focus.auto) === cb.lanes[0].kind
-      ? [{ ...focus, items: cb.lanes[0].items }]
+    // A single-lane clipboard goes to the lane last clicked, whatever parameter it drives:
+    // the curve is the same shape there (values converted to that lane's kind)
+    const targets = cb.lanes.length === 1 && focus
+      ? [{ ...focus, items: convertItems(cb.lanes[0].items, cb.lanes[0].kind, laneKind(focus.auto), laneRange(focus.auto, laneStatus[focus.auto.id]).options ?? []) }]
       : cb.lanes.flatMap(l => { const t = findLane(tracks, l.laneId); return t ? [{ ...t, items: l.items }] : [] })
     const ok = targets.filter(t => t.auto.visible !== false && canEditLane(t.trackIdx, t.autoIdx))
     if (!ok.length) return false
@@ -1467,8 +1696,8 @@ export function TimelineCanvas({
     return true
   }
 
-  const keyStateRef = useRef({ liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes })
-  keyStateRef.current = { liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes }
+  const keyStateRef = useRef({ liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes, copyClips, duplicateClips, deleteClips, selectAll })
+  keyStateRef.current = { liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes, copyClips, duplicateClips, deleteClips, selectAll }
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
@@ -1478,10 +1707,18 @@ export function TimelineCanvas({
       const mod = e.metaKey || e.ctrlKey
       const swallow = () => { e.preventDefault(); e.stopPropagation() }
 
-      if (mod && !e.altKey && e.code === 'KeyC') { if (s.copySelection()) swallow(); return }
+      if (mod && !e.altKey && e.code === 'KeyC') { if (s.copySelection() || s.copyClips()) swallow(); return }
       if (mod && !e.altKey && e.code === 'KeyV') { if (s.pasteClipboard()) swallow(); return }
+      if (mod && !e.altKey && e.code === 'KeyD') { swallow(); s.duplicateClips(); return }
+      if (mod && !e.altKey && e.code === 'KeyA') { if (s.selectAll()) swallow(); return }
 
-      if (!selRef.current.length) return
+      if (!selRef.current.length) {
+        // Clips: Delete removes every selected clip, Escape drops the selection
+        if (!clipSelRef.current.length) return
+        if (e.key === 'Escape') { updateClipSel([]); return }
+        if (e.key === 'Delete' || e.key === 'Backspace') { swallow(); s.deleteClips() }
+        return
+      }
       if (e.key === 'Escape') { swallow(); updateSel([]); setContextMenu(null); return }
 
       const items = s.liveSel()
@@ -1516,8 +1753,8 @@ export function TimelineCanvas({
 
   const dropTrackAt = (e: React.DragEvent) => getTrackAtY(getLayout(), localXY(e).y)
 
-  // Drop position: the clip starts at the cursor, snapped like a clip move (Alt = free)
-  const dropFrameAt = (e: React.DragEvent) => snapDrag(localXY(e).x / pxPerFrame + scrollFrame, e.altKey)
+  // Drop position: the clip starts at the cursor, snapped like a clip move (⌘ = free)
+  const dropFrameAt = (e: React.DragEvent) => snapDrag(localXY(e).x / pxPerFrame + scrollFrame, e.metaKey || e.ctrlKey)
   const setDropGuide = (f: number | null) => {
     if (snapGuideRef.current === f) return
     snapGuideRef.current = f
@@ -1819,11 +2056,11 @@ export function TimelineCanvas({
 interface ClipSpan { sf: number; durF: number; shownF: number }
 function clipSpans(
   lt: LayerTrack, fps: number,
-  ghostMove: { cueIdx: number; frame: number } | null,
+  ghostMove: Map<number, number> | null,   // cue index → start frame while dragged
   ghostDur: { cueIdx: number; durF: number } | null,
 ): ClipSpan[] {
   const spans = lt.clips.map((c, i) => {
-    const sf = ghostMove?.cueIdx === i ? ghostMove.frame : smpteToFrames(c.time, fps)
+    const sf = ghostMove?.get(i) ?? smpteToFrames(c.time, fps)
     const durF = ghostDur?.cueIdx === i ? ghostDur.durF : smpteToFrames(c.duration, fps)
     return { sf, durF, shownF: durF }
   })
