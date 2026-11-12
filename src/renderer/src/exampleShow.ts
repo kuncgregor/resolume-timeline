@@ -1,0 +1,85 @@
+import type { Show } from '../../shared/show'
+
+export const EXAMPLE_SHOW: Show = {
+  version: 1,
+  name: 'OSUN Fest 2026',
+  frameRate: 25,
+  duration: '00:10:00:00',
+  resolume: {
+    host: '127.0.0.1',
+    oscPort: 7000,
+    restPort: 8080,
+    feedbackPort: 7001,
+  },
+  clock: { source: 'internal', offset: '00:00:00:00', freewheelFrames: 5 },
+  markers: [
+    { id: 'm1', time: '00:01:00:00', name: 'Drop 1', color: '#E24B4A' },
+    { id: 'm2', time: '00:03:30:00', name: 'Break', color: '#4A90E2' },
+    { id: 'm3', time: '00:06:00:00', name: 'Drop 2', color: '#E24B4A' },
+  ],
+  tracks: [
+    {
+      id: 't1',
+      name: 'BG Video',
+      type: 'trigger',
+      resolumeLayer: 1,
+      color: '#4A7CE2',
+      events: [
+        { id: 'e1', kind: 'cue', time: '00:00:05:00', action: 'connectClip', clip: 1, release: true },
+        { id: 'e2', kind: 'cue', time: '00:01:00:00', action: 'connectClip', clip: 2, release: true },
+        { id: 'e3', kind: 'cue', time: '00:03:30:00', action: 'clearLayer' },
+        { id: 'e4', kind: 'cue', time: '00:06:00:00', action: 'connectClip', clip: 3, release: true },
+      ],
+    },
+    {
+      id: 't2',
+      name: 'FX Layer',
+      type: 'trigger',
+      resolumeLayer: 2,
+      color: '#E2934A',
+      events: [
+        { id: 'e5', kind: 'cue', time: '00:01:00:00', action: 'connectClip', clip: 1, release: true },
+        { id: 'e6', kind: 'cue', time: '00:04:00:00', action: 'clearLayer' },
+      ],
+    },
+    {
+      id: 't3',
+      name: 'Columns',
+      type: 'trigger',
+      resolumeLayer: 1,
+      color: '#9B59B6',
+      events: [
+        { id: 'e7', kind: 'cue', time: '00:02:00:00', action: 'connectColumn', column: 2 },
+        { id: 'e8', kind: 'cue', time: '00:05:00:00', action: 'connectColumn', column: 3 },
+      ],
+    },
+    {
+      id: 't4',
+      name: 'BG Opacity',
+      type: 'automation',
+      target: '/composition/layers/1/video/opacity',
+      color: '#2ECC71',
+      keyframes: [
+        { time: '00:00:05:00', value: 0.0, ease: 'linear' },
+        { time: '00:00:07:00', value: 1.0, ease: 'easeOutCubic' },
+        { time: '00:03:28:00', value: 1.0, ease: 'linear' },
+        { time: '00:03:30:00', value: 0.0, ease: 'easeInCubic' },
+        { time: '00:06:00:00', value: 0.0, ease: 'linear' },
+        { time: '00:06:02:00', value: 1.0, ease: 'easeOutCubic' },
+      ],
+    },
+    {
+      id: 't5',
+      name: 'FX Opacity',
+      type: 'automation',
+      target: '/composition/layers/2/video/opacity',
+      color: '#E74C3C',
+      keyframes: [
+        { time: '00:01:00:00', value: 0.0, ease: 'linear' },
+        { time: '00:01:05:00', value: 0.8, ease: 'easeOutCubic' },
+        { time: '00:03:55:00', value: 0.8, ease: 'linear' },
+        { time: '00:04:00:00', value: 0.0, ease: 'easeInCubic' },
+      ],
+    },
+  ],
+}
