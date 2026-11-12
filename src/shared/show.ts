@@ -46,7 +46,25 @@ export interface Marker {
   color: string
 }
 
-export type Track = LayerTrack | TriggerTrack | AutomationTrack
+export type Track = LayerTrack | GroupTrack | TriggerTrack | AutomationTrack
+
+// ── Group track: mirrors one Resolume layer group (Arena) ────────────────────
+// Placed in `tracks` directly before its member layers. Membership is read from Resolume
+// (composition.layergroups[].layers) on every sync; the timeline only mirrors it.
+export interface GroupTrack {
+  id: string
+  name: string
+  type: 'group'
+  resolumeGroupId: number
+  resolumeGroupIndex: number   // 1-based OSC index: /composition/groups/{n}/…
+  color?: string
+  appColor?: string            // app-assigned colour, restored when the Resolume colour tag is cleared
+  muted?: boolean              // mutes the group's lanes and all member layers
+  locked?: boolean
+  collapsed?: boolean          // member layers hidden; the group row shows their clips in summary
+  expanded: boolean            // show the group's own automation lanes
+  automations: AutomationSubTrack[]
+}
 
 // ── Layer track: mirrors one Resolume layer ──────────────────────────────────
 export interface LayerTrack {
@@ -55,7 +73,9 @@ export interface LayerTrack {
   type: 'layer'
   resolumeLayerId: number      // stable by-id reference
   resolumeLayerIndex: number   // 1-based OSC index (can drift if layers reordered)
+  groupId?: number             // Resolume layer group this layer belongs to (from sync)
   color?: string
+  appColor?: string            // app-assigned colour, restored when the Resolume colour tag is cleared
   muted?: boolean              // scheduler sends nothing for this track
   locked?: boolean             // timeline edits disabled for this track
   expanded: boolean            // show automation sub-lanes below
@@ -71,7 +91,8 @@ export interface ClipCue {
   clipId: number     // stable Resolume clip ID
   clipName: string
   release: boolean
-  color?: string     // override color for this clip (else uses layer color)
+  color?: string     // override color for this clip (else Resolume clip colour, else layer colour)
+  resolumeColor?: string  // colour tag of the clip in Resolume (from sync)
 }
 
 export interface AutomationSubTrack {
@@ -136,6 +157,7 @@ export interface Keyframe {
 
 // Curve from a keyframe to the next one. 'easeInCubic' etc. are accepted from older shows.
 export type Curve = 'linear' | 'hold' | 'easeIn' | 'easeOut' | 'easeInOut'
+  | `${'quad' | 'sine' | 'circ' | 'expo' | 'elastic' | 'back' | 'bounce'}${'In' | 'Out' | 'InOut'}`
 
 export type LaneKind = 'range' | 'choice' | 'boolean'
 
@@ -143,7 +165,7 @@ export type LaneKind = 'range' | 'choice' | 'boolean'
  *  clip JSON (scope 'clip'). Effects are addressed by name + instance number among effects of
  *  the same name, e.g. ['video', 'effects', { effect: 'Blur', instance: 2 }, 'params', 'Blur']. */
 export interface ParamRef {
-  scope: 'layer' | 'clip'
+  scope: 'layer' | 'clip' | 'group'   // 'group': path relative to the layer-group JSON
   clipId?: number                // Resolume clip id, scope 'clip'
   path: (string | { effect: string; instance: number })[]
   label: string                  // "Blur 2 › Blur", for display and when the target is gone

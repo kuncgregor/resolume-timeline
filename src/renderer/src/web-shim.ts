@@ -82,6 +82,7 @@ if (!w.timeline) {
     getComposition: () => rpc('getComposition'),
     getThumbnail: (layerId: number, clipId: number) => rpc('getThumbnail', layerId, clipId),
     getLayerRaw: (layerIndex: number) => rpc('getLayerRaw', layerIndex),
+    getGroupRaw: (groupIndex: number) => rpc('getGroupRaw', groupIndex),
     getClipRaw: (layerIndex: number, clipIndex: number) => rpc('getClipRaw', layerIndex, clipIndex),
 
     triggerClip: (layer: number, clip: number) => rpc('triggerClip', layer, clip),
@@ -91,6 +92,10 @@ if (!w.timeline) {
     setParamById: (id: number, value: number | string | boolean) => rpc('setParamById', id, value),
     getParamById: (id: number) => rpc('getParamById', id),
     setTargets: (map: Record<string, unknown>) => rpc('setTargets', map),
+    reenableAutomation: (ids?: string[]) => rpc('reenableAutomation', ids),
+    setRecordArmed: (armed: boolean) => rpc('setRecordArmed', armed),
+    onOverrides: on('engine:overrides'),
+    onRecord: on('engine:record'),
     connectResolume: (host: string, oscPort: number, restPort: number) =>
       rpc('connectResolume', host, oscPort, restPort),
 

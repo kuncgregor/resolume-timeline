@@ -32,7 +32,7 @@ const AUTOMATABLE = new Set(['ParamRange', 'ParamChoice', 'ParamState', 'ParamBo
 const SKIP_KEYS = new Set([
   'id', 'name', 'display_name', 'selected', 'colorid', 'thumbnail', 'clips', 'connected', 'target',
   'triggerstyle', 'beatsnap', 'transporttype', 'ignorecolumntrigger', 'faderstart', 'maskmode',
-  'is_user_removable', 'active_clip', 'autopilot', 'faderstart', 'columns', 'decks',
+  'is_user_removable', 'active_clip', 'autopilot', 'faderstart', 'columns', 'decks', 'layers',
 ])
 
 const kindOf = (valuetype: string): LaneKind =>
@@ -51,9 +51,10 @@ function effectLabel(name: string, instance: number, displayName?: string) {
 }
 
 /** Every automatable parameter under a layer or clip JSON, in Resolume's order. */
-export function listParams(root: any, scope: 'layer' | 'clip', clipId?: number): ParamInfo[] {
+export function listParams(root: any, scope: ParamRef['scope'], clipId?: number): ParamInfo[] {
   const out: ParamInfo[] = []
-  const prefix = scope === 'clip' ? 'Clip · ' : ''
+  const prefix = scope === 'clip' ? 'Clip · ' : scope === 'group' ? 'Group · ' : ''
+  const top = scope === 'clip' ? 'Clip' : scope === 'group' ? 'Group' : 'Layer'
 
   const visit = (node: any, path: RefSegment[], group: string, key: string) => {
     if (!node || typeof node !== 'object') return
@@ -62,7 +63,7 @@ export function listParams(root: any, scope: 'layer' | 'clip', clipId?: number):
       if (node.valuetype === 'ParamRange' && (typeof node.min !== 'number' || typeof node.max !== 'number')) return
       const name = title(key)
       out.push({
-        ref: { scope, clipId, path, label: group === prefix + 'Layer' || group === prefix + 'Clip' ? name : `${group.replace(prefix, '')} › ${name}` },
+        ref: { scope, clipId, path, label: group === top ? name : `${group.replace(prefix, '')} › ${name}` },
         group, name, kind: kindOf(node.valuetype), id: node.id, valuetype: node.valuetype,
         min: node.min, max: node.max, options: Array.isArray(node.options) ? node.options.map(String) : undefined,
         value: node.value, suffix: node.view?.suffix || undefined,
@@ -87,7 +88,7 @@ export function listParams(root: any, scope: 'layer' | 'clip', clipId?: number):
         continue
       }
       if (Array.isArray(v)) continue
-      const childGroup = group !== prefix + (scope === 'clip' ? 'Clip' : 'Layer') ? group
+      const childGroup = group !== top ? group
         : k === 'audio' ? prefix + 'Audio'
         : k === 'dashboard' ? prefix + 'Dashboard'
         : k === 'transport' ? prefix + 'Transport'
@@ -97,7 +98,7 @@ export function listParams(root: any, scope: 'layer' | 'clip', clipId?: number):
     }
   }
 
-  visit(root, [], prefix + (scope === 'clip' ? 'Clip' : 'Layer'), '')
+  visit(root, [], top, '')
   return out
 }
 
@@ -114,7 +115,7 @@ export function resolveRef(root: any, ref: ParamRef): ParamInfo | null {
 }
 
 /** Stable ref for a runtime parameter id (migrating shows that only stored the id). */
-export function findById(root: any, id: number, scope: 'layer' | 'clip', clipId?: number): ParamInfo | null {
+export function findById(root: any, id: number, scope: ParamRef['scope'], clipId?: number): ParamInfo | null {
   return root ? listParams(root, scope, clipId).find(p => p.id === id) ?? null : null
 }
 
@@ -164,7 +165,9 @@ export function formatValue(
 /** OSC address hint for display / copy (not used for sending). See module comment. */
 export function oscAddress(ref: ParamRef, layerIndex: number, clipSlot?: number): string {
   const osc = (s: string) => s.toLowerCase().replace(/[\s()\-]/g, '')
-  let addr = `/composition/layers/${layerIndex}` + (ref.scope === 'clip' ? `/clips/${clipSlot ?? 0}` : '')
+  // layerIndex is the group index for scope 'group' (verified: /composition/groups/{n}/master)
+  let addr = ref.scope === 'group' ? `/composition/groups/${layerIndex}`
+    : `/composition/layers/${layerIndex}` + (ref.scope === 'clip' ? `/clips/${clipSlot ?? 0}` : '')
   const p = ref.path
   for (let i = 0; i < p.length; i++) {
     const seg = p[i]

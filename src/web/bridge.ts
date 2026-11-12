@@ -41,6 +41,7 @@ export function timelineBridge(): Plugin {
       }
       const pingTimer = setInterval(checkResolume, 2000)
 
+      scheduler.onEvent((channel, payload) => emit(channel, payload))
       scheduler.onTick(frame => emit('engine:tick', {
         frame, playing: transport.playing, fps: transport.fps,
         showName: currentShow?.name ?? '', resolumeConnected,
@@ -67,15 +68,18 @@ export function timelineBridge(): Plugin {
         getComposition: () => rest.getComposition(),
         getThumbnail: (layerId: number, clipId: number) => rest.getThumbnail(layerId, clipId),
         getLayerRaw: (layerIndex: number) => rest.getJson(`/composition/layers/${layerIndex}`),
+        getGroupRaw: (groupIndex: number) => rest.getJson(`/composition/layergroups/${groupIndex}`),
         getClipRaw: (layerIndex: number, clipIndex: number) =>
           rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`),
         triggerClip: (layer: number, clip: number) => { osc.connectClip(layer, clip, 40); return null },
         triggerColumn: (column: number) => { osc.connectColumn(column); return null },
         clearLayer: (layer: number) => { osc.clearLayer(layer); return null },
         sendOsc: (address: string, value: number) => { osc.send(address, value); return null },
-        setParamById: (id: number, value: number | string | boolean) => rest.setParamById(id, value),
+        setParamById: (id: number, value: number | string | boolean) => { scheduler.noteSent(id, value); return rest.setParamById(id, value) },
         getParamById: (id: number) => rest.getParamById(id),
         setTargets: (map: Record<string, LaneTarget>) => { scheduler.setTargets(map); return null },
+        reenableAutomation: (ids?: string[]) => { scheduler.reenable(ids); return null },
+        setRecordArmed: (armed: boolean) => { scheduler.setRecordArmed(armed); return null },
         connectResolume: async (host: string, oscPort: number, restPort: number) => {
           osc.connect(host, oscPort)
           rest.setBase(host, restPort)

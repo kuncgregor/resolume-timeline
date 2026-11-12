@@ -7,6 +7,11 @@ interface Props {
   offsetFrames: number
   endFrame: number          // last frame with content (clips / audio); 0 = empty show
   ltcActive: boolean
+  recordArmed: boolean
+  onToggleRecord: () => void
+  overrideCount: number       // lanes the operator took over in Resolume
+  onReenable: () => void
+  readOnly: boolean
   onPlay: () => void
   onStop: () => void
   onLocate: (frame: number) => void
@@ -19,8 +24,8 @@ const WARN_S = 30
 const DANGER_S = 10
 
 export function TransportBar({
-  engineState, show, offsetFrames, endFrame, ltcActive,
-  onPlay, onStop, onLocate, onToggleBrowser, browserOpen,
+  engineState, show, offsetFrames, endFrame, ltcActive, recordArmed, onToggleRecord,
+  overrideCount, onReenable, readOnly, onPlay, onStop, onLocate, onToggleBrowser, browserOpen,
 }: Props) {
   const { frame, playing, fps } = engineState
   const tc = framesToSmpte(frame + offsetFrames, fps)
@@ -74,6 +79,19 @@ export function TransportBar({
       )}
 
       <div className="spacer" />
+
+      {overrideCount > 0 && (
+        <button className="btn reenable-btn" onClick={onReenable}
+          title="Operater je v Resolume premaknil avtomatizirane parametre; te steze ne pošiljajo. Klikni, da jih vrneš časovnici.">
+          ↺ Re-enable {overrideCount}
+        </button>
+      )}
+      <button className={`btn rec-btn ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly}
+        title={recordArmed
+          ? 'REC: spremembe avtomatiziranih parametrov v Resolume se zapišejo kot keyframe na playhead'
+          : 'Vklopi snemanje keyframov iz Resolume (auto-key)'}>
+        ● Rec
+      </button>
 
       <button className={`btn toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
         title="Pokaži ali skrij Resolume clipe">

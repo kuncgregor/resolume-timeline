@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Show, LayerTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe } from '../../shared/show'
+import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
 import type { RundownEntry, ShowEntry, BreakEntry, ConcertFile } from '../../shared/concert'
-import { rv, layerDisplayName } from '../../shared/resolume'
+import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
 import { TimelineCanvas } from './components/TimelineCanvas'
@@ -31,8 +31,13 @@ export interface DragClipData {
 // New layers and rundown entries get muted Resolume-style tag colours
 const LAYER_COLORS = TAG_COLORS
 const ENTRY_COLORS = TAG_COLORS
-// Automation lanes: light, distinct line colours on the dark lane background
-const AUTO_COLORS = ['#a1fcd5', '#ffd34d', '#7fb8ff', '#f2a33a', '#d98aa0', '#b5e86b', '#c7a0ff']
+// Automation lane colours by scope: layer parameters green family, clip parameters orange
+// family (same split as the inspector tabs and the LAYER/CLIP chips)
+const SCOPE_COLORS = {
+  layer: ['#6fd6a8', '#9be8c4', '#4fbf94', '#b5e86b'],
+  group: ['#6fd6a8', '#9be8c4', '#4fbf94', '#b5e86b'],
+  clip: ['#f2a33a', '#ffc46b', '#e8893a', '#ffd98a'],
+}
 
 const EMPTY_SHOW: Show = {
   version: 1, name: 'Nov projekt', frameRate: 25, duration: '02:00:00:00',
@@ -44,40 +49,82 @@ const EMPTY_SHOW: Show = {
 // Mirrors the Resolume layer list into the show. Tracks whose layer is gone from the
 // composition are kept (they hold cues/automation). Returns `show` unchanged when
 // nothing differs, so a periodic sync does not mark the show dirty.
+// Colour shown for a track: Resolume's colour tag wins while one is set; clearing the tag in
+// Resolume restores the colour the app had assigned
+function withTagColor<T extends { color?: string; appColor?: string }>(t: T, tag: string | undefined): T {
+  if (tag) return t.color === tag ? t : { ...t, color: tag, appColor: t.appColor ?? t.color }
+  if (t.appColor === undefined) return t
+  const { appColor, ...rest } = t
+  return { ...rest, color: appColor } as T
+}
+
+const shallowSame = (a: object, b: object) =>
+  Object.keys({ ...a, ...b }).every(k => (a as any)[k] === (b as any)[k])
+
+// Mirrors the Resolume layer list (and Arena layer groups) into the show, in Resolume's
+// order with each group track placed directly before its member layers. Tracks whose layer is
+// gone are kept (they hold cues/automation). Returns `show` unchanged when nothing differs, so
+// the periodic sync does not mark the show dirty.
 function syncLayers(show: Show, comp: ResolumeComposition): Show {
   const layers = (comp.layers ?? []).filter(Boolean)
+  const groups = (comp.layergroups ?? []).filter(Boolean)
+  const groupOf = new Map<number, number>()   // layer id → group index in comp.layergroups
+  groups.forEach((g, gi) => (g.layers ?? []).forEach(l => l && groupOf.set(l.id, gi)))
   const matched = new Set<string>()
-  const synced: LayerTrack[] = layers.map((layer, li) => {
+  const out: Track[] = []
+  const emitted = new Set<number>()
+
+  const syncGroup = (gi: number): Track => {
+    const g = groups[gi]
+    const name = rv(g.name, `Group ${gi + 1}`).replace(/#/g, String(gi + 1))
+    const existing = show.tracks.find(t => t.type === 'group' && (t as GroupTrack).resolumeGroupId === g.id) as GroupTrack | undefined
+    const base: GroupTrack = existing ?? {
+      id: `group-${g.id}`, name, type: 'group', resolumeGroupId: g.id, resolumeGroupIndex: gi + 1,
+      color: LAYER_COLORS[(gi + 5) % LAYER_COLORS.length], expanded: false, automations: [],
+    }
+    if (existing) matched.add(existing.id)
+    const next = withTagColor({ ...base, name, resolumeGroupIndex: gi + 1 }, resolumeColor(g.colorid))
+    return existing && shallowSame(existing, next) ? existing : next
+  }
+
+  layers.forEach((layer, li) => {
+    const gi = groupOf.get(layer.id)
+    if (gi !== undefined && !emitted.has(gi)) { emitted.add(gi); out.push(syncGroup(gi)) }
     const name = layerDisplayName(rv(layer.name, `Layer ${li + 1}`), li + 1)
+    const groupId = gi !== undefined ? groups[gi].id : undefined
     const existing = show.tracks.find(
       t => t.type === 'layer' && (t as LayerTrack).resolumeLayerId === layer.id
     ) as LayerTrack | undefined
+    const tag = resolumeColor(layer.colorid)
     if (!existing) {
-      return {
+      out.push(withTagColor({
         id: `layer-${layer.id}`, name,
-        type: 'layer' as const, resolumeLayerId: layer.id, resolumeLayerIndex: li + 1,
+        type: 'layer' as const, resolumeLayerId: layer.id, resolumeLayerIndex: li + 1, groupId,
         color: LAYER_COLORS[li % LAYER_COLORS.length], expanded: false, clips: [], automations: [],
-      }
+      }, tag))
+      return
     }
     matched.add(existing.id)
-    // Clip slots can be moved in Resolume; follow the clip by its stable id
-    const slotById = new Map((layer.clips ?? []).map((c, ci) => [c?.id, ci + 1]))
+    // Clip slots can be moved in Resolume; follow the clip by its stable id (and its colour tag)
+    const clipById = new Map((layer.clips ?? []).map((c, ci) => [c?.id, { slot: ci + 1, tag: resolumeColor(c?.colorid) }]))
     let clipsChanged = false
     const clips = existing.clips.map(c => {
-      const slot = slotById.get(c.clipId)
-      if (slot === undefined || slot === c.clipIndex) return c
+      const rc = clipById.get(c.clipId)
+      if (!rc || (rc.slot === c.clipIndex && rc.tag === c.resolumeColor)) return c
       clipsChanged = true
-      return { ...c, clipIndex: slot }
+      return { ...c, clipIndex: rc.slot, resolumeColor: rc.tag }
     })
-    if (!clipsChanged && existing.name === name && existing.resolumeLayerIndex === li + 1) return existing
-    return { ...existing, name, resolumeLayerIndex: li + 1, clips }
+    const next = withTagColor({ ...existing, name, resolumeLayerIndex: li + 1, groupId, clips: clipsChanged ? clips : existing.clips }, tag)
+    out.push(shallowSame(existing, next) ? existing : next)
   })
-  // Layer gone from Resolume: index 0 = offline, so the scheduler stops firing into a wrong layer
+  // Gone from Resolume: index 0 = offline, so the scheduler stops firing into a wrong layer/group
   const unmatched = show.tracks
-    .filter(t => !matched.has(t.id) && !synced.some(s => s.id === t.id))
+    .filter(t => !matched.has(t.id) && !out.some(s => s.id === t.id))
     .map(t => t.type === 'layer' && (t as LayerTrack).resolumeLayerIndex !== 0
-      ? { ...(t as LayerTrack), resolumeLayerIndex: 0 } : t)
-  const tracks = [...synced, ...unmatched]
+      ? { ...(t as LayerTrack), resolumeLayerIndex: 0, groupId: undefined }
+      : t.type === 'group' && (t as GroupTrack).resolumeGroupIndex !== 0
+        ? { ...(t as GroupTrack), resolumeGroupIndex: 0 } : t)
+  const tracks = [...out, ...unmatched]
   if (tracks.length === show.tracks.length && tracks.every((t, i) => t === show.tracks[i])) return show
   return { ...show, tracks }
 }
@@ -309,6 +356,21 @@ export default function App() {
 
   // ── Automation targets: stable ref → live Resolume parameter id ─────────────
 
+  // Lanes the operator took over in Resolume (lane id → their value, normalized) and the REC
+  // switch: when armed, operator changes become keyframes at the playhead instead
+  const [overrides, setOverrides] = useState<Record<string, number>>({})
+  const [recordArmed, setRecordArmed] = useState(false)
+  useEffect(() => api.onOverrides((m: Record<string, number>) => setOverrides(m)), [])
+  useEffect(() => { api.setRecordArmed(recordArmed) }, [recordArmed])
+  useEffect(() => api.onRecord(({ laneId, value, option }: { laneId: string; value: number; option?: string }) => {
+    showRef.current.tracks.forEach((t, ti) => {
+      if (t.type !== 'layer' && t.type !== 'group') return
+      const ai = (t as LayerTrack | GroupTrack).automations.findIndex(a => a.id === laneId)
+      if (ai >= 0) handleAddKeyframe(ti, ai, engineRef.current.frame, value, option)
+    })
+  }), [])
+  const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
+
   const [laneStatus, setLaneStatus] = useState<LaneStatusMap>({})
   const laneStatusRef = useRef(laneStatus)
   laneStatusRef.current = laneStatus
@@ -321,7 +383,7 @@ export default function App() {
         const tracks = [...prev.tracks]
         for (const u of updates) {
           const lt = tracks[u.trackIdx] as LayerTrack
-          if (!lt || lt.type !== 'layer' || !lt.automations[u.autoIdx]) continue
+          if (!lt || (lt.type !== 'layer' && (lt as Track).type !== 'group') || !lt.automations[u.autoIdx]) continue
           const autos = [...lt.automations]
           autos[u.autoIdx] = { ...autos[u.autoIdx], ...u.updates }
           tracks[u.trackIdx] = { ...lt, automations: autos }
@@ -397,7 +459,10 @@ export default function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      // Text fields keep their keys; sliders and checkboxes don't (Home/Space on a focused
+      // fader would move it to its minimum and auto-key that as a keyframe)
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (e.target instanceof HTMLInputElement && !['range', 'checkbox'].includes(e.target.type)) return
       if (e.code === 'Space') {
         e.preventDefault()
         if (engineRef.current.playing) {
@@ -773,26 +838,62 @@ export default function App() {
 
   // New lane for a Resolume parameter. Picking a parameter that already has a lane on this
   // layer just unfolds the layer instead of creating a second lane that would fight the first.
-  const handleAddParam = useCallback((trackIdx: number, info: ParamInfo, binding: 'layer' | { cueId: string }) => {
+  const handleAddParam = useCallback((
+    trackIdx: number, info: ParamInfo, binding: 'layer' | { cueId: string },
+    firstKey?: { frame: number; value: number; option?: string },
+  ) => {
     setShow(prev => {
       const tracks = [...prev.tracks]
       const lt = tracks[trackIdx] as LayerTrack
-      if (!lt || lt.type !== 'layer') return prev
+      if (!lt || (lt.type !== 'layer' && (lt as Track).type !== 'group')) return prev
       if (lt.automations.some(a => sameRef(a.ref, info.ref))) {
         tracks[trackIdx] = { ...lt, expanded: true }
         return { ...prev, tracks }
       }
-      const slot = info.ref.scope === 'clip' ? lt.clips.find(c => c.clipId === info.ref.clipId)?.clipIndex : undefined
+      const slot = info.ref.scope === 'clip' ? lt.clips?.find(c => c.clipId === info.ref.clipId)?.clipIndex : undefined
+      const ownerIndex = (lt as Track).type === 'group' ? (lt as unknown as GroupTrack).resolumeGroupIndex : lt.resolumeLayerIndex
+      const palette = SCOPE_COLORS[info.ref.scope]
+      const sameScope = lt.automations.filter(a => (a.ref?.scope ?? 'layer') === info.ref.scope).length
+      const keyframes: Keyframe[] = firstKey ? [{
+        time: framesToSmpte(firstKey.frame, prev.frameRate), value: firstKey.value,
+        ease: info.kind === 'range' ? 'linear' : 'hold',
+        ...(firstKey.option !== undefined ? { option: firstKey.option } : {}),
+      }] : []
       const lane: AutomationSubTrack = {
-        id: `auto-${Date.now()}-${uid++}`, keyframes: [], enabled: true,
-        color: AUTO_COLORS[lt.automations.length % AUTO_COLORS.length],
+        id: `auto-${Date.now()}-${uid++}`, keyframes, enabled: true,
+        color: palette[sameScope % palette.length],
         ...(binding === 'layer' ? { layerBound: true } : { clipId: binding.cueId }),
-        ...laneFieldsFor(info, lt.resolumeLayerIndex, slot),
+        ...laneFieldsFor(info, ownerIndex, slot),
       } as AutomationSubTrack
       tracks[trackIdx] = { ...lt, expanded: true, automations: [...lt.automations, lane] }
       return { ...prev, tracks }
     })
   }, [setShow])
+
+  // ◇/◆ in the inspector (After Effects stopwatch + Resolve keyframe button): start
+  // animating with a keyframe at the playhead, or toggle the keyframe at the playhead
+  const handleToggleKey = useCallback((trackIdx: number, info: ParamInfo, real: number | string | boolean, binding: 'layer' | { cueId: string }) => {
+    const lt = showRef.current.tracks[trackIdx] as LayerTrack
+    const frame = engineRef.current.frame
+    const value = normalize(info, real)
+    const option = info.kind === 'choice' ? String(real) : undefined
+    const autoIdx = lt?.automations.findIndex(a => sameRef(a.ref, info.ref)) ?? -1
+    if (autoIdx < 0) { handleAddParam(trackIdx, info, binding, { frame, value, option }); return }
+    const time = framesToSmpte(frame, showRef.current.frameRate)
+    const kfIdx = lt.automations[autoIdx].keyframes.findIndex(k => k.time === time)
+    if (kfIdx >= 0) handleDeleteKeyframe(trackIdx, autoIdx, kfIdx)
+    else handleAddKeyframe(trackIdx, autoIdx, frame, value, option)
+  }, [handleAddParam])
+
+  // Moving the fader of an animated parameter writes a keyframe at the playhead
+  const handleParamEdit = useCallback((trackIdx: number, info: ParamInfo, real: number | string | boolean) => {
+    if (showModeRef.current) return
+    const lt = showRef.current.tracks[trackIdx] as LayerTrack
+    const autoIdx = lt?.automations.findIndex(a => sameRef(a.ref, info.ref)) ?? -1
+    if (autoIdx < 0) return
+    handleAddKeyframe(trackIdx, autoIdx, engineRef.current.frame, normalize(info, real),
+      info.kind === 'choice' ? String(real) : undefined)
+  }, [])
 
   const handleRetarget = useCallback((trackIdx: number, autoIdx: number, info: ParamInfo) => {
     const lt = showRef.current.tracks[trackIdx] as LayerTrack
@@ -821,9 +922,19 @@ export default function App() {
   const handleSetAllExpanded = useCallback((expanded: boolean) => {
     setShow(prev => ({
       ...prev,
-      tracks: prev.tracks.map(t => t.type === 'layer' && (t as LayerTrack).automations.length
+      tracks: prev.tracks.map(t => (t.type === 'layer' || t.type === 'group') && (t as LayerTrack).automations.length
         ? { ...t, expanded } : t),
     }))
+  }, [setShow])
+
+  const handleToggleGroupCollapsed = useCallback((trackIdx: number) => {
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const gt = tracks[trackIdx] as GroupTrack
+      if (gt?.type !== 'group') return prev
+      tracks[trackIdx] = { ...gt, collapsed: !gt.collapsed }
+      return { ...prev, tracks }
+    })
   }, [setShow])
 
   const handleToggleExpand = useCallback((trackIdx: number) => {
@@ -890,6 +1001,66 @@ export default function App() {
       return { ...prev, tracks }
     })
   }, [setShow])
+
+  // Batch keyframe edits from the canvas (multi-selection): applied in one show update so a
+  // drag of several keyframes is one change, indices refer to the lanes before the update
+  const editLanes = useCallback((
+    fn: (lane: AutomationSubTrack, trackIdx: number, autoIdx: number, fps: number) => AutomationSubTrack | null,
+    lanes: { trackIdx: number; autoIdx: number }[],
+  ) => {
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const seen = new Set<string>()
+      for (const { trackIdx, autoIdx } of lanes) {
+        const key = `${trackIdx}:${autoIdx}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const lt = tracks[trackIdx] as LayerTrack
+        const lane = lt?.automations?.[autoIdx]
+        if (!lane) continue
+        const next = fn(lane, trackIdx, autoIdx, prev.frameRate)
+        if (!next) continue
+        const autos = [...lt.automations]
+        autos[autoIdx] = {
+          ...next,
+          keyframes: [...next.keyframes].sort((a, b) => smpteToFrames(a.time, prev.frameRate) - smpteToFrames(b.time, prev.frameRate)),
+        }
+        tracks[trackIdx] = { ...lt, automations: autos }
+      }
+      return { ...prev, tracks }
+    })
+  }, [setShow])
+
+  const handleUpdateKeyframes = useCallback((items: { trackIdx: number; autoIdx: number; kfIdx: number; updates: Partial<Keyframe> }[]) => {
+    editLanes((lane, ti, ai) => {
+      const mine = items.filter(i => i.trackIdx === ti && i.autoIdx === ai)
+      const kfs = lane.keyframes.map((k, ki) => {
+        const u = mine.find(m => m.kfIdx === ki)
+        return u ? { ...k, ...u.updates } : k
+      })
+      return { ...lane, keyframes: kfs }
+    }, items)
+  }, [editLanes])
+
+  const handleDeleteKeyframes = useCallback((items: { trackIdx: number; autoIdx: number; kfIdx: number }[]) => {
+    editLanes((lane, ti, ai) => {
+      const drop = new Set(items.filter(i => i.trackIdx === ti && i.autoIdx === ai).map(i => i.kfIdx))
+      return { ...lane, keyframes: lane.keyframes.filter((_, ki) => !drop.has(ki)) }
+    }, items)
+  }, [editLanes])
+
+  // Paste keeps relative timing from the playhead; pasted keyframes replace ones at the same time
+  const handlePasteKeyframes = useCallback((trackIdx: number, autoIdx: number, atFrame: number,
+    items: { offsetFrames: number; value: number; ease: string; option?: string }[]) => {
+    editLanes((lane, _ti, _ai, fr) => {
+      const pasted: Keyframe[] = items.map(i => ({
+        time: framesToSmpte(Math.max(0, atFrame + i.offsetFrames), fr), value: i.value, ease: i.ease,
+        ...(i.option !== undefined ? { option: i.option } : {}),
+      }))
+      const times = new Set(pasted.map(k => k.time))
+      return { ...lane, keyframes: [...lane.keyframes.filter(k => !times.has(k.time)), ...pasted] }
+    }, [{ trackIdx, autoIdx }])
+  }, [editLanes])
 
   const handleDeleteKeyframe = useCallback((trackIdx: number, autoIdx: number, kfIdx: number) => {
     setShow(prev => {
@@ -958,7 +1129,7 @@ export default function App() {
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
 
   return (
-    <div className={`app${showMode ? ' show-mode' : ''}`}>
+    <div className={`app${showMode ? ' show-mode' : ''}${recordArmed && !showMode ? ' rec-armed' : ''}`}>
       <RundownStrip
         rundown={rundown}
         activeId={activeId}
@@ -1003,6 +1174,11 @@ export default function App() {
         offsetFrames={offsetFrames}
         endFrame={endFrame}
         ltcActive={ltcActive}
+        recordArmed={recordArmed}
+        onToggleRecord={() => setRecordArmed(r => !r)}
+        overrideCount={Object.keys(overrides).length}
+        onReenable={() => handleReenable()}
+        readOnly={showMode}
         onPlay={handlePlay}
         onStop={handleStop}
         onLocate={handleLocate}
@@ -1040,6 +1216,9 @@ export default function App() {
               composition={composition}
               frame={engineState.frame} fps={fps}
               laneStatus={laneStatus}
+              overrides={overrides}
+              onReenable={handleReenable}
+              onToggleGroupCollapsed={handleToggleGroupCollapsed}
               onAddParam={handleAddParam}
               onRetarget={handleRetarget}
               onUpdateAutomation={updateAutomation}
@@ -1051,7 +1230,7 @@ export default function App() {
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} bpm={show.bpm}
-              readOnly={showMode} laneStatus={laneStatus}
+              readOnly={showMode} laneStatus={laneStatus} overrides={overrides}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
@@ -1066,6 +1245,9 @@ export default function App() {
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}
+              onUpdateKeyframes={handleUpdateKeyframes}
+              onDeleteKeyframes={handleDeleteKeyframes}
+              onPasteKeyframes={handlePasteKeyframes}
               onResizeAutoLane={handleResizeAutoLane}
               selectedTrackIdx={selectedTrackIdx} selectedCueIdx={selectedCueIdx}
             />
@@ -1085,10 +1267,12 @@ export default function App() {
       {!activeIsBreak && (
         <BottomPanel
           track={selectedTrack} cue={selectedCue} readOnly={showMode}
+          group={selectedTrackRaw?.type === 'group' ? selectedTrackRaw as GroupTrack : null}
+          frame={engineState.frame}
+          onToggleKey={handleToggleKey} onParamEdit={handleParamEdit} onSeek={handleSeek}
           cueIdx={selectedCueIdx} trackIdx={selectedTrackIdx} fps={fps}
           height={bottomPanelHeight} onResize={setBottomPanelHeight}
           onUpdateCue={handleUpdateCue} onDeleteCue={handleDeleteCue}
-          onAddParam={handleAddParam}
           onSelectCue={selectCue}
           onClose={clearSelection}
         />

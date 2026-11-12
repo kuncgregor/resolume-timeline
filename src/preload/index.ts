@@ -27,6 +27,7 @@ const api = {
   getThumbnail: (layerId: number, clipId: number): Promise<string | null> =>
     ipcRenderer.invoke('resolume:getThumbnail', layerId, clipId),
   getLayerRaw: (layerIndex: number): Promise<any> => ipcRenderer.invoke('resolume:getLayerRaw', layerIndex),
+  getGroupRaw: (groupIndex: number): Promise<any> => ipcRenderer.invoke('resolume:getGroupRaw', groupIndex),
   getClipRaw: (layerIndex: number, clipIndex: number): Promise<any> =>
     ipcRenderer.invoke('resolume:getClipRaw', layerIndex, clipIndex),
 
@@ -38,6 +39,18 @@ const api = {
     ipcRenderer.invoke('resolume:setParamById', id, value),
   getParamById: (id: number): Promise<any> => ipcRenderer.invoke('resolume:getParamById', id),
   setTargets: (map: Record<string, unknown>) => ipcRenderer.invoke('engine:setTargets', map),
+  reenableAutomation: (ids?: string[]) => ipcRenderer.invoke('engine:reenable', ids),
+  setRecordArmed: (armed: boolean) => ipcRenderer.invoke('engine:setRecordArmed', armed),
+  onOverrides: (cb: (map: Record<string, number>) => void) => {
+    const h = (_: unknown, m: Record<string, number>) => cb(m)
+    ipcRenderer.on('engine:overrides', h)
+    return () => ipcRenderer.removeListener('engine:overrides', h)
+  },
+  onRecord: (cb: (e: { laneId: string; value: number; option?: string }) => void) => {
+    const h = (_: unknown, e: { laneId: string; value: number; option?: string }) => cb(e)
+    ipcRenderer.on('engine:record', h)
+    return () => ipcRenderer.removeListener('engine:record', h)
+  },
   connectResolume: (host: string, oscPort: number, restPort: number): Promise<boolean> =>
     ipcRenderer.invoke('resolume:connect', host, oscPort, restPort),
 

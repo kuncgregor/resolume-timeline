@@ -77,6 +77,22 @@
 .ctx-seg-btn.on { background: var(--select); border-color: var(--select); color: var(--text-on-live); }
 .ctx-glyph { font-size: 9px; line-height: 1; }
 
+/* Resolume curve families: family name + In / Out / In-Out per row */
+.kf-fam {
+  flex: 1; min-width: 0; display: grid; grid-template-columns: 44px repeat(3, minmax(0, 1fr)); gap: 2px;
+}
+.kf-fam-name {
+  height: 18px; display: flex; align-items: center;
+  font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap;
+}
+.kf-fam-btn {
+  height: 18px; padding: 0 2px; display: flex; align-items: center; justify-content: center;
+  background: var(--bg-control); border: 1px solid var(--bg-gutter); border-radius: 0; cursor: pointer;
+  color: var(--text); font-family: inherit; font-size: var(--fs-meta); white-space: nowrap; overflow: hidden;
+}
+.kf-fam-btn:hover { background: var(--bg-hover); color: var(--text-hi); }
+.kf-fam-btn.on { background: var(--select); border-color: var(--select); color: var(--text-on-live); }
+
 /* ── Clip colour picker ───────────────────────────────────────────── */
 
 .ccp-label {

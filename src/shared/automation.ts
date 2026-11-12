@@ -1,8 +1,14 @@
 // Keyframe interpolation shared by the engine (what is sent) and the UI (what is drawn).
 import type { Keyframe, LaneKind } from './show'
 
-export const CURVES = ['linear', 'hold', 'easeIn', 'easeOut', 'easeInOut'] as const
-export type CurveName = typeof CURVES[number]
+// Basic curves first; then Resolume's envelope families (quad, sine, circ, expo, elastic,
+// back, bounce × In/Out/InOut) so programmers find the vocabulary they know from Arena.
+const FAMILIES = ['quad', 'sine', 'circ', 'expo', 'elastic', 'back', 'bounce'] as const
+const DIRS = ['In', 'Out', 'InOut'] as const
+export const BASIC_CURVES = ['linear', 'hold', 'easeIn', 'easeOut', 'easeInOut'] as const
+export const FAMILY_CURVES = FAMILIES.flatMap(f => DIRS.map(d => `${f}${d}` as const))
+export const CURVES = [...BASIC_CURVES, ...FAMILY_CURVES] as const
+export type CurveName = typeof BASIC_CURVES[number] | typeof FAMILY_CURVES[number]
 
 // Older shows stored the cubic names
 const LEGACY: Record<string, CurveName> = { easeInCubic: 'easeIn', easeOutCubic: 'easeOut', easeInOutCubic: 'easeInOut' }
@@ -13,12 +19,43 @@ export function curveOf(ease: string | undefined): CurveName {
   return LEGACY[ease] ?? 'linear'
 }
 
+// Standard easing equations (easings.net); "In" shapes, Out/InOut derived from them
+const IN: Record<typeof FAMILIES[number], (t: number) => number> = {
+  quad: t => t * t,
+  sine: t => 1 - Math.cos((t * Math.PI) / 2),
+  circ: t => 1 - Math.sqrt(1 - t * t),
+  expo: t => t === 0 ? 0 : Math.pow(2, 10 * t - 10),
+  elastic: t => t === 0 || t === 1 ? t : -Math.pow(2, 10 * t - 10) * Math.sin((t * 10 - 10.75) * (2 * Math.PI) / 3),
+  back: t => 2.70158 * t * t * t - 1.70158 * t * t,
+  bounce: t => 1 - bounceOut(1 - t),
+}
+function bounceOut(t: number): number {
+  const n = 7.5625, d = 2.75
+  if (t < 1 / d) return n * t * t
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375
+  return n * (t -= 2.625 / d) * t + 0.984375
+}
+const out = (f: (t: number) => number) => (t: number) => 1 - f(1 - t)
+const inOut = (f: (t: number) => number) => (t: number) => t < 0.5 ? f(2 * t) / 2 : 1 - f(2 - 2 * t) / 2
+
 const SHAPE: Record<CurveName, (t: number) => number> = {
   linear: t => t,
   hold: () => 0,
   easeIn: t => t * t * t,
   easeOut: t => 1 - Math.pow(1 - t, 3),
   easeInOut: t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+  ...Object.fromEntries(FAMILIES.flatMap(f => [
+    [`${f}In`, IN[f]], [`${f}Out`, out(IN[f])], [`${f}InOut`, inOut(IN[f])],
+  ])) as Record<typeof FAMILY_CURVES[number], (t: number) => number>,
+}
+
+/** Human label for a curve name: "sineInOut" → "Sine In-Out". */
+export function curveLabel(c: CurveName): string {
+  const base: Record<string, string> = { linear: 'Linear', hold: 'Hold', easeIn: 'Ease In', easeOut: 'Ease Out', easeInOut: 'Ease In-Out' }
+  if (base[c]) return base[c]
+  const m = /^([a-z]+)(InOut|In|Out)$/.exec(c)
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2] === 'InOut' ? 'In-Out' : m[2]}` : c
 }
 
 export interface FrameKeyframe { frame: number; value: number; curve: CurveName; option?: string }

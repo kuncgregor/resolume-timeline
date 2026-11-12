@@ -1,5 +1,7 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
-import type { Track, LayerTrack, ClipCue, Keyframe, Show, AutomationSubTrack, Curve, LaneKind } from '../../../shared/show'
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind } from '../../../shared/show'
+import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
+import type { CurveName, FrameKeyframe } from '../../../shared/automation'
 import type { WaveformInfo } from '../audio-engine'
 import type { DragClipData } from '../App'
 import type { LaneStatus, LaneStatusMap } from '../laneStatus'
@@ -20,53 +22,17 @@ const TRACKS_TOP = RULER_H + AUDIO_LANE_H
 const KF_R = 4                  // keyframe glyph: 8px, 10px on hover
 const KF_HIT = 6                // half of the 12px keyframe hit area
 const MAX_CHOICE_BANDS = 12     // more options than this: no band separators
+const SNAP_PX = 6               // keyframe drag snaps to targets this close
+const AXIS_LOCK_PX = 4          // Shift-drag picks its axis after this much movement
+const FINE = 0.1                // Cmd/Ctrl drag: movement scale
 
 // ── Automation values ─────────────────────────────────────────────────────────
 
-const CURVES: Curve[] = ['linear', 'hold', 'easeIn', 'easeOut', 'easeInOut']
-const CURVE_LABEL: Record<Curve, string> = {
-  linear: 'Linear', hold: 'Hold', easeIn: 'Ease In', easeOut: 'Ease Out', easeInOut: 'Ease In-Out',
-}
-const CURVE_GLYPH: Record<Curve, string> = { linear: '◆', hold: '■', easeIn: '●', easeOut: '●', easeInOut: '●' }
-const LEGACY_CURVES: Record<string, Curve> = { easeInCubic: 'easeIn', easeOutCubic: 'easeOut', easeInOutCubic: 'easeInOut' }
-
-/** Stored ease string → curve. Older shows wrote 'easeInCubic' etc.; unknown = linear. */
-function curveOf(ease: string | undefined): Curve {
-  if (ease && (CURVES as string[]).includes(ease)) return ease as Curve
-  return (ease && LEGACY_CURVES[ease]) || 'linear'
-}
-
-function easeT(c: Curve, t: number): number {
-  switch (c) {
-    case 'hold': return 0
-    case 'easeIn': return t * t * t
-    case 'easeOut': return 1 - (1 - t) ** 3
-    case 'easeInOut': return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
-    default: return t
-  }
-}
-
-// Keyframe reduced to what interpolation needs (sorted by frame; c = 'hold' on discrete lanes)
-interface PKey { f: number; v: number; c: Curve }
-
-/** valueAt: the lane value at a (possibly fractional) frame, used for the curve, the
- *  playhead dot and drag previews. Same rules as the engine: the curve of a segment is the
- *  ease of its START keyframe, choice/boolean lanes always hold (c = 'hold'), and before
- *  the first / after the last key the end value holds. */
-function valueAtKeys(kfs: PKey[], frame: number): number | null {
-  if (!kfs.length) return null
-  if (frame <= kfs[0].f) return kfs[0].v
-  const last = kfs[kfs.length - 1]
-  if (frame >= last.f) return last.v
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const k0 = kfs[i], k1 = kfs[i + 1]
-    if (frame >= k0.f && frame < k1.f) {
-      if (k0.c === 'hold') return k0.v
-      return k0.v + (k1.v - k0.v) * easeT(k0.c, (frame - k0.f) / (k1.f - k0.f))
-    }
-  }
-  return last.v
-}
+type BasicCurve = typeof BASIC_CURVES[number]
+const BASIC_GLYPH: Record<BasicCurve, string> = { linear: '◆', hold: '■', easeIn: '●', easeOut: '●', easeInOut: '●' }
+// Resolume families as menu rows: FAMILY_CURVES is family × [In, Out, InOut]
+const FAMILY_ROWS: CurveName[][] = []
+for (let i = 0; i < FAMILY_CURVES.length; i += 3) FAMILY_ROWS.push(FAMILY_CURVES.slice(i, i + 3))
 
 interface LaneRange { min?: number; max?: number; options?: string[]; suffix?: string; multiplier?: number }
 
@@ -128,18 +94,51 @@ function realToNorm(text: string, r: LaneRange): number | null {
   return max === min ? 0 : +clamp01((n - min) / (max - min)).toFixed(6)
 }
 
-/** Index a keyframe ends up at after its time changes (the App re-sorts, stably, by time). */
-function indexAfterTimeChange(kfs: Keyframe[], kfIdx: number, time: string, fps: number): number {
-  const moved = { ...kfs[kfIdx], time }
-  const next = kfs.map((k, i) => (i === kfIdx ? moved : k))
-  next.sort((a, b) => smpteToFrames(a.time, fps) - smpteToFrames(b.time, fps))
-  return next.indexOf(moved)
+/** New index of every keyframe of a lane after a batch edit. Mirrors the App: updates are
+ *  applied by old index, then the lane is re-sorted once, stably, by time. */
+function indicesAfterUpdates(kfs: Keyframe[], ups: Map<number, Partial<Keyframe>>, fps: number): number[] {
+  const next = kfs.map((k, i) => ({ k: ups.has(i) ? { ...k, ...ups.get(i) } : k, i }))
+  if ([...ups.values()].some(u => u.time !== undefined))
+    next.sort((a, b) => smpteToFrames(a.k.time, fps) - smpteToFrames(b.k.time, fps))
+  const map: number[] = []
+  next.forEach((e, ni) => { map[e.i] = ni })
+  return map
+}
+
+/** New indices of pasted keyframes. Mirrors the App: keyframes at a pasted time are
+ *  replaced, then the lane is sorted stably by time. */
+function pastedIndices(kfs: Keyframe[], frames: number[], fps: number): number[] {
+  const taken = new Set(frames)
+  const all = [
+    ...kfs.map(k => smpteToFrames(k.time, fps)).filter(f => !taken.has(f)).map(f => ({ f, j: -1 })),
+    ...frames.map((f, j) => ({ f, j })),
+  ].sort((a, b) => a.f - b.f)
+  return all.flatMap((e, i) => (e.j >= 0 ? [i] : []))
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 interface AutoLaneLayout { y: number; h: number; id: string }
-interface TrackLayout { y: number; totalH: number; autoLanes: AutoLaneLayout[] }
+interface TrackLayout { y: number; totalH: number; autoLanes: AutoLaneLayout[]; hidden?: boolean }
+
+// What the canvas draws per row. Group tracks are drawn as clip-less rows carrying their own
+// automation lanes (so all lane editing works for them unchanged); members of a collapsed
+// group are hidden, and members inherit the group's mute/lock for display.
+type ViewTrack = LayerTrack & { group?: GroupTrack; hidden?: boolean; groupColor?: string }
+
+function toViewTracks(tracks: Track[]): Track[] {
+  const groups = new Map(tracks.filter(t => t.type === 'group').map(t => [(t as GroupTrack).resolumeGroupId, t as GroupTrack]))
+  return tracks.map(t => {
+    if (t.type === 'group') {
+      const g = t as GroupTrack
+      return { ...g, type: 'layer', clips: [], resolumeLayerId: -1, resolumeLayerIndex: g.resolumeGroupIndex, group: g } as unknown as Track
+    }
+    const g = t.type === 'layer' && (t as LayerTrack).groupId !== undefined ? groups.get((t as LayerTrack).groupId!) : undefined
+    if (!g) return t
+    const lt = t as LayerTrack
+    return { ...lt, hidden: !!g.collapsed, groupColor: g.color, muted: lt.muted || g.muted, locked: lt.locked || g.locked } as ViewTrack
+  })
+}
 
 function buildLayout(
   tracks: Track[], clipH: (id: string) => number,
@@ -148,6 +147,7 @@ function buildLayout(
   // Start below ruler + pinned audio lane, offset by vertical scroll
   let y = TRACKS_TOP - scrollY
   return tracks.map(track => {
+    if ((track as ViewTrack).hidden) return { y, totalH: 0, autoLanes: [], hidden: true }
     const curClipH = clipH(track.id)
     const autoLanes: AutoLaneLayout[] = []
     if (track.type === 'layer' && (track as LayerTrack).expanded) {
@@ -190,7 +190,10 @@ const kfFromY = (lane: AutoLaneLayout, y: number) =>
 
 // ── Hit tests ─────────────────────────────────────────────────────────────────
 
-interface KfHit { trackIdx: number; autoIdx: number; kfIdx: number }
+export interface KeyframeRef { trackIdx: number; autoIdx: number; kfIdx: number }
+export interface KeyframeUpdate extends KeyframeRef { updates: Partial<Keyframe> }
+export interface KeyframePasteItem { offsetFrames: number; value: number; ease: string; option?: string }
+type KfHit = KeyframeRef
 
 function hitTestKeyframe(
   cx: number, cy: number, layout: TrackLayout[],
@@ -224,6 +227,38 @@ function hitTestKeyframe(
 
 const sameKf = (a: KfHit | null | undefined, b: KfHit | null | undefined) =>
   !!a && !!b && a.trackIdx === b.trackIdx && a.autoIdx === b.autoIdx && a.kfIdx === b.kfIdx
+const kfRef = (h: KfHit): KfHit => ({ trackIdx: h.trackIdx, autoIdx: h.autoIdx, kfIdx: h.kfIdx })
+const laneKey = (h: { trackIdx: number; autoIdx: number }) => `${h.trackIdx}:${h.autoIdx}`
+const selHas = (sel: KfHit[], h: KfHit) => sel.some(s => sameKf(s, h))
+const sameSel = (a: KfHit[], b: KfHit[]) => a.length === b.length && a.every(h => selHas(b, h))
+
+/** Selection after deleting keyframes: deleted ones drop out, later ones in their lane shift down. */
+function selAfterDelete(sel: KfHit[], del: KfHit[]): KfHit[] {
+  return sel.filter(s => !selHas(del, s)).map(s => ({
+    ...s, kfIdx: s.kfIdx - del.filter(d => laneKey(d) === laneKey(s) && d.kfIdx < s.kfIdx).length,
+  }))
+}
+
+/** Selection after a batch update that may re-sort the touched lanes. */
+function selAfterUpdates(sel: KfHit[], ups: KeyframeUpdate[], tracks: Track[], fps: number): KfHit[] {
+  const maps = new Map<string, number[]>()
+  for (const key of new Set(ups.map(laneKey))) {
+    const lu = ups.filter(u => laneKey(u) === key)
+    const auto = (tracks[lu[0].trackIdx] as LayerTrack | undefined)?.automations?.[lu[0].autoIdx]
+    if (auto) maps.set(key, indicesAfterUpdates(auto.keyframes, new Map(lu.map(u => [u.kfIdx, u.updates])), fps))
+  }
+  return sel.map(s => ({ ...s, kfIdx: maps.get(laneKey(s))?.[s.kfIdx] ?? s.kfIdx }))
+}
+
+function findLane(tracks: Track[], laneId: string): { trackIdx: number; autoIdx: number; auto: AutomationSubTrack } | null {
+  for (let ti = 0; ti < tracks.length; ti++) {
+    const t = tracks[ti]
+    if (t.type !== 'layer') continue
+    const ai = t.automations.findIndex(a => a.id === laneId)
+    if (ai >= 0) return { trackIdx: ti, autoIdx: ai, auto: t.automations[ai] }
+  }
+  return null
+}
 
 function hitTestAutoResize(layout: TrackLayout[], y: number): { autoId: string } | null {
   for (const tl of layout) {
@@ -238,6 +273,26 @@ function hitTestAutoResize(layout: TrackLayout[], y: number): { autoId: string }
 // ── Context menu ──────────────────────────────────────────────────────────────
 
 interface CtxMenu { x: number; y: number; trackIdx: number; autoIdx: number; kfIdx: number }
+
+// ── Keyframe drag / marquee / clipboard ───────────────────────────────────────
+
+// f/v: where the key is drawn during the drag; valued = the drag also changes its value
+interface DragItem extends KfHit { kind: LaneKind; opts: string[]; f0: number; v0: number; f: number; v: number; valued: boolean }
+interface KfDrag {
+  primary: DragItem; items: DragItem[]; lane: AutoLaneLayout
+  startX: number; startY: number; lastX: number; lastY: number
+  accX: number; accY: number           // movement in px, already scaled by fine mode
+  axis: 'x' | 'y' | null; moved: boolean
+  click: 'remove' | 'collapse' | null  // what a click without movement does to the selection
+  snapTargets: number[]; snapF: number | null
+}
+interface Marquee {
+  trackIdx: number; autoIdx: number; lane: AutoLaneLayout
+  x0: number; y0: number; x1: number; y1: number; base: KfHit[]
+}
+interface KfClipboard { lanes: { laneId: string; kind: LaneKind; items: KeyframePasteItem[] }[] }
+// Module level: survives the canvas remounting on view switches
+let kfClipboard: KfClipboard | null = null
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -258,6 +313,8 @@ interface Props {
   scrollY: number
   readOnly: boolean   // SHOW mode: selection and seeking only
   laneStatus: LaneStatusMap  // runtime target state per automation lane id (range, options, broken)
+  // lane id → Resolume's current value (normalized 0..1), only while the operator overrides the lane
+  overrides: Record<string, number>
   onScrollY: (delta: number) => void
   onScrollFrame: (f: number) => void
   onSeek: (frame: number) => void
@@ -270,6 +327,12 @@ interface Props {
   // updates may carry time, value, ease (Curve) and option (choice lanes)
   onUpdateKeyframe: (trackIdx: number, autoIdx: number, kfIdx: number, updates: Partial<Keyframe>) => void
   onDeleteKeyframe: (trackIdx: number, autoIdx: number, kfIdx: number) => void
+  // Batch edits, applied atomically. Indices refer to the lanes BEFORE the call; updates
+  // are applied by index, then each touched lane is re-sorted once (stable) by time.
+  onUpdateKeyframes: (items: KeyframeUpdate[]) => void
+  onDeleteKeyframes: (items: KeyframeRef[]) => void
+  // Keyframes at atFrame + offsetFrames; existing keyframes at those exact times are replaced
+  onPasteKeyframes: (trackIdx: number, autoIdx: number, atFrame: number, items: KeyframePasteItem[]) => void
   onResizeAutoLane: (autoId: string, height: number) => void
   selectedTrackIdx: number | null
   selectedCueIdx: number | null
@@ -278,19 +341,28 @@ interface Props {
 interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number }
 
 export function TimelineCanvas({
-  tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, draggingClip,
+  tracks: tracksProp, markers, fps, bpm, frame, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
-  scrollY, readOnly, laneStatus, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
+  scrollY, readOnly, laneStatus, overrides, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
+  onUpdateKeyframes, onDeleteKeyframes, onPasteKeyframes,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
+  const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
   const [ctxInputVal, setCtxInputVal] = useState('')
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
-  const [selKf, setSelKf] = useState<KfHit | null>(null)
+  const [sel, setSel] = useState<KfHit[]>([])
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
+  // Handlers read the selection through the ref, so a change is visible before the re-render
+  const selRef = useRef(sel)
+  const updateSel = (next: KfHit[]) => { selRef.current = next; setSel(next) }
+  const frameRef = useRef(frame)
+  frameRef.current = frame
+  // Last clicked automation lane (by id): paste target for a single-lane clipboard
+  const focusLaneRef = useRef<string | null>(null)
 
   const autoH = (id: string) => autoLaneHeights[id] ?? DEFAULT_AUTO_H
   const clipH = (id: string) => layerRowHeights[id] ?? DEFAULT_LANE_H
@@ -307,11 +379,8 @@ export function TimelineCanvas({
   const isDraggingPlayhead = useRef(false)
   const moveClipRef = useRef<{ trackIdx: number; cueIdx: number; anchorMouseFrame: number; anchorCueFrame: number } | null>(null)
   const resizeClipRef = useRef<{ trackIdx: number; cueIdx: number; startX: number; startDurF: number } | null>(null)
-  const kfDragRef = useRef<{
-    trackIdx: number; autoIdx: number; kfIdx: number; lane: AutoLaneLayout
-    anchorFrame: number; anchorKfFrame: number; anchorValue: number
-    kind: LaneKind; opts: string[]; startX: number; startY: number; moved: boolean
-  } | null>(null)
+  const kfDragRef = useRef<KfDrag | null>(null)
+  const marqueeRef = useRef<Marquee | null>(null)
   const autoResizeRef = useRef<{ autoId: string; startY: number; startH: number } | null>(null)
   const ghostClipRef = useRef<{ trackIdx: number; cueIdx: number; frame: number } | null>(null)
   const ghostDurRef = useRef<{ trackIdx: number; cueIdx: number; durF: number } | null>(null)
@@ -320,8 +389,14 @@ export function TimelineCanvas({
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
 
   useEffect(() => {
-    if (readOnly) { setContextMenu(null); setClipColorPicker(null); setSelKf(null) }
+    if (readOnly) { setContextMenu(null); setClipColorPicker(null); updateSel([]) }
   }, [readOnly])
+
+  // Keys removed elsewhere (undo, lane deleted) leave the selection
+  useEffect(() => {
+    const s = selRef.current.filter(h => !!autoAt(h.trackIdx, h.autoIdx)?.keyframes[h.kfIdx])
+    if (s.length !== selRef.current.length) updateSel(s)
+  }, [tracks])
 
   // ── Draw ──────────────────────────────────────────────────────────────────
 
@@ -346,6 +421,8 @@ export function TimelineCanvas({
     const tracksBottom = Math.min(H, last ? last.y + last.totalH : TRACKS_TOP)
     const tips: { text: string; x: number; y: number }[] = []
     const kd = kfDragRef.current
+    const dragMap = new Map<string, DragItem>()
+    if (kd?.moved) kd.items.forEach(i => dragMap.set(`${laneKey(i)}:${i.kfIdx}`, i))
     const pxToFrame = (px: number) => px / pxPerFrame + scrollFrame
 
     // One automation lane: curve by kind, keyframe glyphs, playhead dot
@@ -356,8 +433,11 @@ export function TimelineCanvas({
       const opts = range.options ?? []
       const broken = status?.state === 'broken'
       const disabled = auto.enabled === false
+      const ovr = overrides[auto.id]
+      const overridden = typeof ovr === 'number' && Number.isFinite(ovr)
+      const faded = broken || disabled || overridden
       const laneC = auto.color ?? T.text
-      const lineC = broken || disabled ? T.textFaint : laneC
+      const lineC = faded ? T.textFaint : laneC
       const kfC = broken ? T.textFaint : laneC
       const toY = kfToY(lane)
 
@@ -374,28 +454,30 @@ export function TimelineCanvas({
         ctx.fillText(formatValue('range', 0, range, undefined, range.suffix), 8, lane.y + lane.h - 3)
       }
 
-      // Keyframes as drawn: the one being dragged sits at its drag position
-      const dragHere = kd && kd.moved && kd.trackIdx === trackIdx && kd.autoIdx === ai ? kd : null
+      // Keyframes as drawn: dragged ones sit at their drag position
       const keys = auto.keyframes.map((kf, ki) => {
-        const dragging = !!dragHere && dragHere.kfIdx === ki
-        const f = dragging && dragHere ? dragHere.anchorKfFrame : smpteToFrames(kf.time, fps)
-        const v = dragging && dragHere ? dragHere.anchorValue : kfValue(kind, kf, opts)
-        const c: Curve = kind === 'range' ? curveOf(kf.ease) : 'hold'
-        return { ki, kf, f, v, c, x: frameToX(f), y: toY(v), dragging }
+        const d = dragMap.get(`${trackIdx}:${ai}:${ki}`)
+        const f = d ? d.f : smpteToFrames(kf.time, fps)
+        const v = d ? d.v : kfValue(kind, kf, opts)
+        const c: CurveName = kind === 'range' ? curveOf(kf.ease) : 'hold'
+        return { ki, kf, f, v, c, x: frameToX(f), y: toY(v), dragging: !!d, primary: !!d && d === kd?.primary }
       })
       const sorted = [...keys].sort((a, b) => a.f - b.f || a.ki - b.ki)
+      // Same interpolation as the engine; kfToY clamps elastic/back overshoot to the lane
+      const fks: FrameKeyframe[] = sorted.map(k => ({ frame: k.f, value: k.v, curve: k.c }))
 
       if (sorted.length) {
-        // Curve outline: holds as steps, eased segments sampled every 2px with valueAtKeys
+        // Curve outline: holds as steps, eased segments sampled every 2px
         const pts: [number, number][] = [[sorted[0].x, sorted[0].y]]
         for (let i = 0; i < sorted.length - 1; i++) {
           const a = sorted[i], b = sorted[i + 1]
           if (a.c === 'hold') { pts.push([b.x, a.y], [b.x, b.y]); continue }
           if (a.c !== 'linear') {
+            const seg = [fks[i], fks[i + 1]]
             const xe = Math.min(b.x, W)
             for (let px = Math.ceil(Math.max(a.x, 0)); px < xe; px += 2) {
-              const v = valueAtKeys(sorted, pxToFrame(px))
-              if (v != null) pts.push([px, toY(v)])
+              const s = sampleLane(seg, pxToFrame(px), kind)
+              if (s) pts.push([px, toY(s.value)])
             }
           }
           pts.push([b.x, b.y])
@@ -406,9 +488,9 @@ export function TimelineCanvas({
           ctx.beginPath(); ctx.moveTo(first.x, toY(0))
           pts.forEach(p => ctx.lineTo(p[0], p[1]))
           ctx.lineTo(lastK.x, toY(0)); ctx.closePath()
-          ctx.fillStyle = rgba(lineC, disabled || broken ? 0.06 : 0.12); ctx.fill()
+          ctx.fillStyle = rgba(lineC, faded ? 0.06 : 0.12); ctx.fill()
         } else if (kind === 'boolean') {
-          ctx.fillStyle = rgba(lineC, disabled || broken ? 0.25 : 0.55)
+          ctx.fillStyle = rgba(lineC, faded ? 0.25 : 0.55)
           for (let i = 0; i < sorted.length - 1; i++) {
             const a = sorted[i], b = sorted[i + 1]
             if (a.v >= 0.5 && b.x > a.x) ctx.fillRect(a.x, toY(1), b.x - a.x, toY(0) - toY(1))
@@ -416,7 +498,7 @@ export function TimelineCanvas({
         }
 
         ctx.strokeStyle = lineC; ctx.lineWidth = kind === 'boolean' ? 1 : 1.5
-        ctx.setLineDash(disabled ? [4, 3] : [])
+        ctx.setLineDash(disabled || overridden ? [4, 3] : [])
         ctx.beginPath()
         pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])))
         ctx.stroke()
@@ -452,32 +534,47 @@ export function TimelineCanvas({
         }
       }
 
-      // Keyframe glyphs: ◆ linear, ■ hold, ● eased
+      // Operator override: Resolume's current value as a line, OVR tag at the right edge
+      if (overridden) {
+        const oy = Math.round(toY(ovr)) + 0.5
+        ctx.font = `bold 9px ${T.fontUi}`
+        const tw = Math.ceil(ctx.measureText('OVR').width) + 8, th = 12
+        const tx = W - tw - 4
+        ctx.strokeStyle = T.loop; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(0, oy); ctx.lineTo(tx, oy); ctx.stroke()
+        const ty = Math.round(Math.max(lane.y + 1, Math.min(lane.y + lane.h - 2 - th, oy - th / 2)))
+        ctx.fillStyle = T.loop; ctx.fillRect(tx, ty, tw, th)
+        ctx.fillStyle = T.textOnLive; ctx.textBaseline = 'middle'
+        ctx.fillText('OVR', tx + 4, ty + th / 2 + 0.5)
+      }
+
+      // Keyframe glyphs: ◆ linear, ■ hold, ● eased (basic and Resolume families)
       const paramName = laneParamName(auto, status)
       keys.forEach(k => {
         if (k.x < -20 || k.x > W + 20) return
         const hit = { trackIdx, autoIdx: ai, kfIdx: k.ki }
-        const active = k.dragging || sameKf(selKf, hit) || sameKf(contextMenu, hit)
+        const active = k.dragging || selHas(sel, hit) || sameKf(contextMenu, hit)
         const hover = !kd && sameKf(hoverKf, hit)
-        const r = hover || k.dragging ? KF_R + 1 : KF_R
+        const r = hover || k.primary ? KF_R + 1 : KF_R
         ctx.globalAlpha = disabled ? 0.45 : 1
         if (active) { kfGlyph(ctx, k.c, k.x, k.y, r + 1.5); ctx.fillStyle = T.gutter; ctx.fill() }
         kfGlyph(ctx, k.c, k.x, k.y, r)
         ctx.fillStyle = active && !broken ? T.select : kfC; ctx.fill()
         if (!active) { ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke() }
         ctx.globalAlpha = 1
-        if (k.dragging)
-          tips.push({ text: `${formatValue(kind, k.v, range, undefined, range.suffix)} · ${framesToSmpte(k.f, fps)}`, x: k.x, y: k.y })
-        else if (hover)
+        if (k.primary && kd) {
+          const n = kd.items.length
+          tips.push({ text: `${formatValue(kind, k.v, range, undefined, range.suffix)} · ${framesToSmpte(k.f, fps)}${n > 1 ? `  (${n})` : ''}`, x: k.x, y: k.y })
+        } else if (hover)
           tips.push({ text: `${paramName}: ${formatValue(kind, k.v, range, k.kf.option, range.suffix)} · ${k.kf.time}`, x: k.x, y: k.y })
       })
 
       // Value at the playhead
-      const cur = valueAtKeys(sorted, frame)
+      const cur = sampleLane(fks, frame, kind)?.value
       const lx = frameToX(frame)
       if (cur != null && lx >= -4 && lx <= W + 4) {
         ctx.beginPath(); ctx.arc(lx, toY(cur), 2.5, 0, Math.PI * 2)
-        ctx.fillStyle = broken || disabled ? T.textFaint : T.live; ctx.fill()
+        ctx.fillStyle = faded ? T.textFaint : T.live; ctx.fill()
         ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
       }
       ctx.restore()
@@ -497,11 +594,21 @@ export function TimelineCanvas({
 
     // Lane backgrounds
     tracks.forEach((track, i) => {
-      const { y, autoLanes } = layout[i]
+      const { y, autoLanes, hidden } = layout[i]
+      if (hidden) return
       const curClipH = clipH(track.id)
       const base = i % 2 === 0 ? T.lane : T.laneAlt
+      const vt = track as ViewTrack
       ctx.fillStyle = base
       ctx.fillRect(0, y, W, curClipH - 1)
+      if (vt.group) {
+        // Group row: tinted with the group colour; collapsed, it summarises member clips
+        ctx.fillStyle = rgba(vt.group.color ?? T.text, 0.1); ctx.fillRect(0, y, W, curClipH - 1)
+        ctx.fillStyle = rgba(vt.group.color ?? T.text, 0.8); ctx.fillRect(0, y, W, 2)
+        if (vt.group.collapsed) drawGroupSummary(ctx, tracksProp, vt.group, y + 6, curClipH - 12, W, fps, frameToX)
+      } else if (vt.groupColor) {
+        ctx.fillStyle = rgba(vt.groupColor, 0.7); ctx.fillRect(0, y, 3, curClipH - 1)
+      }
       if (i === selectedTrackIdx) { ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(0, y, W, curClipH - 1) }
       ctx.fillStyle = T.gutter; ctx.fillRect(0, y + curClipH - 1, W, 1)
 
@@ -579,8 +686,8 @@ export function TimelineCanvas({
     tracks.forEach((track, trackIdx) => {
       if (track.type !== 'layer') return
       const lt = track as LayerTrack
-      const { y, totalH, autoLanes } = layout[trackIdx]
-      if (y > H || y + totalH < TRACKS_TOP) return
+      const { y, totalH, autoLanes, hidden } = layout[trackIdx]
+      if (hidden || y > H || y + totalH < TRACKS_TOP) return
       const trackColor = lt.color ?? TAG_COLORS[0]
       const muted = !!lt.muted
       const curClipH = clipH(lt.id)
@@ -602,7 +709,7 @@ export function TimelineCanvas({
         const isSel = trackIdx === selectedTrackIdx && cueIdx === selectedCueIdx
         const isLive = !muted && !isGhost && shownF > 0 && frame >= sf && frame < sf + shownF
         const isCut = shownF < durF
-        const color = clip.color ?? trackColor
+        const color = clip.color ?? clip.resolumeColor ?? trackColor
 
         ctx.globalAlpha = (muted ? 0.4 : 1) * (isGhost ? 0.6 : 1)
         // Body at 55% over the lane, title strip opaque; both capped in luminance so
@@ -697,6 +804,25 @@ export function TimelineCanvas({
       })
     })
 
+    // Snap guide while a keyframe drag sits on a snap target
+    if (kd?.moved && kd.snapF != null) {
+      const gx = Math.round(frameToX(kd.snapF))
+      ctx.fillStyle = T.select; ctx.fillRect(gx, TRACKS_TOP, 1, H - TRACKS_TOP)
+    }
+
+    // Marquee, kept inside its lane
+    const mq = marqueeRef.current
+    if (mq) {
+      const x0 = Math.min(mq.x0, mq.x1), x1 = Math.max(mq.x0, mq.x1)
+      const y0 = Math.max(mq.lane.y, Math.min(mq.y0, mq.y1))
+      const y1 = Math.min(mq.lane.y + mq.lane.h - 1, Math.max(mq.y0, mq.y1))
+      if (x1 - x0 >= 1 && y1 - y0 >= 1) {
+        ctx.fillStyle = rgba(T.select, 0.08); ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
+        ctx.strokeStyle = T.select; ctx.lineWidth = 1
+        ctx.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0) - 1, Math.round(y1 - y0) - 1)
+      }
+    }
+
     // Tooltips / drag labels over every lane
     tips.forEach(t => drawTip(ctx, t.text, t.x, t.y, W, TRACKS_TOP))
 
@@ -709,7 +835,7 @@ export function TimelineCanvas({
       ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, selKf, hoverKf])
+  }, [tracks, markers, fps, bpm, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, sel, hoverKf])
 
   // ── Resize / DPR ───────────────────────────────────────────────────────────
 
@@ -809,30 +935,63 @@ export function TimelineCanvas({
       return
     }
 
+    const autoLane = getAutoLaneAt(layout, y)
+    const autoHere = autoLane ? autoAt(autoLane.trackIdx, autoLane.autoIdx) : undefined
+    focusLaneRef.current = autoHere?.id ?? null
+
     if (kfHit && kfEditable) {
-      const auto = autoAt(kfHit.trackIdx, kfHit.autoIdx)!
-      const kf = auto.keyframes[kfHit.kfIdx]
       setHoverKf(null)
+      const cur = selRef.current
       if (e.altKey) {  // Alt-click deletes
         onDeleteKeyframe(kfHit.trackIdx, kfHit.autoIdx, kfHit.kfIdx)
-        setSelKf(null)
+        updateSel(selAfterDelete(cur, [kfHit]))
         return
       }
-      setSelKf(kfHit)
-      const kind = laneKind(auto)
-      const opts = laneRange(auto, laneStatus[auto.id]).options ?? []
-      const lane = layout[kfHit.trackIdx].autoLanes[kfHit.autoIdx]
+      // Shift toggles; a click on a selected key keeps the selection so the drag moves it all.
+      // Deselecting waits for mouse-up, a drag never drops the key it started on.
+      const already = selHas(cur, kfHit)
+      const next = already ? cur : e.shiftKey ? [...cur, kfHit] : [kfHit]
+      if (next !== cur) updateSel(next)
+
+      const items: DragItem[] = []
+      for (const h of next) {
+        const a = autoAt(h.trackIdx, h.autoIdx), k = a?.keyframes[h.kfIdx]
+        if (!a || !k || !layout[h.trackIdx]?.autoLanes[h.autoIdx] || !canEditLane(h.trackIdx, h.autoIdx)) continue
+        const kind = laneKind(a), opts = laneRange(a, laneStatus[a.id]).options ?? []
+        const f0 = smpteToFrames(k.time, fps), v0 = kfValue(kind, k, opts)
+        items.push({ ...kfRef(h), kind, opts, f0, v0, f: f0, v: v0, valued: false })
+      }
+      const primary = items.find(i => sameKf(i, kfHit))
+      if (!primary) return
+      // Values move only for a lone key, or for range keys in the dragged key's lane
+      items.forEach(i => {
+        i.valued = items.length === 1 || (primary.kind === 'range' && i.kind === 'range' && laneKey(i) === laneKey(primary))
+      })
+      const lt = tracks[kfHit.trackIdx] as LayerTrack
+      const snapTargets = markers.map(m => smpteToFrames(m.time, fps))
+      clipSpans(lt, fps, null, null).forEach(s => { snapTargets.push(s.sf); if (s.durF > 0) snapTargets.push(s.sf + s.durF) })
+      lt.automations[kfHit.autoIdx].keyframes.forEach((k, ki) => {
+        if (!selHas(next, { trackIdx: kfHit.trackIdx, autoIdx: kfHit.autoIdx, kfIdx: ki })) snapTargets.push(smpteToFrames(k.time, fps))
+      })
       kfDragRef.current = {
-        ...kfHit, lane, kind, opts,
-        anchorFrame: xToFrame(x),
-        anchorKfFrame: smpteToFrames(kf.time, fps),
-        anchorValue: kfValue(kind, kf, opts),
-        startX: x, startY: y, moved: false,
+        primary, items, lane: layout[kfHit.trackIdx].autoLanes[kfHit.autoIdx],
+        startX: x, startY: y, lastX: x, lastY: y, accX: 0, accY: 0, axis: null, moved: false,
+        click: e.shiftKey ? (already ? 'remove' : null) : (already && cur.length > 1 ? 'collapse' : null),
+        snapTargets, snapF: null,
       }
       return
     }
+
+    // Empty space of an editable automation lane: marquee (Shift adds to the selection)
+    if (!kfHit && autoLane && canEditLane(autoLane.trackIdx, autoLane.autoIdx)) {
+      const base = e.shiftKey ? selRef.current : []
+      if (!e.shiftKey) updateSel([])
+      marqueeRef.current = { trackIdx: autoLane.trackIdx, autoIdx: autoLane.autoIdx, lane: autoLane.lane, x0: x, y0: y, x1: x, y1: y, base }
+      return
+    }
+
     // Any other click in the track area (clip, empty lane) drops the keyframe selection
-    setSelKf(null)
+    updateSel([])
     if (kfHit) return
 
     const clipHit = hitTestClip(x, y)
@@ -854,11 +1013,11 @@ export function TimelineCanvas({
         }
       }
     }
-  }, [tracks, fps, pxPerFrame, scrollFrame, readOnly, laneStatus, getLayout, hitTestClip, onSelectCue, onSeek, onDeleteKeyframe])
+  }, [tracks, markers, fps, pxPerFrame, scrollFrame, readOnly, laneStatus, getLayout, hitTestClip, onSelectCue, onSeek, onDeleteKeyframe])
 
   // ── Mouse move ─────────────────────────────────────────────────────────────
 
-  const handleMouseMove = useCallback((e: { clientX: number; clientY: number }) => {
+  const handleMouseMove = useCallback((e: { clientX: number; clientY: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
     const { x, y } = localXY(e)
     const setCursor = (c: string) => { if (canvasRef.current) canvasRef.current.style.cursor = c }
 
@@ -876,10 +1035,61 @@ export function TimelineCanvas({
       // A plain click (selection) must not nudge the keyframe
       if (!kd.moved && Math.abs(x - kd.startX) < 3 && Math.abs(y - kd.startY) < 3) return
       kd.moved = true
-      const deltaFrame = xToFrame(x) - kd.anchorFrame
-      kd.anchorKfFrame = Math.max(0, kd.anchorKfFrame + deltaFrame)
-      kd.anchorFrame = xToFrame(x)
-      kd.anchorValue = snapValue(kd.kind, kfFromY(kd.lane, y), kd.opts.length)
+      const fine = e.metaKey || e.ctrlKey
+      // Accumulated per event, so toggling fine mode mid-drag does not jump
+      const k = fine ? FINE : 1
+      kd.accX += (x - kd.lastX) * k; kd.accY += (y - kd.lastY) * k
+      kd.lastX = x; kd.lastY = y
+      const mx = Math.abs(x - kd.startX), my = Math.abs(y - kd.startY)
+      if (!kd.axis && Math.max(mx, my) >= AXIS_LOCK_PX) kd.axis = mx >= my ? 'x' : 'y'
+      const lock = e.shiftKey ? kd.axis : null
+      const p = kd.primary
+
+      // Time: whole frames; the dragged key snaps to nearby targets unless fine
+      const rawF = p.f0 + (lock === 'y' ? 0 : kd.accX / pxPerFrame)
+      let tf = Math.round(rawF)
+      let snapF: number | null = null
+      if (!fine && lock !== 'y') {
+        const cands = [...kd.snapTargets, Math.round(frameRef.current)]
+        if (bpm && bpm > 0) { const beatF = (fps * 60) / bpm; cands.push(Math.round(Math.round(rawF / beatF) * beatF)) }
+        let best = SNAP_PX / pxPerFrame
+        for (const c of cands) { const d = Math.abs(c - rawF); if (d <= best) { best = d; snapF = c } }
+        if (snapF != null) tf = snapF
+      }
+      const df = Math.max(-Math.min(...kd.items.map(i => i.f0)), tf - p.f0)
+      kd.snapF = snapF != null && p.f0 + df === snapF ? snapF : null
+
+      // Value: one delta for the range keys, limited so the group keeps its shape
+      const dvRaw = lock === 'x' ? 0 : -kd.accY / Math.max(1, kd.lane.h - 13)
+      const ranged = kd.items.filter(i => i.valued && i.kind === 'range')
+      const dv = ranged.length
+        ? Math.max(-Math.min(...ranged.map(i => i.v0)), Math.min(1 - Math.max(...ranged.map(i => i.v0)), dvRaw))
+        : dvRaw
+      kd.items.forEach(i => {
+        i.f = i.f0 + df
+        i.v = !i.valued ? i.v0 : i.kind === 'range' ? clamp01(i.v0 + dv) : snapValue(i.kind, i.v0 + dvRaw, i.opts.length)
+      })
+      draw()
+      setCursor('crosshair')
+      return
+    }
+
+    if (marqueeRef.current) {
+      const m = marqueeRef.current
+      m.x1 = x; m.y1 = y
+      const auto = autoAt(m.trackIdx, m.autoIdx)
+      if (auto) {
+        const kind = laneKind(auto), opts = laneRange(auto, laneStatus[auto.id]).options ?? []
+        const toY = kfToY(m.lane)
+        const xa = Math.min(m.x0, x), xb = Math.max(m.x0, x), ya = Math.min(m.y0, y), yb = Math.max(m.y0, y)
+        const inside: KfHit[] = []
+        auto.keyframes.forEach((kf, ki) => {
+          const kx = frameToX(smpteToFrames(kf.time, fps)), ky = toY(kfValue(kind, kf, opts))
+          if (kx >= xa && kx <= xb && ky >= ya && ky <= yb) inside.push({ trackIdx: m.trackIdx, autoIdx: m.autoIdx, kfIdx: ki })
+        })
+        const next = [...m.base, ...inside.filter(h => !selHas(m.base, h))]
+        if (!sameSel(next, selRef.current)) updateSel(next)
+      }
       draw()
       setCursor('crosshair')
       return
@@ -919,7 +1129,7 @@ export function TimelineCanvas({
       autoLane ? (canEditLane(autoLane.trackIdx, autoLane.autoIdx) ? 'crosshair' : 'not-allowed') :
       canEdit(ti) ? 'crosshair' : 'not-allowed'
     )
-  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, pxPerFrame, scrollFrame, readOnly, laneStatus])
+  }, [draw, onSeek, onResizeAutoLane, hitTestClip, getLayout, tracks, fps, bpm, pxPerFrame, scrollFrame, readOnly, laneStatus])
 
   // ── Mouse up ───────────────────────────────────────────────────────────────
 
@@ -930,16 +1140,28 @@ export function TimelineCanvas({
     if (kfDragRef.current) {
       const kd = kfDragRef.current
       kfDragRef.current = null
-      const auto = autoAt(kd.trackIdx, kd.autoIdx)
-      if (kd.moved && auto?.keyframes[kd.kfIdx]) {
-        const time = framesToSmpte(kd.anchorKfFrame, fps)
-        const updates: Partial<Keyframe> = { time, value: parseFloat(kd.anchorValue.toFixed(4)) }
-        if (kd.kind === 'choice' && kd.opts.length) updates.option = optionAt(kd.anchorValue, kd.opts)
-        onUpdateKeyframe(kd.trackIdx, kd.autoIdx, kd.kfIdx, updates)
-        // The App re-sorts keyframes by time: keep the moved one selected
-        setSelKf({ trackIdx: kd.trackIdx, autoIdx: kd.autoIdx, kfIdx: indexAfterTimeChange(auto.keyframes, kd.kfIdx, time, fps) })
-      } else draw()
+      const ups: KeyframeUpdate[] = []
+      if (kd.moved) kd.items.forEach(i => {
+        if (!autoAt(i.trackIdx, i.autoIdx)?.keyframes[i.kfIdx]) return
+        const u: Partial<Keyframe> = {}
+        if (i.f !== i.f0) u.time = framesToSmpte(i.f, fps)
+        if (i.valued && i.v !== i.v0) {
+          u.value = parseFloat(i.v.toFixed(i.kind === 'range' ? 4 : 6))
+          if (i.kind === 'choice' && i.opts.length) u.option = optionAt(i.v, i.opts)
+        }
+        if (u.time !== undefined || u.value !== undefined) ups.push({ ...kfRef(i), updates: u })
+      })
+      if (ups.length) {
+        onUpdateKeyframes(ups)
+        // The App re-sorts the lanes by time: keep the moved keys selected
+        updateSel(selAfterUpdates(selRef.current, ups, tracks, fps))
+      } else {
+        if (!kd.moved && kd.click === 'remove') updateSel(selRef.current.filter(s => !sameKf(s, kd.primary)))
+        else if (!kd.moved && kd.click === 'collapse') updateSel([kfRef(kd.primary)])
+        draw()
+      }
     }
+    if (marqueeRef.current) { marqueeRef.current = null; draw() }
 
     if (moveClipRef.current && ghostClipRef.current) {
       onUpdateCue(moveClipRef.current.trackIdx, moveClipRef.current.cueIdx, {
@@ -956,14 +1178,14 @@ export function TimelineCanvas({
     resizeClipRef.current = null
     ghostDurRef.current = null
     if (canvasRef.current) canvasRef.current.style.cursor = 'default'
-  }, [onUpdateCue, onUpdateKeyframe, fps, tracks, draw])
+  }, [onUpdateCue, onUpdateKeyframes, fps, tracks, draw])
 
   // While a drag is active, follow the mouse on the window so leaving the canvas
   // neither drops nor freezes the drag.
   const dragHandlersRef = useRef({ move: handleMouseMove, up: handleMouseUp })
   dragHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
   const isDragging = () => !!(isDraggingPlayhead.current || autoResizeRef.current ||
-    kfDragRef.current || moveClipRef.current || resizeClipRef.current)
+    kfDragRef.current || marqueeRef.current || moveClipRef.current || resizeClipRef.current)
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     handleMouseDown(e)
@@ -1012,7 +1234,9 @@ export function TimelineCanvas({
       const kf = auto.keyframes[kfHit.kfIdx]
       setCtxInputVal(realText(kf.value, laneRange(auto, laneStatus[auto.id])))
       setContextMenu({ x, y, ...kfHit })
-      setSelKf(kfHit)
+      focusLaneRef.current = auto.id
+      // Right-click inside the selection edits all of it; outside, it selects just this key
+      if (!selHas(selRef.current, kfHit)) updateSel([kfHit])
       setHoverKf(null)
       setClipColorPicker(null)
       return
@@ -1025,40 +1249,101 @@ export function TimelineCanvas({
     }
   }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip])
 
-  // ── Keyboard on the selected keyframe ──────────────────────────────────────
+  // ── Keyboard on the selected keyframes ─────────────────────────────────────
   // Capture phase on window, so Delete/Backspace never also reaches the App's clip delete.
 
-  const keyStateRef = useRef({ selKf, tracks, canEditLane, onDeleteKeyframe, onUpdateKeyframe })
-  keyStateRef.current = { selKf, tracks, canEditLane, onDeleteKeyframe, onUpdateKeyframe }
+  /** Selected keys that still exist in an expanded (visible) lane, sorted by time. */
+  const liveSel = (s: KfHit[] = selRef.current) => s
+    .map(h => {
+      const lt = tracks[h.trackIdx] as LayerTrack | undefined
+      const auto = lt?.type === 'layer' && lt.expanded ? lt.automations[h.autoIdx] : undefined
+      const kf = auto?.keyframes[h.kfIdx]
+      return auto && kf ? { h, auto, kf, f: smpteToFrames(kf.time, fps) } : null
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x)
+    .sort((a, b) => a.f - b.f)
+
+  const copySelection = (): boolean => {
+    const items = liveSel()
+    if (!items.length) return false
+    const f0 = items[0].f
+    const lanes: KfClipboard['lanes'] = []
+    // Lane order follows time, so lanes[0] is the lane of the first copied key
+    for (const { auto, kf, f } of items) {
+      let l = lanes.find(x => x.laneId === auto.id)
+      if (!l) { l = { laneId: auto.id, kind: laneKind(auto), items: [] }; lanes.push(l) }
+      l.items.push({ offsetFrames: f - f0, value: kf.value, ease: kf.ease, ...(kf.option !== undefined ? { option: kf.option } : {}) })
+    }
+    kfClipboard = { lanes }
+    return true
+  }
+
+  const pasteClipboard = (): boolean => {
+    const cb = kfClipboard
+    if (!cb || readOnly) return false
+    const at = Math.max(0, Math.round(frameRef.current))
+    const focus = focusLaneRef.current ? findLane(tracks, focusLaneRef.current) : null
+    // A single-lane clipboard goes to the focused lane when it is of the same kind
+    const targets = cb.lanes.length === 1 && focus && laneKind(focus.auto) === cb.lanes[0].kind
+      ? [{ ...focus, items: cb.lanes[0].items }]
+      : cb.lanes.flatMap(l => { const t = findLane(tracks, l.laneId); return t ? [{ ...t, items: l.items }] : [] })
+    const ok = targets.filter(t => canEditLane(t.trackIdx, t.autoIdx))
+    if (!ok.length) return false
+    const next: KfHit[] = []
+    for (const t of ok) {
+      onPasteKeyframes(t.trackIdx, t.autoIdx, at, t.items)
+      pastedIndices(t.auto.keyframes, t.items.map(i => at + i.offsetFrames), fps)
+        .forEach(kfIdx => next.push({ trackIdx: t.trackIdx, autoIdx: t.autoIdx, kfIdx }))
+    }
+    updateSel(next)
+    setContextMenu(null)
+    return true
+  }
+
+  const keyStateRef = useRef({ liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes })
+  keyStateRef.current = { liveSel, copySelection, pasteClipboard, canEditLane, onDeleteKeyframes, onUpdateKeyframes }
 
   useEffect(() => {
-    if (!selKf) return
     const fn = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
       const s = keyStateRef.current
-      const sel = s.selKf
-      if (!sel) return
-      const lt = s.tracks[sel.trackIdx] as LayerTrack | undefined
-      const auto = lt?.type === 'layer' && lt.expanded ? lt.automations[sel.autoIdx] : undefined
-      if (!auto?.keyframes[sel.kfIdx]) return
-      const isDelete = e.key === 'Delete' || e.key === 'Backspace'
-      const isCurve = (e.key === 'e' || e.key === 'E') && !e.metaKey && !e.ctrlKey && !e.altKey && laneKind(auto) === 'range'
-      if (!isDelete && !isCurve) return
-      e.preventDefault(); e.stopPropagation()
-      if (!s.canEditLane(sel.trackIdx, sel.autoIdx)) return
-      if (isDelete) {
-        s.onDeleteKeyframe(sel.trackIdx, sel.autoIdx, sel.kfIdx)
-        setSelKf(null); setContextMenu(null)
-      } else {
-        const cur = curveOf(auto.keyframes[sel.kfIdx].ease)
-        const next = CURVES[(CURVES.indexOf(cur) + 1) % CURVES.length]
-        s.onUpdateKeyframe(sel.trackIdx, sel.autoIdx, sel.kfIdx, { ease: next })
+      const mod = e.metaKey || e.ctrlKey
+      const swallow = () => { e.preventDefault(); e.stopPropagation() }
+
+      if (mod && !e.altKey && e.code === 'KeyC') { if (s.copySelection()) swallow(); return }
+      if (mod && !e.altKey && e.code === 'KeyV') { if (s.pasteClipboard()) swallow(); return }
+
+      if (!selRef.current.length) return
+      if (e.key === 'Escape') { swallow(); updateSel([]); setContextMenu(null); return }
+
+      const items = s.liveSel()
+      if (!items.length) return
+      const editable = items.filter(i => s.canEditLane(i.h.trackIdx, i.h.autoIdx))
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        swallow()
+        if (!editable.length) return
+        const del = editable.map(i => i.h)
+        s.onDeleteKeyframes(del)
+        updateSel(selAfterDelete(selRef.current, del))
+        setContextMenu(null)
+        return
+      }
+      if ((e.key === 'e' || e.key === 'E') && !mod && !e.altKey) {
+        const ranged = items.filter(i => laneKind(i.auto) === 'range')
+        if (!ranged.length) return
+        swallow()
+        const targets = ranged.filter(i => s.canEditLane(i.h.trackIdx, i.h.autoIdx))
+        if (!targets.length) return
+        // E cycles the basic curves; a Resolume family curve moves on to Linear
+        const cur = (BASIC_CURVES as readonly string[]).indexOf(curveOf(targets[0].kf.ease))
+        const next = BASIC_CURVES[(cur + 1) % BASIC_CURVES.length]
+        s.onUpdateKeyframes(targets.map(i => ({ ...kfRef(i.h), updates: { ease: next } })))
       }
     }
     window.addEventListener('keydown', fn, true)
     return () => window.removeEventListener('keydown', fn, true)
-  }, [selKf])
+  }, [])
 
   // ── Drag & drop ────────────────────────────────────────────────────────────
 
@@ -1129,23 +1414,34 @@ export function TimelineCanvas({
         const kind = laneKind(auto)
         const range = laneRange(auto, laneStatus[auto.id])
         const opts = range.options ?? []
-        const curCurve: Curve = kind === 'range' ? curveOf(kf.ease) : 'hold'
+        const curCurve: CurveName = kind === 'range' ? curveOf(kf.ease) : 'hold'
         const close = () => setContextMenu(null)
+        // Inside a multi-selection the menu edits all of it: curves on every range key,
+        // values only on the keys of this lane
+        const hit = { trackIdx: ti, autoIdx: ai, kfIdx: ki }
+        const targets = (sel.length > 1 && selHas(sel, hit) ? sel : [hit])
+          .filter(h => !!autoAt(h.trackIdx, h.autoIdx)?.keyframes[h.kfIdx] && canEditLane(h.trackIdx, h.autoIdx))
+        const laneTargets = targets.filter(h => laneKey(h) === laneKey(hit))
+        const curveTargets = kind === 'range' ? targets.filter(h => laneKind(autoAt(h.trackIdx, h.autoIdx)!) === 'range') : [hit]
+        const setAll = (list: KfHit[], updates: Partial<Keyframe>) =>
+          onUpdateKeyframes(list.map(h => ({ ...kfRef(h), updates })))
         const commitReal = () => {
           const v = realToNorm(ctxInputVal, range)
-          if (v != null) onUpdateKeyframe(ti, ai, ki, { value: v })
+          if (v != null) setAll(laneTargets, { value: v })
           close()
         }
         const curOpt = opts.length ? optionAt(kfValue('choice', kf, opts), opts) : kf.option
+        const n = targets.length
         return (
           <div
             className="ctx-menu kf-menu"
-            style={clampPos(contextMenu.x, contextMenu.y, 260, kind === 'range' ? 250 : 210)}
+            style={clampPos(contextMenu.x, contextMenu.y, 260, kind === 'range' ? 400 : 210)}
             onMouseDown={e => e.stopPropagation()}
           >
             <div className="ctx-title" title={laneTitle(auto)}>{laneTitle(auto)}</div>
             <div className="ctx-hint">{kf.time}{kind === 'range' && range.min !== undefined && range.max !== undefined
-              ? ` · ${formatValue('range', 0, range)} … ${formatValue('range', 1, range, undefined, range.suffix)}` : ''}</div>
+              ? ` · ${formatValue('range', 0, range)} … ${formatValue('range', 1, range, undefined, range.suffix)}` : ''}
+              {n > 1 ? ` · izbranih ${n}` : ''}</div>
             <div className="ctx-row">
               <label>Vrednost</label>
               {kind === 'range' && <>
@@ -1167,7 +1463,7 @@ export function TimelineCanvas({
                   onChange={e => {
                     const i = opts.indexOf(e.target.value)
                     if (i < 0) return
-                    onUpdateKeyframe(ti, ai, ki, { value: opts.length > 1 ? i / (opts.length - 1) : 0, option: opts[i] })
+                    setAll(laneTargets, { value: opts.length > 1 ? i / (opts.length - 1) : 0, option: opts[i] })
                     close()
                   }}
                   onKeyDown={e => { if (e.key === 'Escape') close() }}
@@ -1180,7 +1476,7 @@ export function TimelineCanvas({
                 <div className="ctx-seg">
                   {[0, 1].map(v => (
                     <button key={v} className={`ctx-seg-btn${kfValue('boolean', kf, opts) === v ? ' on' : ''}`}
-                      onClick={() => { onUpdateKeyframe(ti, ai, ki, { value: v }); close() }}
+                      onClick={() => { setAll(laneTargets, { value: v }); close() }}
                     >{v ? 'On' : 'Off'}</button>
                   ))}
                 </div>
@@ -1189,21 +1485,41 @@ export function TimelineCanvas({
             <div className="ctx-row wrap">
               <label>Oblika</label>
               <div className="ctx-seg">
-                {(kind === 'range' ? CURVES : ['hold' as Curve]).map(c => (
+                {(kind === 'range' ? BASIC_CURVES : (['hold'] as const)).map(c => (
                   <button key={c} className={`ctx-seg-btn${c === curCurve ? ' on' : ''}`}
                     title={kind === 'range' ? 'Tipka E kroži med oblikami' : 'Diskretni parametri vedno skočijo'}
-                    onClick={() => onUpdateKeyframe(ti, ai, ki, { ease: c })}
-                  ><span className="ctx-glyph">{CURVE_GLYPH[c]}</span>{CURVE_LABEL[c]}</button>
+                    onClick={() => setAll(curveTargets, { ease: c })}
+                  ><span className="ctx-glyph">{BASIC_GLYPH[c]}</span>{curveLabel(c)}</button>
                 ))}
               </div>
             </div>
+            {kind === 'range' && (
+              <div className="ctx-row wrap">
+                <label>Resolume</label>
+                <div className="kf-fam">
+                  {FAMILY_ROWS.flatMap(row => {
+                    const fam = curveLabel(row[0]).replace(/ In$/, '')
+                    return [
+                      <span key={fam} className="kf-fam-name">{fam}</span>,
+                      ...row.map(c => (
+                        <button key={c} className={`kf-fam-btn${c === curCurve ? ' on' : ''}`} title={curveLabel(c)}
+                          onClick={() => setAll(curveTargets, { ease: c })}
+                        >{curveLabel(c).slice(fam.length + 1)}</button>
+                      )),
+                    ]
+                  })}
+                </div>
+              </div>
+            )}
             {kind === 'range' && <button className="ctx-btn" onClick={commitReal}>Potrdi</button>}
             <div className="ctx-divider" />
             <button className="ctx-btn danger" onClick={() => {
-              onDeleteKeyframe(ti, ai, ki)
-              setSelKf(null)
+              const del = targets.length ? targets : [hit]
+              if (del.length === 1) onDeleteKeyframe(del[0].trackIdx, del[0].autoIdx, del[0].kfIdx)
+              else onDeleteKeyframes(del)
+              updateSel(selAfterDelete(selRef.current, del))
               close()
-            }}>Izbriši keyframe</button>
+            }}>{n > 1 ? `Izbriši izbrane (${n})` : 'Izbriši keyframe'}</button>
             <button className="ctx-btn dim" onClick={close}>Prekliči</button>
           </div>
         )
@@ -1311,7 +1627,7 @@ function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number)
 }
 
 // Keyframe glyph by curve: ◆ linear, ■ hold, ● eased (r = half the glyph size)
-function kfGlyph(ctx: CanvasRenderingContext2D, c: Curve, x: number, y: number, r: number) {
+function kfGlyph(ctx: CanvasRenderingContext2D, c: CurveName, x: number, y: number, r: number) {
   if (c === 'linear') { diamond(ctx, x, y, r); return }
   ctx.beginPath()
   if (c === 'hold') { const s = r * 0.8; ctx.rect(x - s, y - s, 2 * s, 2 * s) }
@@ -1331,6 +1647,27 @@ function drawTip(ctx: CanvasRenderingContext2D, text: string, x: number, y: numb
   ctx.fillStyle = T.header; ctx.fillRect(bx, by, bw, bh)
   ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1)
   ctx.fillStyle = T.textHi; ctx.fillText(text, bx + 6, by + bh / 2 + 0.5)
+}
+
+// Collapsed group: one thin slice per member layer with its clips in their own colours
+// (Logic/Ableton folded-group overview), so the timing stays readable while folded
+function drawGroupSummary(
+  ctx: CanvasRenderingContext2D, tracks: Track[], group: GroupTrack, y: number, h: number, W: number,
+  fps: number, frameToX: (f: number) => number,
+) {
+  const members = tracks.filter(t => t.type === 'layer' && (t as LayerTrack).groupId === group.resolumeGroupId) as LayerTrack[]
+  if (!members.length || h < 4) return
+  const sliceH = Math.max(2, Math.floor(h / members.length) - 1)
+  members.forEach((lt, mi) => {
+    const sy = y + mi * (sliceH + 1)
+    for (const c of lt.clips) {
+      const sf = smpteToFrames(c.time, fps), df = Math.max(2, smpteToFrames(c.duration, fps))
+      const x0 = frameToX(sf), x1 = frameToX(sf + df)
+      if (x1 < 0 || x0 > W) continue
+      ctx.fillStyle = capLum(c.color ?? c.resolumeColor ?? lt.color ?? TAG_COLORS[0], 0.3)
+      ctx.fillRect(Math.round(x0), sy, Math.max(2, Math.round(x1 - x0)), sliceH)
+    }
+  })
 }
 
 function hatch(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, step = 8) {

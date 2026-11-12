@@ -40,6 +40,8 @@ setInterval(checkResolume, 2000)  // also feeds the live state strip in the laye
 
 // ── Scheduler tick → UI ───────────────────────────────────────────────────────
 
+scheduler.onEvent((channel, payload) => safeSend(channel, payload))
+
 scheduler.onTick(frame => {
   safeSend('engine:tick', {
     frame,
@@ -159,6 +161,9 @@ ipcMain.handle('resolume:getThumbnail', async (_e, layerId: number, clipId: numb
 ipcMain.handle('resolume:getLayerRaw', (_e, layerIndex: number) =>
   rest.getJson(`/composition/layers/${layerIndex}`))
 
+ipcMain.handle('resolume:getGroupRaw', (_e, groupIndex: number) =>
+  rest.getJson(`/composition/layergroups/${groupIndex}`))
+
 ipcMain.handle('resolume:getClipRaw', (_e, layerIndex: number, clipIndex: number) =>
   rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`))
 
@@ -181,8 +186,13 @@ ipcMain.handle('resolume:triggerClip', (_e, layer: number, clip: number) => { os
 ipcMain.handle('resolume:triggerColumn', (_e, column: number) => { osc.connectColumn(column); return null })
 ipcMain.handle('resolume:clearLayer', (_e, layer: number) => { osc.clearLayer(layer); return null })
 ipcMain.handle('resolume:sendOsc', (_e, address: string, value: number) => { osc.send(address, value); return null })
-ipcMain.handle('resolume:setParamById', (_e, id: number, value: number | string | boolean) => rest.setParamById(id, value))
+ipcMain.handle('resolume:setParamById', (_e, id: number, value: number | string | boolean) => {
+  scheduler.noteSent(id, value)  // inspector fader: the app's own change, not an operator override
+  return rest.setParamById(id, value)
+})
 ipcMain.handle('resolume:getParamById', (_e, id: number) => rest.getParamById(id))
+ipcMain.handle('engine:reenable', (_e, ids?: string[]) => { scheduler.reenable(ids); return null })
+ipcMain.handle('engine:setRecordArmed', (_e, armed: boolean) => { scheduler.setRecordArmed(armed); return null })
 ipcMain.handle('engine:setTargets', (_e, map: Record<string, LaneTarget>) => { scheduler.setTargets(map); return null })
 ipcMain.handle('cue:manualFire', (_e, cue: CueEvent, layer: number) => { scheduler.manualTriggerCue(cue, layer); return null })
 

@@ -39,6 +39,9 @@
   --danger: #ff5c5c;        /* error, LTC lost, broken */
   --danger-fill: #b3261e;   /* REC / armed / destructive confirm fill */
   --focus-ring: var(--select);
+  /* Automation scope: layer-level parameters green, clip-level orange (lanes, faders, chips) */
+  --scope-layer: #6fd6a8;
+  --scope-clip: #f2a33a;
 
   /* Identity tags (block fills, white text ≥ 5:1) */
   --tag-olive: #5f6b4c; --tag-slate: #56636e; --tag-rose: #7a625a; --tag-mauve: #6b4e62;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { LayerTrack, ClipCue, ParamRef } from '../../../shared/show'
+import type { LayerTrack, GroupTrack, ClipCue, AutomationSubTrack } from '../../../shared/show'
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { KIND_GLYPH } from './ParamPicker'
@@ -14,20 +14,27 @@ const pct = (v: number, min: number, max: number) =>
 
 interface Props {
   track: LayerTrack | null; cue: ClipCue | null
+  group: GroupTrack | null      // selected Resolume layer group (Arena)
   cueIdx: number | null; trackIdx: number | null; fps: number
   height: number
   readOnly: boolean
   onResize: (h: number) => void
   onUpdateCue: (ti: number, ci: number, u: Partial<ClipCue>) => void
   onDeleteCue: (ti: number, ci: number) => void
-  onAddParam: (trackIdx: number, info: ParamInfo, binding: Binding) => void
+  frame: number
+  // Keyframing like After Effects / Resolve: ◇ starts animating the parameter (lane +
+  // keyframe at the playhead), ◆ toggles a keyframe at the playhead, and moving the fader
+  // of an animated parameter writes a keyframe at the playhead.
+  onToggleKey: (trackIdx: number, info: ParamInfo, real: Real, binding: Binding) => void
+  onParamEdit: (trackIdx: number, info: ParamInfo, real: Real) => void
+  onSeek: (frame: number) => void
   onSelectCue: (trackIdx: number, cueIdx: number) => void
   onClose: () => void
 }
 
 export function BottomPanel({
-  track, cue, cueIdx, trackIdx, fps, height, readOnly, onResize,
-  onUpdateCue, onDeleteCue, onAddParam, onSelectCue, onClose,
+  track, cue, group, cueIdx, trackIdx, fps, height, readOnly, onResize, frame,
+  onUpdateCue, onDeleteCue, onToggleKey, onParamEdit, onSeek, onSelectCue, onClose,
 }: Props) {
   const [tab, setTab] = useState<'cue' | 'layer' | 'clip'>('cue')
   const [layerParams, setLayerParams] = useState<ParamInfo[]>([])
@@ -70,6 +77,27 @@ export function BottomPanel({
 
   useEffect(() => { setDelArmed(false) }, [cue?.id])
 
+  // Live values: re-read the visible tab's parameters so faders follow automation and
+  // whatever the operator does in Resolume (REST by index, ~0.3 ms locally)
+  const [live, setLive] = useState<Record<number, Real>>({})
+  useEffect(() => {
+    if (!track || !cue || tab === 'cue') return
+    let stopped = false
+    const poll = async () => {
+      const raw = tab === 'layer'
+        ? await api.getLayerRaw(track.resolumeLayerIndex)
+        : await api.getClipRaw(track.resolumeLayerIndex, cue.clipIndex)
+      if (stopped || !raw) return
+      const list = tab === 'layer' ? listParams(raw, 'layer') : listParams(raw, 'clip', cue.clipId)
+      setLive(Object.fromEntries(list.map(p => [p.id, p.value as Real])))
+      // Effects added/removed in Resolume: refresh the rows themselves
+      const setList = tab === 'layer' ? setLayerParams : setClipParams
+      setList(prev => prev.map(p => p.id).join() === list.map(p => p.id).join() ? prev : list)
+    }
+    const t = setInterval(poll, 300)
+    return () => { stopped = true; clearInterval(t) }
+  }, [tab, track?.resolumeLayerIndex, cue?.clipIndex, cue?.clipId])
+
   const handle = (
     <div
       className="bp-resize-handle"
@@ -87,6 +115,56 @@ export function BottomPanel({
     </div>
   )
   const fire = (t: LayerTrack, c: ClipCue) => api.triggerClip(t.resolumeLayerIndex, c.clipIndex)
+
+  // GROUP view — the selected track is a layer group: its own parameters (master, opacity,
+  // blend, bypass, group effects) polled live like the layer tab
+  const [groupParams, setGroupParams] = useState<ParamInfo[]>([])
+  const [groupLive, setGroupLive] = useState<Record<number, Real>>({})
+  useEffect(() => {
+    if (!group || group.resolumeGroupIndex < 1) { setGroupParams([]); return }
+    let stopped = false
+    const poll = async () => {
+      const raw = await api.getGroupRaw(group.resolumeGroupIndex)
+      if (stopped || !raw) return
+      const list = listParams(raw, 'group')
+      setGroupLive(Object.fromEntries(list.map(p => [p.id, p.value as Real])))
+      setGroupParams(prev => prev.map(p => p.id).join() === list.map(p => p.id).join() ? prev : list)
+    }
+    poll()
+    const t = setInterval(poll, 300)
+    return () => { stopped = true; clearInterval(t) }
+  }, [group?.resolumeGroupIndex])
+
+  if (group && trackIdx != null) {
+    return (
+      <div className="bottom-panel" style={{ height }}>
+        {handle}
+        <div className="bp-header">
+          <div className="bp-title">
+            <span className="bp-stripe" style={{ background: group.color ?? 'var(--text-faint)' }} />
+            <span className="bp-layer">{group.name}</span>
+            <span className="bp-sep">›</span>
+            <span className="bp-clip">Parametri skupine</span>
+          </div>
+          <div className="bp-actions">{roChip}{closeBtn}</div>
+        </div>
+        <div className="bp-body">
+          <ParamList
+            scope="layer"
+            params={groupParams}
+            live={groupLive}
+            loading={false}
+            lanes={group.automations}
+            frame={frame} fps={fps}
+            readOnly={readOnly}
+            onToggleKey={(info, real) => onToggleKey(trackIdx, info, real, 'layer')}
+            onEdit={(info, real) => { api.setParamById(info.id, real); onParamEdit(trackIdx, info, real) }}
+            onSeek={onSeek}
+          />
+        </div>
+      </div>
+    )
+  }
 
   // CUE LIST view — track is selected (LayerTrack) but no specific clip
   if (track && trackIdx != null && cueIdx == null) {
@@ -137,11 +215,8 @@ export function BottomPanel({
   const durFrame = smpteToFrames(cue.duration, fps)
   const durMax = Math.max(fps * 60, durFrame * 2)
   const setDur = (f: number) => onUpdateCue(trackIdx, cueIdx, { duration: framesToSmpte(Math.max(0, f), fps) })
-  const automated = track.automations.flatMap(a => (a.ref ? [a.ref] : []))
-
   // Layer params stay at absolute times; clip params move with this clip
-  const addAuto = (info: ParamInfo) =>
-    onAddParam(trackIdx, info, tab === 'layer' ? 'layer' : { cueId: cue.id })
+  const binding: Binding = tab === 'layer' ? 'layer' : { cueId: cue.id }
 
   return (
     <div className="bottom-panel" style={{ height }}>
@@ -152,7 +227,7 @@ export function BottomPanel({
 
         <div className="bp-tabs">
           {(['cue', 'layer', 'clip'] as const).map(t => (
-            <button key={t} className={`bp-tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+            <button key={t} className={`bp-tab ${t === 'cue' ? '' : `scope-${t}`} ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
               {t === 'cue' ? 'Cue' : t === 'layer' ? 'Layer' : 'Clip'}
             </button>
           ))}
@@ -216,12 +291,16 @@ export function BottomPanel({
         {(tab === 'layer' || tab === 'clip') && (
           <ParamList
             key={tab}
+            scope={tab}
             params={tab === 'layer' ? layerParams : clipParams}
+            live={live}
             loading={loadingParams}
-            automated={automated}
+            lanes={track.automations}
+            frame={frame} fps={fps}
             readOnly={readOnly}
-            onAdd={addAuto}
-            onSend={(id, v) => api.setParamById(id, v)}
+            onToggleKey={(info, real) => onToggleKey(trackIdx, info, real, binding)}
+            onEdit={(info, real) => { api.setParamById(info.id, real); onParamEdit(trackIdx, info, real) }}
+            onSeek={onSeek}
           />
         )}
       </div>
@@ -231,14 +310,16 @@ export function BottomPanel({
 
 type Real = number | string | boolean
 
-function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
-  params: ParamInfo[]; loading: boolean; automated: ParamRef[]; readOnly: boolean
-  onAdd: (p: ParamInfo) => void; onSend: (id: number, v: Real) => void
+function ParamList({ scope, params, live, loading, lanes, frame, fps, readOnly, onToggleKey, onEdit, onSeek }: {
+  scope: 'layer' | 'clip'; params: ParamInfo[]; live: Record<number, Real>; loading: boolean
+  lanes: AutomationSubTrack[]; frame: number; fps: number; readOnly: boolean
+  onToggleKey: (p: ParamInfo, real: Real) => void
+  onEdit: (p: ParamInfo, real: Real) => void
+  onSeek: (frame: number) => void
 }) {
-  // Local echo of what the operator set, keyed by parameter id (REST values are real units)
-  const [vals, setVals] = useState<Record<number, Real>>({})
+  // While a fader is held, its value comes from the hand, not from polling
+  const [held, setHeld] = useState<Record<number, Real>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  useEffect(() => { setVals({}) }, [params])
 
   if (loading) return <div className="bp-empty">Nalagam…</div>
   if (!params.length) return <div className="bp-empty">Ni parametrov. Resolume mora biti odprt.</div>
@@ -250,13 +331,11 @@ function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
     if (next.has(g)) next.delete(g); else next.add(g)
     return next
   })
-  const set = (p: ParamInfo, v: Real) => {
-    setVals(prev => ({ ...prev, [p.id]: v }))
-    onSend(p.id, v)
-  }
+  const hold = (p: ParamInfo, v: Real) => { setHeld(prev => ({ ...prev, [p.id]: v })); onEdit(p, v) }
+  const release = (p: ParamInfo) => setHeld(prev => { const n = { ...prev }; delete n[p.id]; return n })
 
   return (
-    <div className="bp-params">
+    <div className={`bp-params scope-${scope}`}>
       {[...groups].map(([g, ps]) => {
         const open = !collapsed.has(g)
         return (
@@ -267,8 +346,12 @@ function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
               <span className="bp-section-count">{ps.length}</span>
             </button>
             {open && <div className="bp-param-grid">{ps.map(p => {
-              const val = p.id in vals ? vals[p.id] : p.value
-              const isAuto = automated.some(r => sameRef(r, p.ref))
+              const val = p.id in held ? held[p.id] : p.id in live ? live[p.id] : p.value
+              const lane = lanes.find(l => sameRef(l.ref, p.ref))
+              const keyFrames = lane ? lane.keyframes.map(k => smpteToFrames(k.time, fps)).sort((a, b) => a - b) : []
+              const onKey = keyFrames.includes(frame)
+              const prevKey = [...keyFrames].reverse().find(f => f < frame)
+              const nextKey = keyFrames.find(f => f > frame)
               const shown = formatValue(p.kind, normalize(p, val), p, p.kind === 'choice' ? String(val) : undefined, p.suffix)
               let control: React.ReactNode
               if (p.kind === 'range') {
@@ -277,12 +360,13 @@ function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
                 control = (
                   <input type="range" className="bp-slider" min={min} max={max} step="any"
                     value={num} style={pct(num, min, max)} disabled={readOnly}
-                    onChange={e => set(p, Number(e.target.value))} />
+                    onChange={e => hold(p, Number(e.target.value))}
+                    onPointerUp={e => { release(p); e.currentTarget.blur() }} onBlur={() => release(p)} />
                 )
               } else if (p.kind === 'choice') {
                 control = (
                   <select className="bp-select" value={String(val ?? '')} disabled={readOnly}
-                    onChange={e => set(p, e.target.value)}>
+                    onChange={e => { onEdit(p, e.target.value) }}>
                     {!(p.options ?? []).includes(String(val)) && <option value={String(val ?? '')}>{String(val ?? '—')}</option>}
                     {(p.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
@@ -291,23 +375,34 @@ function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
                 control = (
                   <label className="bp-toggle bp-param-toggle">
                     <input type="checkbox" checked={!!val} disabled={readOnly}
-                      onChange={e => set(p, e.target.checked)} />
+                      onChange={e => onEdit(p, e.target.checked)} />
                     <span>{val ? 'On' : 'Off'}</span>
                   </label>
                 )
               }
               return (
-                <div key={p.id} className="bp-row bp-param">
+                <div key={p.id} className={`bp-row bp-param ${lane ? 'animated' : ''}`}>
                   <span className="bp-label" title={`${p.ref.label}\n${p.valuetype} · id ${p.id}`}>
                     <span className="bp-kind">{KIND_GLYPH[p.kind]}</span>{p.name}
                   </span>
                   <span className="bp-val mono bp-num" title={shown}>{shown}</span>
                   {control}
-                  <button className={`btn ghost bp-icon bp-auto ${isAuto ? 'on' : ''}`}
-                    // A second lane on the same target would fight the first one
-                    disabled={readOnly || isAuto} onClick={() => onAdd(p)}
-                    title={isAuto ? 'Parameter je že avtomatiziran na tej stezi' : 'Dodaj avtomatizacijo'}
-                  >{isAuto ? '◆' : '◇'}</button>
+                  <span className="bp-keynav">
+                    {lane && (
+                      <button className="btn ghost bp-icon" disabled={prevKey === undefined}
+                        onClick={() => prevKey !== undefined && onSeek(prevKey)} title="Prejšnji keyframe">◀</button>
+                    )}
+                    <button className={`btn ghost bp-icon bp-auto ${lane ? 'on' : ''} ${onKey ? 'key' : ''}`}
+                      disabled={readOnly}
+                      onClick={() => onToggleKey(p, val as Real)}
+                      title={!lane ? 'Animiraj: ustvari stezo in keyframe na playheadu'
+                        : onKey ? 'Odstrani keyframe na playheadu' : 'Dodaj keyframe na playheadu'}
+                    >{onKey ? '◆' : '◇'}</button>
+                    {lane && (
+                      <button className="btn ghost bp-icon" disabled={nextKey === undefined}
+                        onClick={() => nextKey !== undefined && onSeek(nextKey)} title="Naslednji keyframe">▶</button>
+                    )}
+                  </span>
                 </div>
               )
             })}</div>}

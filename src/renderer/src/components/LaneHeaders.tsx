@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Track, LayerTrack, Show, AutomationSubTrack, Keyframe, LaneKind, ClipCue } from '../../../shared/show'
+import type { Track, LayerTrack, GroupTrack, Show, AutomationSubTrack, Keyframe, LaneKind, ClipCue } from '../../../shared/show'
 import type { ResolumeComposition, ResolumeLayer } from '../../../shared/resolume'
 import { formatValue, type ParamInfo } from '../../../shared/paramTree'
 import { toFrameKeyframes, sampleLane } from '../../../shared/automation'
@@ -20,6 +20,9 @@ interface Props {
   frame: number
   fps: number
   laneStatus: LaneStatusMap
+  overrides: Record<string, number>          // lanes the operator took over in Resolume
+  onToggleGroupCollapsed: (idx: number) => void
+  onReenable: (ids?: string[]) => void
   onSelect: (idx: number) => void
   onToggleExpand: (idx: number) => void
   onSetAllExpanded: (expanded: boolean) => void
@@ -78,12 +81,13 @@ function splitLabel(auto: AutomationSubTrack): { owner: string; param: string } 
   const param = at >= 0 ? label.slice(at + 3) : label
   if (!auto.ref) return { owner: sub, param }
   if (auto.ref.scope === 'clip') return { owner: sub ? `Clip · ${sub}` : 'Clip', param }
+  if (auto.ref.scope === 'group') return { owner: sub ? `Group · ${sub}` : 'Group', param }
   return { owner: sub || 'Layer', param }
 }
 
 export function LaneHeaders({
   tracks, selectedIdx, layerRowHeights, autoLaneHeights, scrollY, audioTrack, readOnly,
-  composition, frame, fps, laneStatus,
+  composition, frame, fps, laneStatus, overrides, onReenable, onToggleGroupCollapsed,
   onSelect, onToggleExpand, onSetAllExpanded, onToggleMute, onToggleLock, onResizeLayer, onResizeAutoLane,
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
@@ -152,22 +156,25 @@ export function LaneHeaders({
   // ── Picker data for the open picker ──
   let pickerEl: React.ReactNode = null
   const pt = picker ? tracks[picker.ti] : null
-  if (picker && pt && pt.type === 'layer') {
-    const lt = pt as LayerTrack
-    const layerJson = layerOf(lt)
+  if (picker && pt && (pt.type === 'layer' || pt.type === 'group')) {
+    const isGroup = pt.type === 'group'
+    const lt = (isGroup ? { ...pt, clips: [] } : pt) as LayerTrack
+    const layerJson: any = isGroup
+      ? (composition?.layergroups?.find(g => g?.id === (pt as GroupTrack).resolumeGroupId) ?? null)
+      : layerOf(lt)
     const seen = new Set<string>()
     const clips: PickerClip[] = []
     for (const cue of [...lt.clips].sort((a, b) => smpteToFrames(a.time, fps) - smpteToFrames(b.time, fps))) {
       if (seen.has(cue.id)) continue
       seen.add(cue.id)
-      const json = layerJson?.clips?.find(c => c.id === cue.clipId) ?? null
+      const json = layerJson?.clips?.find((c: any) => c.id === cue.clipId) ?? null
       clips.push({ cueId: cue.id, clipId: cue.clipId, name: cue.clipName, json })
     }
     const ai = picker.ai
     pickerEl = (
       <ParamPicker
         key={picker.key}
-        anchor={picker.anchor} layerJson={layerJson} clips={clips}
+        anchor={picker.anchor} layerJson={layerJson} clips={clips} scope={isGroup ? 'group' : 'layer'}
         automated={lt.automations.flatMap(a => (a.ref ? [a.ref] : []))}
         mode={picker.mode}
         title={picker.mode === 'retarget' && ai != null ? `Preusmeri: ${lt.automations[ai]?.ref?.label ?? lt.automations[ai]?.name ?? ''}` : undefined}
@@ -180,123 +187,9 @@ export function LaneHeaders({
     )
   }
 
-  return (
-    <div className="lane-headers" style={{ userSelect: resizing ? 'none' : undefined }}>
-      <div className="ruler-corner">
-        <span>Sloji</span>
-        <button
-          className="corner-expand"
-          title={anyExpanded ? 'Skrij avtomacijo vseh layerjev' : 'Pokaži avtomacijo vseh layerjev'}
-          onClick={() => onSetAllExpanded(!anyExpanded)}
-        >{anyExpanded ? '▸ vse' : '▾ vse'}</button>
-        <span className="ruler-corner-count">{tracks.length}</span>
-      </div>
-
-      {/* Audio lane header — pinned under the ruler like the canvas audio lane */}
-      <div className="audio-head" onClick={e => e.stopPropagation()}>
-        <div className="lane-stripe" style={{ background: audioColor }} />
-        {audioTrack ? (
-          <div className="audio-head-body">
-            <div className="audio-head-top">
-              <span className="audio-head-icon">♪</span>
-              <span className="audio-head-name" title={audioTrack.filePath}>{audioTrack.name}</span>
-              {!readOnly && (
-                <button className="lane-tool" title="Naloži drugo avdio datoteko"
-                  onClick={e => { e.stopPropagation(); onLoadAudio() }}>⇄</button>
-              )}
-            </div>
-            <div className="audio-head-gain">
-              <span className="lane-meta">Gain</span>
-              <input
-                type="range" min={0} max={1} step={0.01}
-                value={audioTrack.gain} disabled={readOnly}
-                onChange={e => onUpdateAudio({ gain: Number(e.target.value) })}
-                onClick={e => e.stopPropagation()}
-              />
-              <span className="audio-head-val mono">{Math.round(audioTrack.gain * 100)}%</span>
-            </div>
-          </div>
-        ) : (
-          <button className="audio-load" disabled={readOnly}
-            onClick={e => { e.stopPropagation(); onLoadAudio() }}>
-            ♪ Naloži avdio
-          </button>
-        )}
-      </div>
-
-      <div className="lanes-viewport" ref={viewportRef}>
-        <div className="lanes-inner" style={{ transform: `translateY(-${scrollY}px)` }}>
-          {tracks.map((track, i) => {
-            const h = layerRowHeights[track.id] ?? DEFAULT_LANE_H
-            const isSelected = i === selectedIdx
-            if (track.type !== 'layer') {
-              return (
-                <div key={track.id} className={`lane-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''}`}
-                  style={{ height: h }} onClick={() => onSelect(i)}>
-                  <div className="lane-stripe" style={{ background: track.color ?? 'var(--bg-splitter)' }} />
-                  <div className="lane-body">
-                    <div className="lane-name">{track.name}</div>
-                    <div className="lane-meta">{track.type}</div>
-                  </div>
-                </div>
-              )
-            }
-
-            const lt = track as LayerTrack
-            const offline = lt.resolumeLayerIndex < 1
-            const nAuto = lt.automations.length
-            const addKey = `add:${lt.id}`
-            return (
-              <div key={lt.id}>
-                <div
-                  className={`lane-row layer-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''} ${lt.muted ? 'muted' : ''}`}
-                  style={{ height: h }}
-                  onClick={() => onSelect(i)}
-                >
-                  <div className="lane-stripe" style={{ background: lt.color ?? 'var(--bg-splitter)' }} />
-                  <div className="layer-head">
-                    <div className="layer-line">
-                      <button
-                        className={`lane-expand ${nAuto ? '' : 'empty'}`}
-                        title={`${lt.expanded ? 'Skrij avtomacijo' : 'Pokaži avtomacijo'} (${nAuto})`}
-                        onClick={e => { e.stopPropagation(); onToggleExpand(i) }}
-                      >{lt.expanded ? '▾' : '▸'}{nAuto > 0 && <span className="lane-auto-count">{nAuto}</span>}</button>
-                      <span className={`lane-num ${offline ? 'offline' : ''}`}
-                        title={offline ? 'Layerja ni več v Resolume' : `Resolume layer ${lt.resolumeLayerIndex}`}>
-                        {offline ? '—' : lt.resolumeLayerIndex}
-                      </span>
-                      <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clipov'}`}>{lt.name}</span>
-                      <div className="lane-toggles">
-                        {!readOnly && (
-                          <button
-                            className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
-                            title="Dodaj avtomacijo parametra"
-                            onClick={e => openPicker(e, { ti: i, mode: 'add', key: addKey })}
-                          >+</button>
-                        )}
-                        <button
-                          className={`lane-toggle ${lt.muted ? 'on-mute' : ''}`}
-                          title={lt.muted ? 'Utišano: ne pošilja v Resolume (klikni za vklop)' : 'Utišaj layer'}
-                          disabled={readOnly}
-                          onClick={e => { e.stopPropagation(); onToggleMute(i) }}
-                        >M</button>
-                        <button
-                          className={`lane-toggle ${lt.locked ? 'on-lock' : ''}`}
-                          title={lt.locked ? 'Zaklenjeno za urejanje (klikni za odklep)' : 'Zakleni za urejanje'}
-                          disabled={readOnly}
-                          onClick={e => { e.stopPropagation(); onToggleLock(i) }}
-                        >L</button>
-                      </div>
-                    </div>
-                    {h >= LIVE_STRIP_MIN_H && (
-                      <LiveStrip layer={layerOf(lt)} expected={expectedCue(lt.clips, frame, fps)}
-                        offline={offline} connected={!!composition} />
-                    )}
-                  </div>
-                  {!readOnly && <ResizeHandle onStart={y => setResizing({ id: lt.id, kind: 'layer', startY: y, startH: h })} />}
-                </div>
-
-                {lt.expanded && lt.automations.map((auto, ai) => {
+  // Automation lanes under a layer or a group track (same rows for both)
+  const renderAutoLanes = (lt: LayerTrack, i: number) => (
+    lt.expanded && lt.automations.map((auto, ai) => {
                   const autoH = autoLaneHeights[auto.id] ?? DEFAULT_AUTO_H
                   const isEditingThis = editing?.ti === i && editing?.ai === ai
                   const isLayerBound = !!auto.layerBound
@@ -381,7 +274,12 @@ export function LaneHeaders({
                               : 'Sledi clipu — klikni za fiksno na časovnici'}
                             disabled={readOnly}
                             onClick={e => { e.stopPropagation(); onToggleLayerBound(i, ai) }}
-                          >{isLayerBound ? 'FIX' : 'CLIP'}</button>
+                          >{isLayerBound ? 'LAYER' : 'CLIP'}</button>
+                          {auto.id in overrides && (
+                            <button className="ovr-chip"
+                              title="Operater je ta parameter premaknil v Resolume; steza ne pošilja. Klikni, da jo vrneš časovnici."
+                              onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>OVR ↺</button>
+                          )}
                           <span className="auto-spacer" />
                           <input
                             type="checkbox" className="auto-enable"
@@ -409,7 +307,194 @@ export function LaneHeaders({
                       {!readOnly && <ResizeHandle onStart={y => setResizing({ id: auto.id, kind: 'auto', startY: y, startH: autoH })} />}
                     </div>
                   )
-                })}
+                })
+  )
+
+  return (
+    <div className="lane-headers" style={{ userSelect: resizing ? 'none' : undefined }}>
+      <div className="ruler-corner">
+        <span>Sloji</span>
+        <button
+          className="corner-expand"
+          title={anyExpanded ? 'Skrij avtomacijo vseh layerjev' : 'Pokaži avtomacijo vseh layerjev'}
+          onClick={() => onSetAllExpanded(!anyExpanded)}
+        >{anyExpanded ? '▸ vse' : '▾ vse'}</button>
+        <span className="ruler-corner-count">{tracks.length}</span>
+      </div>
+
+      {/* Audio lane header — pinned under the ruler like the canvas audio lane */}
+      <div className="audio-head" onClick={e => e.stopPropagation()}>
+        <div className="lane-stripe" style={{ background: audioColor }} />
+        {audioTrack ? (
+          <div className="audio-head-body">
+            <div className="audio-head-top">
+              <span className="audio-head-icon">♪</span>
+              <span className="audio-head-name" title={audioTrack.filePath}>{audioTrack.name}</span>
+              {!readOnly && (
+                <button className="lane-tool" title="Naloži drugo avdio datoteko"
+                  onClick={e => { e.stopPropagation(); onLoadAudio() }}>⇄</button>
+              )}
+            </div>
+            <div className="audio-head-gain">
+              <span className="lane-meta">Gain</span>
+              <input
+                type="range" min={0} max={1} step={0.01}
+                value={audioTrack.gain} disabled={readOnly}
+                onChange={e => onUpdateAudio({ gain: Number(e.target.value) })}
+                onClick={e => e.stopPropagation()}
+              />
+              <span className="audio-head-val mono">{Math.round(audioTrack.gain * 100)}%</span>
+            </div>
+          </div>
+        ) : (
+          <button className="audio-load" disabled={readOnly}
+            onClick={e => { e.stopPropagation(); onLoadAudio() }}>
+            ♪ Naloži avdio
+          </button>
+        )}
+      </div>
+
+      <div className="lanes-viewport" ref={viewportRef}>
+        <div className="lanes-inner" style={{ transform: `translateY(-${scrollY}px)` }}>
+          {tracks.map((track, i) => {
+            const h = layerRowHeights[track.id] ?? DEFAULT_LANE_H
+            const isSelected = i === selectedIdx
+            if (track.type === 'group') {
+              const gt = track as GroupTrack
+              const members = tracks.filter(t => t.type === 'layer' && (t as LayerTrack).groupId === gt.resolumeGroupId)
+              const nAuto = gt.automations.length
+              const addKey = `add:${gt.id}`
+              const offline = gt.resolumeGroupIndex < 1
+              return (
+                <div key={gt.id}>
+                  <div
+                    className={`lane-row group-row ${isSelected ? 'selected' : ''} ${gt.muted ? 'muted' : ''}`}
+                    style={{ height: h, ['--group-color' as any]: gt.color ?? 'var(--bg-splitter)' }}
+                    onClick={() => onSelect(i)}
+                  >
+                    <div className="lane-stripe group" />
+                    <div className="layer-head">
+                      <div className="layer-line">
+                        <button className="group-collapse"
+                          title={gt.collapsed ? 'Razpri skupino (pokaži layerje)' : 'Zloži skupino (skrij layerje)'}
+                          onClick={e => { e.stopPropagation(); onToggleGroupCollapsed(i) }}
+                        >{gt.collapsed ? '▸' : '▾'}</button>
+                        <span className="group-chip" title={offline ? 'Skupine ni več v Resolume' : `Resolume skupina ${gt.resolumeGroupIndex}`}>
+                          {offline ? 'G —' : `G${gt.resolumeGroupIndex}`}
+                        </span>
+                        <span className="lane-name" title={gt.name}>{gt.name}</span>
+                        <div className="lane-toggles">
+                          {!readOnly && (
+                            <button
+                              className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
+                              title="Dodaj avtomacijo parametra skupine (master, opacity, efekti skupine …)"
+                              onClick={e => openPicker(e, { ti: i, mode: 'add', key: addKey })}
+                            >+</button>
+                          )}
+                          <button
+                            className={`lane-toggle ${gt.muted ? 'on-mute' : ''}`}
+                            title={gt.muted ? 'Utišano: skupina in njeni layerji ne pošiljajo (klikni za vklop)' : 'Utišaj skupino in njene layerje'}
+                            disabled={readOnly}
+                            onClick={e => { e.stopPropagation(); onToggleMute(i) }}
+                          >M</button>
+                          <button
+                            className={`lane-toggle ${gt.locked ? 'on-lock' : ''}`}
+                            title={gt.locked ? 'Zaklenjeno za urejanje (klikni za odklep)' : 'Zakleni skupino za urejanje'}
+                            disabled={readOnly}
+                            onClick={e => { e.stopPropagation(); onToggleLock(i) }}
+                          >L</button>
+                        </div>
+                      </div>
+                      <div className="layer-line group-sub">
+                        <button
+                          className={`lane-expand ${nAuto ? '' : 'empty'}`}
+                          title={`${gt.expanded ? 'Skrij avtomacijo skupine' : 'Pokaži avtomacijo skupine'} (${nAuto})`}
+                          onClick={e => { e.stopPropagation(); onToggleExpand(i) }}
+                        >{gt.expanded ? '▾' : '▸'}{nAuto > 0 && <span className="lane-auto-count">{nAuto}</span>}</button>
+                        <span className="lane-meta">
+                          Skupina · {members.length} {members.length === 1 ? 'layer' : members.length === 2 ? 'layerja' : 'layerji'}
+                          {gt.collapsed ? ' · zloženo' : ''}
+                        </span>
+                      </div>
+                    </div>
+                    {!readOnly && <ResizeHandle onStart={y => setResizing({ id: gt.id, kind: 'layer', startY: y, startH: h })} />}
+                  </div>
+                  {renderAutoLanes(gt as unknown as LayerTrack, i)}
+                </div>
+              )
+            }
+            if (track.type !== 'layer') {
+              return (
+                <div key={track.id} className={`lane-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''}`}
+                  style={{ height: h }} onClick={() => onSelect(i)}>
+                  <div className="lane-stripe" style={{ background: track.color ?? 'var(--bg-splitter)' }} />
+                  <div className="lane-body">
+                    <div className="lane-name">{track.name}</div>
+                    <div className="lane-meta">{track.type}</div>
+                  </div>
+                </div>
+              )
+            }
+
+            const lt = track as LayerTrack
+            const group = lt.groupId !== undefined
+              ? tracks.find(t => t.type === 'group' && (t as GroupTrack).resolumeGroupId === lt.groupId) as GroupTrack | undefined
+              : undefined
+            if (group?.collapsed) return null
+            const offline = lt.resolumeLayerIndex < 1
+            const nAuto = lt.automations.length
+            const addKey = `add:${lt.id}`
+            return (
+              <div key={lt.id}>
+                <div
+                  className={`lane-row layer-row ${isSelected ? 'selected' : ''} ${i % 2 ? 'alt' : ''} ${lt.muted || group?.muted ? 'muted' : ''} ${group ? 'in-group' : ''}`}
+                  style={{ height: h, ...(group ? { ['--group-color' as any]: group.color ?? 'var(--bg-splitter)' } : {}) }}
+                  onClick={() => onSelect(i)}
+                >
+                  <div className="lane-stripe" style={{ background: lt.color ?? 'var(--bg-splitter)' }} />
+                  <div className="layer-head">
+                    <div className="layer-line">
+                      <button
+                        className={`lane-expand ${nAuto ? '' : 'empty'}`}
+                        title={`${lt.expanded ? 'Skrij avtomacijo' : 'Pokaži avtomacijo'} (${nAuto})`}
+                        onClick={e => { e.stopPropagation(); onToggleExpand(i) }}
+                      >{lt.expanded ? '▾' : '▸'}{nAuto > 0 && <span className="lane-auto-count">{nAuto}</span>}</button>
+                      <span className={`lane-num ${offline ? 'offline' : ''}`}
+                        title={offline ? 'Layerja ni več v Resolume' : `Resolume layer ${lt.resolumeLayerIndex}`}>
+                        {offline ? '—' : lt.resolumeLayerIndex}
+                      </span>
+                      <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clipov'}`}>{lt.name}</span>
+                      <div className="lane-toggles">
+                        {!readOnly && (
+                          <button
+                            className={`lane-toggle lane-add ${picker?.key === addKey ? 'open' : ''}`}
+                            title="Dodaj avtomacijo parametra"
+                            onClick={e => openPicker(e, { ti: i, mode: 'add', key: addKey })}
+                          >+</button>
+                        )}
+                        <button
+                          className={`lane-toggle ${lt.muted ? 'on-mute' : ''}`}
+                          title={lt.muted ? 'Utišano: ne pošilja v Resolume (klikni za vklop)' : 'Utišaj layer'}
+                          disabled={readOnly}
+                          onClick={e => { e.stopPropagation(); onToggleMute(i) }}
+                        >M</button>
+                        <button
+                          className={`lane-toggle ${lt.locked ? 'on-lock' : ''}`}
+                          title={lt.locked ? 'Zaklenjeno za urejanje (klikni za odklep)' : 'Zakleni za urejanje'}
+                          disabled={readOnly}
+                          onClick={e => { e.stopPropagation(); onToggleLock(i) }}
+                        >L</button>
+                      </div>
+                    </div>
+                    {h >= LIVE_STRIP_MIN_H && (
+                      <LiveStrip layer={layerOf(lt)} expected={expectedCue(lt.clips, frame, fps)}
+                        offline={offline} connected={!!composition} />
+                    )}
+                  </div>
+                  {!readOnly && <ResizeHandle onStart={y => setResizing({ id: lt.id, kind: 'layer', startY: y, startH: h })} />}
+                </div>
+
+                {renderAutoLanes(lt, i)}
               </div>
             )
           })}

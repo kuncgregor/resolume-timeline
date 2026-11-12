@@ -1,7 +1,7 @@
 // Maps every automation lane's stable ParamRef to the live Resolume parameter. Runs on
 // every composition update and show change: ids change when Resolume reloads or effects
 // are re-added, paths don't. Old lanes (OSC address / runtime id only) are migrated.
-import type { Show, LayerTrack, AutomationSubTrack } from '../../shared/show'
+import type { Show, LayerTrack, GroupTrack, AutomationSubTrack } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
 import { listParams, resolveRef, findById, oscAddress, type ParamInfo, type LaneTarget } from '../../shared/paramTree'
 import type { LaneStatusMap } from './laneStatus'
@@ -52,12 +52,17 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
   const updates: Resolution['updates'] = []
 
   show.tracks.forEach((track, trackIdx) => {
-    if (track.type !== 'layer') return
+    if (track.type !== 'layer' && track.type !== 'group') return
+    const isGroup = track.type === 'group'
     const lt = track as LayerTrack
-    const layer = comp?.layers?.find(l => l?.id === lt.resolumeLayerId) as any
+    // Group lanes resolve against the layer-group JSON (Arena), layer lanes against the layer
+    const layer = (isGroup
+      ? comp?.layergroups?.find(g => g?.id === (track as GroupTrack).resolumeGroupId)
+      : comp?.layers?.find(l => l?.id === lt.resolumeLayerId)) as any
+    const ownerIndex = isGroup ? (track as GroupTrack).resolumeGroupIndex : lt.resolumeLayerIndex
     lt.automations.forEach((auto, autoIdx) => {
       if (!comp) { status[auto.id] = { state: 'offline' }; return }
-      if (!layer) { status[auto.id] = { state: 'broken', reason: 'Layer ni več v Resolume' }; return }
+      if (!layer) { status[auto.id] = { state: 'broken', reason: isGroup ? 'Skupine ni več v Resolume' : 'Layer ni več v Resolume' }; return }
 
       let info: ParamInfo | null = null
       if (auto.ref) {
@@ -77,10 +82,10 @@ export function resolveShow(show: Show, comp: ResolumeComposition | null): Resol
         if (info.min !== auto.min || info.max !== auto.max || info.kind !== (auto.kind ?? 'range') || !sameList(info.options, auto.options))
           updates.push({ trackIdx, autoIdx, updates: { min: info.min, max: info.max, kind: info.kind, options: info.options } })
       } else {
-        const match = legacyMatch(auto, layer, lt.resolumeLayerIndex)
+        const match = isGroup ? null : legacyMatch(auto, layer, ownerIndex)
         if (!match) { status[auto.id] = { state: 'legacy', reason: 'Stara steza: pošilja se po OSC naslovu' }; return }
         info = match.info
-        updates.push({ trackIdx, autoIdx, updates: { ...laneFieldsFor(info, lt.resolumeLayerIndex, match.slot), paramId: undefined } })
+        updates.push({ trackIdx, autoIdx, updates: { ...laneFieldsFor(info, ownerIndex, match.slot), paramId: undefined } })
       }
 
       status[auto.id] = { state: 'ok', info }

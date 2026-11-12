@@ -14,6 +14,7 @@ export interface PickerClip { cueId: string; clipId: number; name: string; json:
 
 interface Props {
   anchor: DOMRect
+  scope?: 'layer' | 'group'   // layerJson is a layer or a layer group
   layerJson: any | null
   clips: PickerClip[]
   automated: ParamRef[]
@@ -33,7 +34,7 @@ const LATE_ORDER = ['Audio', 'Dashboard', 'Transition']
 interface Row { info: ParamInfo; binding: PickBinding; label: string; hay: string; auto: boolean; key: string }
 interface Group { key: string; title: string; rows: Row[]; clip: boolean }
 
-export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, onPick, onClose }: Props) {
+export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, onPick, onClose, scope = 'layer' }: Props) {
   const [query, setQuery] = useState('')
   // Clip groups start closed (a layer can carry many clips); layer groups start open
   const [toggled, setToggled] = useState<Set<string>>(new Set())
@@ -45,7 +46,7 @@ export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, 
     if (!layerJson) return []
     const isAuto = (ref: ParamRef) => automated.some(a => sameRef(a, ref))
     const byGroup = new Map<string, Row[]>()
-    for (const info of listParams(layerJson, 'layer')) {
+    for (const info of listParams(layerJson, scope)) {
       const row: Row = {
         info, binding: 'layer', label: info.name, key: `L:${info.id}`,
         hay: `${info.group} ${info.name}`.toLowerCase(), auto: isAuto(info.ref),
@@ -74,7 +75,7 @@ export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, 
       if (rows.length) out.push({ key: `C:${c.cueId}`, title: gTitle, rows, clip: true })
     }
     return out
-  }, [layerJson, clips, automated])
+  }, [layerJson, clips, automated, scope])
 
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean)
   const searching = tokens.length > 0
@@ -154,7 +155,7 @@ export function ParamPicker({ anchor, layerJson, clips, automated, mode, title, 
           const open = isOpen(g)
           return (
             <div key={g.key}>
-              <div className="pp-group" onMouseDown={e => e.preventDefault()} onClick={() => !searching && toggle(g.key)}>
+              <div className={`pp-group ${g.clip ? 'scope-clip' : 'scope-layer'}`} onMouseDown={e => e.preventDefault()} onClick={() => !searching && toggle(g.key)}>
                 <span className="pp-arrow">{open ? '▾' : '▸'}</span>
                 <span className="pp-group-name">{g.title}</span>
                 <span className="pp-group-count">{g.rows.length}</span>

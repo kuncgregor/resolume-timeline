@@ -33,9 +33,26 @@ export interface ResolumeLayer {
   [key: string]: unknown
 }
 
+// Colour tags (colorid "1".."6"; "1" = no colour). Measured from official Arena 7
+// screenshots (menu swatches, sRGB) — see reports/Skupine barve in snemanje keyframov.md
+export const RESOLUME_TAG_COLORS: Record<string, string> = {
+  '2': '#C35839', '3': '#81B035', '4': '#00B285', '5': '#0077AF', '6': '#C22596',
+}
+export const resolumeColor = (colorid: unknown): string | undefined =>
+  RESOLUME_TAG_COLORS[String(rv(colorid as any, ''))]
+
+export interface ResolumeLayerGroup {
+  id: number
+  name: ResolumeParam<string> | string
+  colorid?: ResolumeParam<string>
+  layers: ResolumeLayer[]
+  [key: string]: unknown
+}
+
 export interface ResolumeComposition {
   name: ResolumeParam<string> | string
   layers: ResolumeLayer[]
+  layergroups?: ResolumeLayerGroup[]
   columns: ({ id: number; name: ResolumeParam<string> | string } | null)[]
   [key: string]: unknown
 }

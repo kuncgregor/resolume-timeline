@@ -1,13 +1,30 @@
 import { Transport, smpteToFrames } from './transport'
 import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
-import type { Show, LayerTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind } from '../shared/show'
+import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind } from '../shared/show'
 import { toFrameKeyframes, sampleLane } from '../shared/automation'
-import { toRestValue, type LaneTarget } from '../shared/paramTree'
+import { toRestValue, normalize, type LaneTarget } from '../shared/paramTree'
 
 export type { LaneTarget }
 
 const SEEK_THRESHOLD = 30
+const ECHO_MS = 600        // how long a value we sent may still come back from Resolume
+const RELEASE_MS = 600     // REC: no operator change for this long = parameter released
+
+// Equal within half a percent of the range (Resolume rounds floats), exact for discrete values
+function sameValue(a: number | string | boolean, b: number | string | boolean, t: LaneTarget): boolean {
+  if (typeof a === 'number' && typeof b === 'number')
+    return Math.abs(a - b) <= Math.max(1e-6, 0.005 * Math.abs((t.max ?? 1) - (t.min ?? 0)))
+  return a === b
+}
+
+// Layers inside a muted group are muted too
+function mutedGroupIds(show: Show): Set<number> {
+  return new Set(show.tracks.filter(t => t.type === 'group' && (t as GroupTrack).muted)
+    .map(t => (t as GroupTrack).resolumeGroupId))
+}
+const isMuted = (lt: LayerTrack, mutedGroups: Set<number>) =>
+  !!lt.muted || (lt.groupId !== undefined && mutedGroups.has(lt.groupId))
 
 export class Scheduler {
   private transport: Transport
@@ -20,6 +37,17 @@ export class Scheduler {
   // Lanes whose keyframe span contained the playhead on the previous tick
   private wasInside = new Set<string>()
   private targets = new Map<string, LaneTarget>()
+  // Manual changes in Resolume on automated parameters: last value we sent / last value seen
+  // per lane, lanes suspended because the operator took over, and whether changes are recorded
+  // Values sent per parameter id in the last ECHO_MS: Resolume reports them back with some
+  // lag, so a read matching any of them is our own echo, anything else is the operator
+  private recentSent = new Map<number, { value: number | string | boolean; at: number }[]>()
+  private touchedAt = new Map<string, number>()      // REC: lane held by the operator (until release)
+  private lastSeen = new Map<string, number | string | boolean>()
+  private overridden = new Map<string, number>()   // lane id → operator's value, normalized
+  private recordArmed = false
+  private watchHandle: NodeJS.Timeout | null = null
+  private eventCb: ((channel: string, payload: unknown) => void) | null = null
   private tickHandle: NodeJS.Timeout | null = null
   private tickCb: ((frame: number) => void) | null = null
   // Which cue is currently showing on each Resolume layer (1-based index → cue id).
@@ -55,6 +83,35 @@ export class Scheduler {
   }
 
   onTick(cb: (frame: number) => void) { this.tickCb = cb }
+  onEvent(cb: (channel: string, payload: unknown) => void) { this.eventCb = cb }
+
+  /** REC armed: operator changes in Resolume become keyframes instead of overrides. */
+  setRecordArmed(armed: boolean) { this.recordArmed = armed }
+
+  /** Hand overridden lanes back to the timeline (all, or the given ids). */
+  reenable(ids?: string[]) {
+    for (const id of ids ?? [...this.overridden.keys()]) {
+      this.overridden.delete(id)
+      this.lastSent.delete(id)
+    }
+    this.emitOverrides()
+    this.updateAllAutomation(this.transport.now(), true)
+  }
+
+  /** Value set by the app itself (engine or inspector fader): not an operator change. */
+  noteSent(paramId: number, value: number | string | boolean) {
+    const now = Date.now()
+    const list = (this.recentSent.get(paramId) ?? []).filter(e => now - e.at < ECHO_MS)
+    list.push({ value, at: now })
+    this.recentSent.set(paramId, list)
+  }
+
+  private isEcho(paramId: number, value: number | string | boolean, t: LaneTarget): boolean {
+    const now = Date.now()
+    return (this.recentSent.get(paramId) ?? []).some(e => now - e.at < ECHO_MS && sameValue(e.value, value, t))
+  }
+
+  private emitOverrides() { this.eventCb?.('engine:overrides', Object.fromEntries(this.overridden)) }
 
   // Ticks only fire when the frame changes; play/stop/locate call this so the UI
   // sees the new transport state even when the frame stays the same.
@@ -63,10 +120,49 @@ export class Scheduler {
   start() {
     if (this.tickHandle) return
     this.tickHandle = setInterval(() => this.tick(), 8)
+    this.watchHandle = setInterval(() => { this.watchManualChanges() }, 250)
   }
 
   stop() {
     if (this.tickHandle) { clearInterval(this.tickHandle); this.tickHandle = null }
+    if (this.watchHandle) { clearInterval(this.watchHandle); this.watchHandle = null }
+  }
+
+  // Polls automated parameters (REST by id, ~0.3 ms each on localhost) to notice when the
+  // operator moves one in Resolume. Our own sends are ignored for 400 ms and by value.
+  private watching = false
+  private async watchManualChanges() {
+    if (this.watching || !this.show) return
+    this.watching = true
+    try {
+      const mutedGroups = mutedGroupIds(this.show)
+      for (const track of this.show.tracks) {
+        if (track.type === 'group' ? (track as GroupTrack).muted
+          : track.type !== 'layer' || isMuted(track as LayerTrack, mutedGroups)) continue
+        for (const auto of (track as LayerTrack | GroupTrack).automations) {
+          const target = this.targets.get(auto.id)
+          if (!target || auto.enabled === false) continue
+          const p = await this.rest.getParamById(target.paramId)
+          if (!p || p.value === undefined) continue
+          const value = p.value as number | string | boolean
+          const seen = this.lastSeen.get(auto.id)
+          this.lastSeen.set(auto.id, value)
+          if (seen === undefined || sameValue(seen, value, target)) continue
+          if (this.isEcho(target.paramId, value, target)) continue
+          const v = normalize({ kind: target.kind, min: target.min, max: target.max, options: target.options }, value)
+          if (this.recordArmed) {
+            // Touch: the lane stops sending while the operator holds the parameter
+            this.touchedAt.set(auto.id, Date.now())
+            this.eventCb?.('engine:record', { laneId: auto.id, value: v, option: target.kind === 'choice' ? String(value) : undefined })
+          } else {
+            this.overridden.set(auto.id, v)
+            this.emitOverrides()
+          }
+        }
+      }
+    } finally {
+      this.watching = false
+    }
   }
 
   private tick() {
@@ -86,6 +182,7 @@ export class Scheduler {
   private fireBetween(lo: number, hi: number) {
     if (!this.show) return
     const fps = this.show.frameRate
+    const mutedGroups = mutedGroupIds(this.show)
     for (const track of this.show.tracks) {
       if (track.type === 'trigger') {
         const t = track as TriggerTrack
@@ -96,7 +193,7 @@ export class Scheduler {
       } else if (track.type === 'layer') {
         const lt = track as LayerTrack
         const layer = lt.resolumeLayerIndex
-        if (layer < 1 || lt.muted) continue  // gone from Resolume, or muted
+        if (layer < 1 || isMuted(lt, mutedGroups)) continue  // gone from Resolume, or muted
         // Ends before starts, so a clip ending on the frame the next one starts
         // does not clear the new clip.
         for (const clip of lt.clips) {
@@ -122,6 +219,7 @@ export class Scheduler {
   private updateAllAutomation(T: number, force = false) {
     if (!this.show) return
     const fps = this.show.frameRate
+    const mutedGroups = mutedGroupIds(this.show)
     for (const track of this.show.tracks) {
       if (track.type === 'automation') {
         const at = track as AutomationTrack
@@ -130,15 +228,22 @@ export class Scheduler {
           this.osc.setParam(at.target, sample.value)
           this.lastSent.set(at.id, sample.value)
         }
-      } else if (track.type === 'layer') {
-        if ((track as LayerTrack).muted) continue
-        for (const auto of (track as LayerTrack).automations) this.updateLane(auto, T, fps, force)
+      } else if (track.type === 'layer' || track.type === 'group') {
+        if (track.type === 'group' ? (track as GroupTrack).muted : isMuted(track as LayerTrack, mutedGroups)) continue
+        for (const auto of (track as LayerTrack | GroupTrack).automations) this.updateLane(auto, T, fps, force)
       }
     }
   }
 
   private updateLane(auto: AutomationSubTrack, T: number, fps: number, force: boolean) {
-    if (auto.enabled === false || !auto.keyframes.length) return
+    if (auto.enabled === false || !auto.keyframes.length || this.overridden.has(auto.id)) return
+    // REC touch: released after RELEASE_MS without a new operator change
+    const touched = this.touchedAt.get(auto.id)
+    if (touched !== undefined) {
+      if (Date.now() - touched < RELEASE_MS) return
+      this.touchedAt.delete(auto.id)
+      this.lastSent.delete(auto.id)
+    }
     const kind = auto.kind ?? 'range'
     const kfs = toFrameKeyframes(auto.keyframes, t => smpteToFrames(t, fps))
     const inside = T >= kfs[0].frame && T <= kfs[kfs.length - 1].frame
@@ -167,7 +272,10 @@ export class Scheduler {
   private dispatchLane(auto: AutomationSubTrack, kind: LaneKind, v: number, option?: string) {
     const target = this.targets.get(auto.id)
     if (target) {
-      this.restSend(target.paramId, toRestValue(target.kind ?? kind, v, target, option))
+      const real = toRestValue(target.kind ?? kind, v, target, option)
+      this.noteSent(target.paramId, real)
+      this.lastSeen.set(auto.id, real)
+      this.restSend(target.paramId, real)
       return
     }
     if (auto.ref) return
@@ -192,6 +300,7 @@ export class Scheduler {
   private recallStateAt(T: number) {
     if (!this.show) return
     const fps = this.show.frameRate
+    const mutedGroups = mutedGroupIds(this.show)
     for (const track of this.show.tracks) {
       if (track.type === 'trigger') {
         const t = track as TriggerTrack
@@ -203,7 +312,7 @@ export class Scheduler {
       } else if (track.type === 'layer') {
         const lt = track as LayerTrack
         const layer = lt.resolumeLayerIndex
-        if (layer < 1 || lt.muted) continue  // gone from Resolume, or muted
+        if (layer < 1 || isMuted(lt, mutedGroups)) continue  // gone from Resolume, or muted
         const sorted = [...lt.clips]
           .filter(c => smpteToFrames(c.time, fps) <= T)
           .sort((a, b) => smpteToFrames(b.time, fps) - smpteToFrames(a.time, fps))
