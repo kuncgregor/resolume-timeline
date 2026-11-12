@@ -1,67 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import type { LayerTrack, ClipCue, AutomationSubTrack } from '../../../shared/show'
+import type { LayerTrack, ClipCue, ParamRef } from '../../../shared/show'
+import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
+import { KIND_GLYPH } from './ParamPicker'
 
 const api = (window as any).timeline
 
-interface Param { name: string; oscAddress: string; value: number; min?: number; max?: number; valuetype: string; paramId?: number }
-
-// Resolume OSC addresses use lower-case names without spaces: "Position X" → "positionx"
-const oscSeg = (name: string) => name.toLowerCase().replace(/[\s()\-]/g, '')
-
-function extractParams(obj: any, base: string, depth = 0): Param[] {
-  if (!obj || typeof obj !== 'object' || depth > 8) return []
-  const result: Param[] = []
-
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      if (!item) continue
-      const nameVal = item.name?.value ?? item.name
-      const seg = typeof nameVal === 'string' ? oscSeg(nameVal) : null
-
-      // Handle {name, value: {valuetype, value}} pattern — Resolume params array items
-      const valObj = item.value
-      if (seg && valObj && 'valuetype' in valObj && 'value' in valObj && typeof valObj.value === 'number') {
-        result.push({
-          name: String(nameVal),
-          oscAddress: `${base}/${seg}`,
-          value: valObj.value, min: valObj.min, max: valObj.max, valuetype: valObj.valuetype,
-          paramId: valObj.id,
-        })
-      } else {
-        result.push(...extractParams(item, seg ? `${base}/${seg}` : base, depth + 1))
-      }
-    }
-    return result
-  }
-
-  for (const [key, val] of Object.entries(obj)) {
-    if (['id', 'name', 'thumbnail', 'clips', 'connected', 'bypassed'].includes(key)) continue
-    if (!val || typeof val !== 'object') continue
-    const v = val as any
-    if ('valuetype' in v && 'value' in v && typeof v.value === 'number') {
-      result.push({ name: key, oscAddress: `${base}/${oscSeg(key)}`, value: v.value, min: v.min, max: v.max, valuetype: v.valuetype, paramId: v.id })
-    } else {
-      // 'params' in Resolume REST is a transparent wrapper — skip it in the OSC path
-      const nextBase = (key === 'params') ? base : `${base}/${oscSeg(key)}`
-      result.push(...extractParams(val, nextBase, depth + 1))
-    }
-  }
-  return result
-}
-
-let uid = 1
-// Ids are saved in show files, so they must not repeat across app launches
-const newId = () => `auto-${Date.now()}-${uid++}`
-const ACOLS = ['#E74C3C','#3498DB','#2ECC71','#F39C12','#9B59B6','#1ABC9C','#E91E63']
-let ci = 0
-
-// Section name for a param: the path segment right before its name ("…/video/opacity" → "video")
-function groupOf(addr: string) {
-  const segs = addr.split('/')
-  const g = segs[segs.length - 2]
-  return !g || /^\d+$/.test(g) ? 'general' : g
-}
+type Binding = 'layer' | { cueId: string }
 
 // Slider fill: CSS reads the percentage from --pct
 const pct = (v: number, min: number, max: number) =>
@@ -75,18 +20,18 @@ interface Props {
   onResize: (h: number) => void
   onUpdateCue: (ti: number, ci: number, u: Partial<ClipCue>) => void
   onDeleteCue: (ti: number, ci: number) => void
-  onAddAutomation: (ti: number, sub: AutomationSubTrack) => void
+  onAddParam: (trackIdx: number, info: ParamInfo, binding: Binding) => void
   onSelectCue: (trackIdx: number, cueIdx: number) => void
   onClose: () => void
 }
 
 export function BottomPanel({
   track, cue, cueIdx, trackIdx, fps, height, readOnly, onResize,
-  onUpdateCue, onDeleteCue, onAddAutomation, onSelectCue, onClose,
+  onUpdateCue, onDeleteCue, onAddParam, onSelectCue, onClose,
 }: Props) {
   const [tab, setTab] = useState<'cue' | 'layer' | 'clip'>('cue')
-  const [layerParams, setLayerParams] = useState<Param[]>([])
-  const [clipParams, setClipParams] = useState<Param[]>([])
+  const [layerParams, setLayerParams] = useState<ParamInfo[]>([])
+  const [clipParams, setClipParams] = useState<ParamInfo[]>([])
   const [loadingParams, setLoadingParams] = useState(false)
   const [delArmed, setDelArmed] = useState(false)
 
@@ -116,13 +61,12 @@ export function BottomPanel({
       api.getClipRaw(track.resolumeLayerIndex, cue.clipIndex),
     ]).then(([lr, cr]) => {
       if (cancelled) return
-      const base = `/composition/layers/${track.resolumeLayerIndex}`
-      setLayerParams(extractParams(lr, base).filter(p => p.name !== 'name').slice(0, 60))
-      setClipParams(extractParams(cr, `${base}/clips/${cue.clipIndex}`).filter(p => p.name !== 'name').slice(0, 60))
+      setLayerParams(lr ? listParams(lr, 'layer') : [])
+      setClipParams(cr ? listParams(cr, 'clip', cue.clipId) : [])
       setLoadingParams(false)
     }).catch(() => { if (!cancelled) setLoadingParams(false) })
     return () => { cancelled = true }
-  }, [track?.resolumeLayerIndex, cue?.clipIndex])
+  }, [track?.resolumeLayerIndex, cue?.clipIndex, cue?.clipId])
 
   useEffect(() => { setDelArmed(false) }, [cue?.id])
 
@@ -193,17 +137,11 @@ export function BottomPanel({
   const durFrame = smpteToFrames(cue.duration, fps)
   const durMax = Math.max(fps * 60, durFrame * 2)
   const setDur = (f: number) => onUpdateCue(trackIdx, cueIdx, { duration: framesToSmpte(Math.max(0, f), fps) })
-  const automated = new Set(track.automations.map(a => a.target))
+  const automated = track.automations.flatMap(a => (a.ref ? [a.ref] : []))
 
   // Layer params stay at absolute times; clip params move with this clip
-  const addAuto = (p: Param) => {
-    onAddAutomation(trackIdx, {
-      id: newId(), name: p.name, target: p.oscAddress,
-      paramId: p.paramId, min: p.min, max: p.max,
-      ...(tab === 'layer' ? { layerBound: true } : { clipId: cue.id }),
-      color: ACOLS[ci++ % ACOLS.length], keyframes: [],
-    })
-  }
+  const addAuto = (info: ParamInfo) =>
+    onAddParam(trackIdx, info, tab === 'layer' ? 'layer' : { cueId: cue.id })
 
   return (
     <div className="bottom-panel" style={{ height }}>
@@ -283,7 +221,7 @@ export function BottomPanel({
             automated={automated}
             readOnly={readOnly}
             onAdd={addAuto}
-            onSend={(addr, v) => api.sendOsc(addr, v)}
+            onSend={(id, v) => api.setParamById(id, v)}
           />
         )}
       </div>
@@ -291,31 +229,31 @@ export function BottomPanel({
   )
 }
 
+type Real = number | string | boolean
+
 function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
-  params: Param[]; loading: boolean; automated: Set<string>; readOnly: boolean
-  onAdd: (p: Param) => void; onSend: (addr: string, v: number) => void
+  params: ParamInfo[]; loading: boolean; automated: ParamRef[]; readOnly: boolean
+  onAdd: (p: ParamInfo) => void; onSend: (id: number, v: Real) => void
 }) {
-  const [vals, setVals] = useState<Record<string, number>>({})
+  // Local echo of what the operator set, keyed by parameter id (REST values are real units)
+  const [vals, setVals] = useState<Record<number, Real>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  useEffect(() => {
-    const m: Record<string, number> = {}
-    params.forEach(p => { m[p.oscAddress] = p.value })
-    setVals(m)
-  }, [params])
+  useEffect(() => { setVals({}) }, [params])
 
   if (loading) return <div className="bp-empty">Nalagam…</div>
   if (!params.length) return <div className="bp-empty">Ni parametrov. Resolume mora biti odprt.</div>
 
-  const groups = new Map<string, Param[]>()
-  for (const p of params) {
-    const g = groupOf(p.oscAddress)
-    groups.set(g, [...(groups.get(g) ?? []), p])
-  }
+  const groups = new Map<string, ParamInfo[]>()
+  for (const p of params) groups.set(p.group, [...(groups.get(p.group) ?? []), p])
   const toggle = (g: string) => setCollapsed(prev => {
     const next = new Set(prev)
     if (next.has(g)) next.delete(g); else next.add(g)
     return next
   })
+  const set = (p: ParamInfo, v: Real) => {
+    setVals(prev => ({ ...prev, [p.id]: v }))
+    onSend(p.id, v)
+  }
 
   return (
     <div className="bp-params">
@@ -329,23 +267,42 @@ function ParamList({ params, loading, automated, readOnly, onAdd, onSend }: {
               <span className="bp-section-count">{ps.length}</span>
             </button>
             {open && <div className="bp-param-grid">{ps.map(p => {
-              const val = vals[p.oscAddress] ?? p.value
-              const min = p.min ?? 0
-              const max = p.max ?? 1
-              const isAuto = automated.has(p.oscAddress)
+              const val = p.id in vals ? vals[p.id] : p.value
+              const isAuto = automated.some(r => sameRef(r, p.ref))
+              const shown = formatValue(p.kind, normalize(p, val), p, p.kind === 'choice' ? String(val) : undefined, p.suffix)
+              let control: React.ReactNode
+              if (p.kind === 'range') {
+                const min = p.min ?? 0, max = p.max ?? 1
+                const num = typeof val === 'number' ? val : min
+                control = (
+                  <input type="range" className="bp-slider" min={min} max={max} step="any"
+                    value={num} style={pct(num, min, max)} disabled={readOnly}
+                    onChange={e => set(p, Number(e.target.value))} />
+                )
+              } else if (p.kind === 'choice') {
+                control = (
+                  <select className="bp-select" value={String(val ?? '')} disabled={readOnly}
+                    onChange={e => set(p, e.target.value)}>
+                    {!(p.options ?? []).includes(String(val)) && <option value={String(val ?? '')}>{String(val ?? '—')}</option>}
+                    {(p.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                )
+              } else {
+                control = (
+                  <label className="bp-toggle bp-param-toggle">
+                    <input type="checkbox" checked={!!val} disabled={readOnly}
+                      onChange={e => set(p, e.target.checked)} />
+                    <span>{val ? 'On' : 'Off'}</span>
+                  </label>
+                )
+              }
               return (
-                <div key={p.oscAddress} className="bp-row bp-param">
-                  <span className="bp-label" title={`${p.name}\n${p.oscAddress}`}>{p.name}</span>
-                  <span className="bp-val mono bp-num">{val.toFixed(max > 10 ? 0 : 3)}</span>
-                  <input type="range" className="bp-slider" min={min} max={max} step={max > 10 ? 1 : 0.001}
-                    value={val} style={pct(val, min, max)} disabled={readOnly}
-                    onChange={e => {
-                      const v = Number(e.target.value)
-                      setVals(prev => ({ ...prev, [p.oscAddress]: v }))
-                      // Resolume's OSC input takes ranged parameters normalized to 0..1
-                      onSend(p.oscAddress, max > min ? (v - min) / (max - min) : v)
-                    }}
-                  />
+                <div key={p.id} className="bp-row bp-param">
+                  <span className="bp-label" title={`${p.ref.label}\n${p.valuetype} · id ${p.id}`}>
+                    <span className="bp-kind">{KIND_GLYPH[p.kind]}</span>{p.name}
+                  </span>
+                  <span className="bp-val mono bp-num" title={shown}>{shown}</span>
+                  {control}
                   <button className={`btn ghost bp-icon bp-auto ${isAuto ? 'on' : ''}`}
                     // A second lane on the same target would fight the first one
                     disabled={readOnly || isAuto} onClick={() => onAdd(p)}

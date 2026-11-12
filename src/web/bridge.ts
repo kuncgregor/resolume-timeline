@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import { Transport, smpteToFrames } from '../main/transport'
 import { OscClient } from '../main/osc-client'
 import { ResolumeRest } from '../main/resolume-rest'
-import { Scheduler } from '../main/scheduler'
+import { Scheduler, type LaneTarget } from '../main/scheduler'
 import { loadAudioFile } from '../main/audio-file'
 import type { Show, CueEvent } from '../shared/show'
 
@@ -39,7 +39,7 @@ export function timelineBridge(): Plugin {
           if (comp) emit('resolume:compositionUpdate', comp)
         }
       }
-      const pingTimer = setInterval(checkResolume, 5000)
+      const pingTimer = setInterval(checkResolume, 2000)
 
       scheduler.onTick(frame => emit('engine:tick', {
         frame, playing: transport.playing, fps: transport.fps,
@@ -47,13 +47,6 @@ export function timelineBridge(): Plugin {
       }))
       scheduler.start()
       osc.connect()
-
-      const fetchJson = async (path: string) => {
-        try {
-          const res = await fetch(`${rest.base}${path}`)
-          return res.ok ? await res.json() : null
-        } catch { return null }
-      }
 
       const methods: Record<string, (...args: any[]) => unknown> = {
         play: () => { transport.play(); scheduler.notify(); return null },
@@ -73,13 +66,16 @@ export function timelineBridge(): Plugin {
         getCurrentShow: () => currentShow,
         getComposition: () => rest.getComposition(),
         getThumbnail: (layerId: number, clipId: number) => rest.getThumbnail(layerId, clipId),
-        getLayerRaw: (layerIndex: number) => fetchJson(`/composition/layers/${layerIndex}`),
+        getLayerRaw: (layerIndex: number) => rest.getJson(`/composition/layers/${layerIndex}`),
         getClipRaw: (layerIndex: number, clipIndex: number) =>
-          fetchJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`),
+          rest.getJson(`/composition/layers/${layerIndex}/clips/${clipIndex}`),
         triggerClip: (layer: number, clip: number) => { osc.connectClip(layer, clip, 40); return null },
         triggerColumn: (column: number) => { osc.connectColumn(column); return null },
         clearLayer: (layer: number) => { osc.clearLayer(layer); return null },
         sendOsc: (address: string, value: number) => { osc.send(address, value); return null },
+        setParamById: (id: number, value: number | string | boolean) => rest.setParamById(id, value),
+        getParamById: (id: number) => rest.getParamById(id),
+        setTargets: (map: Record<string, LaneTarget>) => { scheduler.setTargets(map); return null },
         connectResolume: async (host: string, oscPort: number, restPort: number) => {
           osc.connect(host, oscPort)
           rest.setBase(host, restPort)

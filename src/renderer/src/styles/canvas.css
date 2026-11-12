@@ -51,6 +51,32 @@
 
 .ctx-divider { height: 1px; margin: 4px 0; background: var(--bg-gutter); }
 
+/* ── Keyframe menu (value in real units, curve shape) ─────────────── */
+
+.ctx-menu.kf-menu { width: 260px; }
+.kf-menu .ctx-title {
+  display: block; line-height: var(--row-h); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-transform: none; letter-spacing: 0; font-size: var(--fs-ui); color: var(--text-hi);
+}
+.ctx-row select {
+  flex: 1; min-width: 0; height: 20px; padding: 0 4px;
+  background: var(--bg-track); border: 1px solid var(--border-field); border-radius: 0;
+  color: var(--text-hi); font-family: var(--font-ui); font-size: var(--fs-ui); outline: none;
+}
+.ctx-row select:focus { border-color: var(--select); }
+.ctx-unit { font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap; }
+.ctx-row.wrap { height: auto; min-height: var(--row-h); align-items: flex-start; padding-top: 2px; padding-bottom: 2px; }
+.ctx-row.wrap label { line-height: 20px; }
+.ctx-seg { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px; }
+.ctx-seg-btn {
+  height: 20px; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg-control); border: 1px solid var(--bg-gutter); border-radius: 0; cursor: pointer;
+  color: var(--text); font-family: inherit; font-size: var(--fs-meta); white-space: nowrap;
+}
+.ctx-seg-btn:hover { background: var(--bg-hover); color: var(--text-hi); }
+.ctx-seg-btn.on { background: var(--select); border-color: var(--select); color: var(--text-on-live); }
+.ctx-glyph { font-size: 9px; line-height: 1; }
+
 /* ── Clip colour picker ───────────────────────────────────────────── */
 
 .ccp-label {

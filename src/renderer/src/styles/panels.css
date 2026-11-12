@@ -79,6 +79,13 @@ input[type=range].bp-slider {
 .btn.bp-fire:hover { background: var(--live); color: var(--text-on-live); }
 
 .btn.bp-auto { font-size: 13px; color: var(--text-dim); }
+.bp-kind { margin-right: 6px; color: var(--text-faint); text-transform: none; }
+.bp-select {
+  flex: 1; min-width: 60px; height: 20px; padding: 0 4px;
+  background: var(--bg-control); color: var(--text); border: none; font-size: var(--fs-ui);
+}
+.bp-select:disabled { color: var(--text-faint); background: var(--bg-track); }
+.bp-param-toggle { flex: 1; min-width: 60px; }
 .btn.bp-auto.on { color: var(--live); }
 
 /* Parameter sections */

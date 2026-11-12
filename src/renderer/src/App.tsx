@@ -17,6 +17,9 @@ import { AudioEngine } from './audio-engine'
 import type { WaveformInfo } from './audio-engine'
 import { loadAutosave, writeAutosave, clearAutosave } from './autosave'
 import { TAG_COLORS } from './theme'
+import { resolveShow, laneFieldsFor } from './resolver'
+import type { LaneStatusMap } from './laneStatus'
+import { sameRef, normalize, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
 
@@ -28,6 +31,8 @@ export interface DragClipData {
 // New layers and rundown entries get muted Resolume-style tag colours
 const LAYER_COLORS = TAG_COLORS
 const ENTRY_COLORS = TAG_COLORS
+// Automation lanes: light, distinct line colours on the dark lane background
+const AUTO_COLORS = ['#a1fcd5', '#ffd34d', '#7fb8ff', '#f2a33a', '#d98aa0', '#b5e86b', '#c7a0ff']
 
 const EMPTY_SHOW: Show = {
   version: 1, name: 'Nov projekt', frameRate: 25, duration: '02:00:00:00',
@@ -282,8 +287,13 @@ export default function App() {
 
   // ── Resolume composition updates ───────────────────────────────────────────
 
+  // Latest composition JSON: drives layer sync, the parameter picker, the live strip in
+  // the layer headers and the automation target resolver
+  const [composition, setComposition] = useState<ResolumeComposition | null>(null)
+
   useEffect(() => {
     const unsub = api.onCompositionUpdate((comp: ResolumeComposition) => {
+      setComposition(comp)
       setShow(prev => syncLayers(prev, comp))
     })
     return unsub
@@ -291,9 +301,41 @@ export default function App() {
 
   useEffect(() => {
     api.getComposition().then((comp: ResolumeComposition | null) => {
-      if (comp) setShow(prev => syncLayers(prev, comp))
+      if (!comp) return
+      setComposition(comp)
+      setShow(prev => syncLayers(prev, comp))
     })
   }, [setShow])
+
+  // ── Automation targets: stable ref → live Resolume parameter id ─────────────
+
+  const [laneStatus, setLaneStatus] = useState<LaneStatusMap>({})
+  const laneStatusRef = useRef(laneStatus)
+  laneStatusRef.current = laneStatus
+  const sentTargetsRef = useRef('')
+  useEffect(() => {
+    const { status, targets, updates } = resolveShow(show, composition)
+    if (updates.length) {
+      // Migration of old lanes / refreshed ranges; the effect runs again with the new show
+      setShow(prev => {
+        const tracks = [...prev.tracks]
+        for (const u of updates) {
+          const lt = tracks[u.trackIdx] as LayerTrack
+          if (!lt || lt.type !== 'layer' || !lt.automations[u.autoIdx]) continue
+          const autos = [...lt.automations]
+          autos[u.autoIdx] = { ...autos[u.autoIdx], ...u.updates }
+          tracks[u.trackIdx] = { ...lt, automations: autos }
+        }
+        return { ...prev, tracks }
+      })
+    }
+    setLaneStatus(prev => JSON.stringify(prev) === JSON.stringify(status) ? prev : status)
+    const key = JSON.stringify(targets)
+    if (key !== sentTargetsRef.current) {
+      sentTargetsRef.current = key
+      api.setTargets(targets)
+    }
+  }, [show, composition, setShow])
 
   useEffect(() => { api.loadShowDirect(show) }, [show])
 
@@ -717,13 +759,71 @@ export default function App() {
     setSelection(sel => ({ ...sel, cueId: null }))
   }, [setShow])
 
-  const handleAddAutomation = useCallback((trackIdx: number, sub: AutomationSubTrack) => {
+  const updateAutomation = useCallback((trackIdx: number, autoIdx: number, updates: Partial<AutomationSubTrack>) => {
     setShow(prev => {
       const tracks = [...prev.tracks]
       const lt = tracks[trackIdx] as LayerTrack
-      tracks[trackIdx] = { ...lt, expanded: true, automations: [...lt.automations, sub] }
+      if (!lt?.automations[autoIdx]) return prev
+      const autos = [...lt.automations]
+      autos[autoIdx] = { ...autos[autoIdx], ...updates }
+      tracks[trackIdx] = { ...lt, automations: autos }
       return { ...prev, tracks }
     })
+  }, [setShow])
+
+  // New lane for a Resolume parameter. Picking a parameter that already has a lane on this
+  // layer just unfolds the layer instead of creating a second lane that would fight the first.
+  const handleAddParam = useCallback((trackIdx: number, info: ParamInfo, binding: 'layer' | { cueId: string }) => {
+    setShow(prev => {
+      const tracks = [...prev.tracks]
+      const lt = tracks[trackIdx] as LayerTrack
+      if (!lt || lt.type !== 'layer') return prev
+      if (lt.automations.some(a => sameRef(a.ref, info.ref))) {
+        tracks[trackIdx] = { ...lt, expanded: true }
+        return { ...prev, tracks }
+      }
+      const slot = info.ref.scope === 'clip' ? lt.clips.find(c => c.clipId === info.ref.clipId)?.clipIndex : undefined
+      const lane: AutomationSubTrack = {
+        id: `auto-${Date.now()}-${uid++}`, keyframes: [], enabled: true,
+        color: AUTO_COLORS[lt.automations.length % AUTO_COLORS.length],
+        ...(binding === 'layer' ? { layerBound: true } : { clipId: binding.cueId }),
+        ...laneFieldsFor(info, lt.resolumeLayerIndex, slot),
+      } as AutomationSubTrack
+      tracks[trackIdx] = { ...lt, expanded: true, automations: [...lt.automations, lane] }
+      return { ...prev, tracks }
+    })
+  }, [setShow])
+
+  const handleRetarget = useCallback((trackIdx: number, autoIdx: number, info: ParamInfo) => {
+    const lt = showRef.current.tracks[trackIdx] as LayerTrack
+    const cue = info.ref.scope === 'clip' ? lt?.clips.find(c => c.clipId === info.ref.clipId) : undefined
+    // Binding follows the new target: a clip parameter moves with its cue, a layer one stays put
+    const binding = info.ref.scope === 'clip'
+      ? { clipId: cue?.id, layerBound: false }
+      : { clipId: undefined, layerBound: true }
+    updateAutomation(trackIdx, autoIdx, {
+      ...laneFieldsFor(info, lt?.resolumeLayerIndex ?? 0, cue?.clipIndex), ...binding, paramId: undefined,
+    })
+  }, [updateAutomation])
+
+  // Write the parameter's current Resolume value as a keyframe at the playhead (Pixera-style
+  // "store", REAPER latch preview): the quickest way to program a look.
+  const handleSnapshot = useCallback(async (trackIdx: number, autoIdx: number) => {
+    const auto = (showRef.current.tracks[trackIdx] as LayerTrack)?.automations[autoIdx]
+    const info = auto && laneStatusRef.current[auto.id]?.info
+    if (!info) return
+    const p = await api.getParamById(info.id)
+    if (!p) return
+    const v = normalize(info, p.value)
+    handleAddKeyframe(trackIdx, autoIdx, engineRef.current.frame, v, info.kind === 'choice' ? String(p.value) : undefined)
+  }, [])
+
+  const handleSetAllExpanded = useCallback((expanded: boolean) => {
+    setShow(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => t.type === 'layer' && (t as LayerTrack).automations.length
+        ? { ...t, expanded } : t),
+    }))
   }, [setShow])
 
   const handleToggleExpand = useCallback((trackIdx: number) => {
@@ -754,21 +854,26 @@ export default function App() {
     setLayerRowHeights(prev => ({ ...prev, [id]: height }))
   }, [])
 
-  const handleAddKeyframe = useCallback((trackIdx: number, autoIdx: number, frame: number, value: number) => {
+  function handleAddKeyframe(trackIdx: number, autoIdx: number, frame: number, value: number, option?: string) {
     setShow(prev => {
       const tracks = [...prev.tracks]
       const lt = tracks[trackIdx] as LayerTrack
       const autos = [...lt.automations]
       const auto = { ...autos[autoIdx] }
-      const kf: Keyframe = { time: framesToSmpte(frame, prev.frameRate), value, ease: 'linear' }
-      auto.keyframes = [...auto.keyframes, kf].sort(
+      const time = framesToSmpte(frame, prev.frameRate)
+      const kf: Keyframe = {
+        time, value, ease: (auto.kind ?? 'range') === 'range' ? 'linear' : 'hold',
+        ...(option !== undefined ? { option } : {}),
+      }
+      // A keyframe already at this frame is replaced, not duplicated
+      auto.keyframes = [...auto.keyframes.filter(k => k.time !== time), kf].sort(
         (a, b) => smpteToFrames(a.time, prev.frameRate) - smpteToFrames(b.time, prev.frameRate)
       )
       autos[autoIdx] = auto
       tracks[trackIdx] = { ...lt, automations: autos }
       return { ...prev, tracks }
     })
-  }, [setShow])
+  }
 
   const handleUpdateKeyframe = useCallback((trackIdx: number, autoIdx: number, kfIdx: number, updates: Partial<Keyframe>) => {
     setShow(prev => {
@@ -932,13 +1037,21 @@ export default function App() {
               onDeleteAutomation={handleDeleteAutomation}
               onToggleLayerBound={handleToggleLayerBound}
               onEditAutomationTarget={handleEditAutomationTarget}
+              composition={composition}
+              frame={engineState.frame} fps={fps}
+              laneStatus={laneStatus}
+              onAddParam={handleAddParam}
+              onRetarget={handleRetarget}
+              onUpdateAutomation={updateAutomation}
+              onSnapshot={handleSnapshot}
+              onSetAllExpanded={handleSetAllExpanded}
               onScrollY={handleScrollY}
               onLoadAudio={handleLoadAudioTrack}
               onUpdateAudio={handleUpdateAudioTrack}
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} bpm={show.bpm}
-              readOnly={showMode}
+              readOnly={showMode} laneStatus={laneStatus}
               frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
@@ -975,7 +1088,7 @@ export default function App() {
           cueIdx={selectedCueIdx} trackIdx={selectedTrackIdx} fps={fps}
           height={bottomPanelHeight} onResize={setBottomPanelHeight}
           onUpdateCue={handleUpdateCue} onDeleteCue={handleDeleteCue}
-          onAddAutomation={handleAddAutomation}
+          onAddParam={handleAddParam}
           onSelectCue={selectCue}
           onClose={clearSelection}
         />

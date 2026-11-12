@@ -88,6 +88,9 @@ if (!w.timeline) {
     triggerColumn: (column: number) => rpc('triggerColumn', column),
     clearLayer: (layer: number) => rpc('clearLayer', layer),
     sendOsc: (address: string, value: number) => rpc('sendOsc', address, value),
+    setParamById: (id: number, value: number | string | boolean) => rpc('setParamById', id, value),
+    getParamById: (id: number) => rpc('getParamById', id),
+    setTargets: (map: Record<string, unknown>) => rpc('setTargets', map),
     connectResolume: (host: string, oscPort: number, restPort: number) =>
       rpc('connectResolume', host, oscPort, restPort),
 

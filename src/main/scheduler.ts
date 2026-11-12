@@ -1,35 +1,13 @@
 import { Transport, smpteToFrames } from './transport'
 import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
-import type { Show, LayerTrack, TriggerTrack, AutomationTrack, CueEvent, Keyframe } from '../shared/show'
+import type { Show, LayerTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind } from '../shared/show'
+import { toFrameKeyframes, sampleLane } from '../shared/automation'
+import { toRestValue, type LaneTarget } from '../shared/paramTree'
+
+export type { LaneTarget }
 
 const SEEK_THRESHOLD = 30
-
-function easeLinear(t: number) { return t }
-function easeInCubic(t: number) { return t * t * t }
-function easeOutCubic(t: number) { return 1 - Math.pow(1 - t, 3) }
-function easeInOutCubic(t: number) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2 }
-const EASES: Record<string, (t: number) => number> = { linear: easeLinear, easeInCubic, easeOutCubic, easeInOutCubic }
-
-function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
-
-function valueAt(keyframes: Keyframe[], frame: number, fps: number): number | null {
-  if (!keyframes.length) return null
-  const kfs = keyframes
-    .map(k => ({ ...k, frame: smpteToFrames(k.time, fps) }))
-    .sort((a, b) => a.frame - b.frame)
-  if (frame <= kfs[0].frame) return kfs[0].value
-  if (frame >= kfs[kfs.length - 1].frame) return kfs[kfs.length - 1].value
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const k0 = kfs[i], k1 = kfs[i + 1]
-    if (frame >= k0.frame && frame <= k1.frame) {
-      const span = k1.frame - k0.frame
-      if (span === 0) return k0.value
-      return lerp(k0.value, k1.value, (EASES[k0.ease] ?? easeLinear)((frame - k0.frame) / span))
-    }
-  }
-  return null
-}
 
 export class Scheduler {
   private transport: Transport
@@ -37,16 +15,19 @@ export class Scheduler {
   private rest: ResolumeRest
   private show: Show | null = null
   private lastFrame = -1
-  private lastSent = new Map<string, number>()
+  // Last value sent per automation lane (lane id → normalized value or option name)
+  private lastSent = new Map<string, number | string>()
+  // Lanes whose keyframe span contained the playhead on the previous tick
+  private wasInside = new Set<string>()
+  private targets = new Map<string, LaneTarget>()
   private tickHandle: NodeJS.Timeout | null = null
   private tickCb: ((frame: number) => void) | null = null
   // Which cue is currently showing on each Resolume layer (1-based index → cue id).
   // A clip end only clears the layer if that clip is still the one showing.
   private activeCue = new Map<number, string>()
-  // Prevents overlapping REST requests for the same parameter
-  private restInFlight = new Set<string>()
-  // Parameter ranges by paramId, for converting normalized values to REST values
-  private ranges = new Map<number, { min: number; max: number } | null>()
+  // Last-wins REST queue: one request in flight per parameter, newest value waits
+  private restInFlight = new Set<number>()
+  private restPending = new Map<number, number | string | boolean>()
 
   constructor(transport: Transport, osc: OscClient, rest: ResolumeRest) {
     this.transport = transport
@@ -62,16 +43,15 @@ export class Scheduler {
     // Edits arrive many times while playing; resetting lastFrame here would skip the
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
-    this.lastSent.clear()
-    for (const track of show.tracks) {
-      if (track.type !== 'layer') continue
-      for (const a of (track as LayerTrack).automations) {
-        if (a.paramId !== undefined && a.min !== undefined && a.max !== undefined)
-          this.ranges.set(a.paramId, { min: a.min, max: a.max })
-      }
-    }
-    // Immediately send current automation values (even if not playing)
-    this.forceUpdateAutomation()
+    // Only lanes whose value at the playhead changed are sent (dedupe by lane); re-sending
+    // everything on every edit would overwrite what the operator does in Resolume.
+    this.updateAllAutomation(this.transport.now())
+  }
+
+  /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
+  setTargets(map: Record<string, LaneTarget>) {
+    this.targets = new Map(Object.entries(map))
+    this.updateAllAutomation(this.transport.now())
   }
 
   onTick(cb: (frame: number) => void) { this.tickCb = cb }
@@ -139,90 +119,74 @@ export class Scheduler {
     }
   }
 
-  private updateAllAutomation(T: number) {
+  private updateAllAutomation(T: number, force = false) {
     if (!this.show) return
     const fps = this.show.frameRate
     for (const track of this.show.tracks) {
       if (track.type === 'automation') {
         const at = track as AutomationTrack
-        this.sendAuto(at.target, undefined, at.keyframes, T, fps)
+        const sample = sampleLane(toFrameKeyframes(at.keyframes, t => smpteToFrames(t, fps)), T)
+        if (sample && (force || this.lastSent.get(at.id) !== sample.value)) {
+          this.osc.setParam(at.target, sample.value)
+          this.lastSent.set(at.id, sample.value)
+        }
       } else if (track.type === 'layer') {
         if ((track as LayerTrack).muted) continue
-        for (const auto of (track as LayerTrack).automations) {
-          this.sendAuto(auto.target, auto.paramId, auto.keyframes, T, fps)
-        }
+        for (const auto of (track as LayerTrack).automations) this.updateLane(auto, T, fps, force)
       }
     }
   }
 
-  private forceUpdateAutomation() {
-    if (!this.show) return
-    const fps = this.show.frameRate
-    const T = this.transport.now()
-    for (const track of this.show.tracks) {
-      if (track.type === 'automation') {
-        const at = track as AutomationTrack
-        this.forceSendAuto(at.target, undefined, at.keyframes, T, fps)
-      } else if (track.type === 'layer') {
-        if ((track as LayerTrack).muted) continue
-        for (const auto of (track as LayerTrack).automations) {
-          this.forceSendAuto(auto.target, auto.paramId, auto.keyframes, T, fps)
+  private updateLane(auto: AutomationSubTrack, T: number, fps: number, force: boolean) {
+    if (auto.enabled === false || !auto.keyframes.length) return
+    const kind = auto.kind ?? 'range'
+    const kfs = toFrameKeyframes(auto.keyframes, t => smpteToFrames(t, fps))
+    const inside = T >= kfs[0].frame && T <= kfs[kfs.length - 1].frame
+    const hold = auto.outside === 'hold'
+    const afterEnd = T > kfs[kfs.length - 1].frame
+    // Outside its keyframe span a lane leaves the parameter to the operator. Exceptions:
+    // crossing the last keyframe sends the exact end value once (fades land where they
+    // should), and after a seek a lane whose span has already ended chases to its end
+    // value, so jumping past a fade-out shows the faded state.
+    const crossedEnd = afterEnd && this.wasInside.has(auto.id)
+    if (inside) this.wasInside.add(auto.id); else this.wasInside.delete(auto.id)
+    if (!inside && !hold && !crossedEnd && !(force && afterEnd)) return
+    const sample = sampleLane(kfs, T, kind)
+    if (!sample) return
+    const key = kind === 'choice' ? (sample.option ?? sample.value) : sample.value
+    const last = this.lastSent.get(auto.id)
+    if (!force && last !== undefined && (typeof key === 'string' || typeof last === 'string'
+      ? key === last : Math.abs(key - last) <= 0.001)) return
+    this.lastSent.set(auto.id, key)
+    this.dispatchLane(auto, kind, sample.value, sample.option)
+  }
+
+  // Lanes resolved to a Resolume parameter id are sent over REST by id (real values;
+  // works for every effect and duplicate instances). OSC is only used for old lanes
+  // without a stable target, and a lane whose target is missing sends nothing.
+  private dispatchLane(auto: AutomationSubTrack, kind: LaneKind, v: number, option?: string) {
+    const target = this.targets.get(auto.id)
+    if (target) {
+      this.restSend(target.paramId, toRestValue(target.kind ?? kind, v, target, option))
+      return
+    }
+    if (auto.ref) return
+    this.osc.setParam(auto.target, v)
+  }
+
+  private restSend(id: number, value: number | string | boolean) {
+    if (this.restInFlight.has(id)) { this.restPending.set(id, value); return }
+    this.restInFlight.add(id)
+    this.rest.setParamById(id, value)
+      .then(ok => { if (!ok) console.warn('[REST] set failed', id, value) })
+      .finally(() => {
+        this.restInFlight.delete(id)
+        if (this.restPending.has(id)) {
+          const next = this.restPending.get(id)!
+          this.restPending.delete(id)
+          this.restSend(id, next)
         }
-      }
-    }
-  }
-
-  private sendAuto(target: string, paramId: number | undefined, keyframes: Keyframe[], T: number, fps: number) {
-    const v = valueAt(keyframes, T, fps)
-    if (v === null) return
-    const last = this.lastSent.get(target)
-    if (last === undefined || Math.abs(v - last) > 0.001) {
-      this.dispatchParam(target, paramId, v)
-      this.lastSent.set(target, v)
-    }
-  }
-
-  private forceSendAuto(target: string, paramId: number | undefined, keyframes: Keyframe[], T: number, fps: number) {
-    const v = valueAt(keyframes, T, fps)
-    if (v === null) return
-    this.dispatchParam(target, paramId, v)
-    this.lastSent.set(target, v)
-  }
-
-  // Dispatch strategy for clip-level parameters:
-  // Send via BOTH OSC and REST simultaneously — one of them will work depending on
-  // Resolume version and parameter type. For layer/composition params, OSC only.
-  private dispatchParam(target: string, paramId: number | undefined, value: number) {
-    const isClipParam = target.includes('/clips/')
-    const key = paramId !== undefined ? `id:${paramId}` : target
-
-    if (!isClipParam) {
-      // Layer/composition level → OSC only (fast, proven to work)
-      this.osc.setParam(target, value)
-      return
-    }
-
-    // Clip-level: send via OSC AND REST in parallel
-    // OSC path (e.g. /composition/layers/6/clips/2/video/effects/strobe/frequency)
-    this.osc.setParam(target, value)
-
-    // REST by parameter ID — most reliable, bypasses path naming issues.
-    // Needs the real value, so the range must be known (fetched once for older shows).
-    if (paramId === undefined || this.restInFlight.has(key)) return
-    if (!this.ranges.has(paramId)) {
-      this.restInFlight.add(key)
-      this.rest.getParamRange(paramId)
-        .then(r => { this.ranges.set(paramId, r) })
-        .finally(() => this.restInFlight.delete(key))
-      return
-    }
-    const range = this.ranges.get(paramId)
-    if (!range) return
-    const raw = range.min + value * (range.max - range.min)
-    this.restInFlight.add(key)
-    this.rest.setParamById(paramId, raw)
-      .then(ok => { if (!ok) console.warn('[REST by-id FAILED] paramId:', paramId, 'value:', raw) })
-      .finally(() => this.restInFlight.delete(key))
+      })
   }
 
   private recallStateAt(T: number) {
@@ -263,9 +227,10 @@ export class Scheduler {
         }
       }
     }
-    // Always re-send automation at new position
+    // Re-send automation at the new position (lanes whose span contains it, or 'hold' lanes)
     this.lastSent.clear()
-    this.forceUpdateAutomation()
+    this.wasInside.clear()
+    this.updateAllAutomation(T, true)
   }
 
   fireCue(cue: CueEvent, layer: number) {

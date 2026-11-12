@@ -16,11 +16,21 @@ export class ResolumeRest {
   setBase(host: string, port: number) { this.host = host; this.port = port }
 
   async getComposition(): Promise<ResolumeComposition | null> {
+    return this.getJson<ResolumeComposition>('/composition')
+  }
+
+  // Resolume sometimes puts raw control characters into strings (clip names, paths), which
+  // strict JSON parsers reject; blank them before parsing.
+  async getJson<T = any>(path: string): Promise<T | null> {
     try {
-      const res = await fetch(`${this.base}/composition`)
+      const res = await fetch(`${this.base}${path}`, { signal: AbortSignal.timeout(3000) })
       if (!res.ok) return null
-      return await res.json() as ResolumeComposition
+      return JSON.parse((await res.text()).replace(/[\u0000-\u001f]/g, ' ')) as T
     } catch { return null }
+  }
+
+  async getParamById(id: number): Promise<any | null> {
+    return this.getJson(`/parameter/by-id/${id}`)
   }
 
   async getThumbnail(layerId: number, clipId: number): Promise<string | null> {
@@ -70,8 +80,9 @@ export class ResolumeRest {
     } catch { return null }
   }
 
-  // Set any parameter by its Resolume internal ID (real value, not normalized).
-  async setParamById(id: number, value: number): Promise<boolean> {
+  // Set any parameter by its Resolume internal ID. Real values: number for ranges, the exact
+  // option string for choices, true/false for booleans (verified on Arena 7).
+  async setParamById(id: number, value: number | string | boolean): Promise<boolean> {
     try {
       const url = `${this.base}/parameter/by-id/${id}`
       const res = await fetch(url, {

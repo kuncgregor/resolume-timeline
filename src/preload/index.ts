@@ -34,6 +34,10 @@ const api = {
   triggerColumn: (column: number) => ipcRenderer.invoke('resolume:triggerColumn', column),
   clearLayer: (layer: number) => ipcRenderer.invoke('resolume:clearLayer', layer),
   sendOsc: (address: string, value: number) => ipcRenderer.invoke('resolume:sendOsc', address, value),
+  setParamById: (id: number, value: number | string | boolean): Promise<boolean> =>
+    ipcRenderer.invoke('resolume:setParamById', id, value),
+  getParamById: (id: number): Promise<any> => ipcRenderer.invoke('resolume:getParamById', id),
+  setTargets: (map: Record<string, unknown>) => ipcRenderer.invoke('engine:setTargets', map),
   connectResolume: (host: string, oscPort: number, restPort: number): Promise<boolean> =>
     ipcRenderer.invoke('resolume:connect', host, oscPort, restPort),
 

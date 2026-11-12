@@ -77,8 +77,15 @@ export interface ClipCue {
 export interface AutomationSubTrack {
   id: string
   name: string
-  target: string     // OSC address, e.g. /composition/layers/1/video/opacity
-  paramId?: number   // Resolume's internal parameter ID — used for by-id REST PUT (most reliable)
+  target: string     // OSC address, e.g. /composition/layers/1/video/opacity (legacy / display / fallback)
+  // Stable target. Parameter ids are runtime ids that change when Resolume reloads or an
+  // effect is re-added, so the show stores this path and re-resolves the id on every sync.
+  ref?: ParamRef
+  kind?: LaneKind     // default 'range'
+  options?: string[]  // ParamChoice option names (last known)
+  enabled?: boolean   // false = lane draws but sends nothing (default true)
+  outside?: 'release' | 'hold'  // outside the first..last keyframe span: leave the param alone (default) or hold
+  paramId?: number   // legacy: id stored by older shows; used only to migrate them to `ref`
   clipId?: string    // if set, automation moves only with this specific clip (else moves with any clip on track)
   layerBound?: boolean  // if true, automation never moves — it is fixed at absolute timeline positions
   // Resolume parameter range. Keyframe values are normalized 0..1 (what Resolume's OSC
@@ -122,8 +129,24 @@ export interface CueEvent {
 
 export interface Keyframe {
   time: string
-  value: number
-  ease: string
+  value: number      // normalized 0..1 (choice: index / (n - 1), boolean: 0 | 1)
+  ease: Curve | string  // curve of the segment from this keyframe to the next; unknown strings = linear
+  option?: string    // choice lanes: the option name (survives Resolume adding/removing options)
+}
+
+// Curve from a keyframe to the next one. 'easeInCubic' etc. are accepted from older shows.
+export type Curve = 'linear' | 'hold' | 'easeIn' | 'easeOut' | 'easeInOut'
+
+export type LaneKind = 'range' | 'choice' | 'boolean'
+
+/** Stable path to a Resolume parameter, relative to the layer JSON (scope 'layer') or to the
+ *  clip JSON (scope 'clip'). Effects are addressed by name + instance number among effects of
+ *  the same name, e.g. ['video', 'effects', { effect: 'Blur', instance: 2 }, 'params', 'Blur']. */
+export interface ParamRef {
+  scope: 'layer' | 'clip'
+  clipId?: number                // Resolume clip id, scope 'clip'
+  path: (string | { effect: string; instance: number })[]
+  label: string                  // "Blur 2 › Blur", for display and when the target is gone
 }
 
 export interface EngineState {
