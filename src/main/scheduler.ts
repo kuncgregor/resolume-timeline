@@ -69,6 +69,12 @@ export class Scheduler {
   private restInFlight = new Set<number>()
   private restPending = new Map<number, number | string | boolean>()
 
+  // Resolume's composition tempo (tempocontroller) as last seen, and what we pushed to it.
+  // The BPM is pushed when a timeline loads or its BPM changes — not continuously, so an
+  // operator who changes Arena's tempo during live VJing is not overruled.
+  private arenaTempo: { id: number; value: number } | null = null
+  private tempoPushed = ''
+
   // Operator changes arrive over Resolume's WebSocket; polling covers what it doesn't (yet)
   private ws: ResolumeWs
   private lastFullPoll = 0
@@ -90,9 +96,49 @@ export class Scheduler {
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
     this.indexLanes()
+    this.pushTempo()
     // Only lanes whose value at the playhead changed are sent (dedupe by lane); re-sending
     // everything on every edit would overwrite what the operator does in Resolume.
     this.updateAllAutomation(this.transport.now())
+  }
+
+  /** Tempo parameter from the latest composition poll (composition.tempocontroller.tempo). */
+  setArenaTempo(t: { id: number; value: number } | null) {
+    if (t?.id !== this.arenaTempo?.id) this.tempoPushed = ''   // new composition: push again
+    this.arenaTempo = t
+    this.pushTempo()
+  }
+
+  private linkedBpm(): number | null {
+    const s = this.show
+    if (!s || s.linkTempo === false || typeof s.bpm !== 'number' || !(s.bpm >= 20 && s.bpm <= 300)) return null
+    return s.bpm
+  }
+
+  private pushTempo() {
+    const bpm = this.linkedBpm()
+    if (bpm == null || !this.arenaTempo) return
+    const key = `${this.show!.name}|${bpm}|${this.arenaTempo.id}`
+    if (key === this.tempoPushed) return
+    this.tempoPushed = key
+    if (Math.abs(this.arenaTempo.value - bpm) < 0.001) return
+    this.rest.setParamById(this.arenaTempo.id, bpm)
+      .then(ok => { if (ok && this.arenaTempo) this.arenaTempo.value = bpm; else if (!ok) this.tempoPushed = '' })
+  }
+
+  // Playing over a bar line resyncs Arena's beat, so clips the operator triggers by hand
+  // (and Arena's beat-synced effects) run in phase with the timeline's bars
+  private resyncAtBars(lo: number, hi: number) {
+    const bpm = this.linkedBpm()
+    if (bpm == null || !this.arenaTempo || !this.show) return
+    const fps = this.show.frameRate
+    const barF = (fps * 60 / bpm) * (this.show.beatsPerBar ?? 4)
+    const db = this.show.downbeat ? smpteToFrames(this.show.downbeat, fps) : 0
+    if (hi < db || !(barF > 0)) return
+    if (Math.floor((lo - db) / barF) < Math.floor((hi - db) / barF)) {
+      this.osc.send('/composition/tempocontroller/resync', 1)   // press + release, like the button
+      setTimeout(() => this.osc.send('/composition/tempocontroller/resync', 0), 30)
+    }
   }
 
   /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
@@ -305,14 +351,20 @@ export class Scheduler {
     }
   }
 
+  private wasPlaying = false
   private tick() {
     const T = this.transport.now()
-    if (T === this.lastFrame) return
+    // Stopped = the next frame change starts playback (the first frames after Play may not move)
+    if (T === this.lastFrame) { if (!this.transport.playing) this.wasPlaying = false; return }
+    const starting = !this.wasPlaying
+    this.wasPlaying = this.transport.playing
     const delta = T - this.lastFrame
     if (Math.abs(delta) >= SEEK_THRESHOLD || delta < 0) {
       this.recallStateAt(T)
     } else {
       this.fireBetween(this.lastFrame, T)
+      // Starting playback exactly on a bar line (Play at bar 1) counts as crossing it
+      this.resyncAtBars(starting ? this.lastFrame - 0.5 : this.lastFrame, T)
     }
     this.updateAllAutomation(T)
     this.lastFrame = T

@@ -452,6 +452,12 @@ export default function App() {
   }), [])
   const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
 
+  // Resolume's composition tempo (BPM link)
+  const arenaTempo = useMemo(() => {
+    const t = (composition as any)?.tempocontroller?.tempo
+    return t?.id != null ? { id: t.id as number, value: Number(t.value) } : null
+  }, [composition])
+
   // Taken-over lanes with a name an operator recognises: "Layer 2 › Rotation Y"
   const manualLanes = useMemo(() => {
     const out: { id: string; name: string }[] = []
@@ -1589,6 +1595,9 @@ export default function App() {
         onToggleBrowser={() => setShowBrowser(b => !b)}
         browserOpen={showBrowser}
         onSetBpm={bpm => setShow(prev => ({ ...prev, bpm }))}
+        arenaBpm={arenaTempo ? arenaTempo.value : null}
+        onToggleLinkTempo={() => setShow(prev => ({ ...prev, linkTempo: prev.linkTempo === false ? undefined : false }))}
+        onPushTempo={() => { if (arenaTempo && show.bpm) api.setParamById(arenaTempo.id, show.bpm) }}
         snap={snap}
         snapAuto={formatSnapStep(gridSnapOf({ on: true, grid: 'auto' }, tempo, rulerMode, pxPerFrame, fps)!, fps)}
         onSetSnap={setSnap}

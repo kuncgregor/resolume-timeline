@@ -29,6 +29,9 @@ interface Props {
   onToggleBrowser: () => void
   browserOpen: boolean
   onSetBpm: (bpm: number | undefined) => void   // undefined = no BPM
+  arenaBpm: number | null                        // Resolume's composition tempo (null = offline)
+  onToggleLinkTempo: () => void
+  onPushTempo: () => void                         // send this timeline's BPM to Arena now
   snap: SnapSettings                             // in effect (see snapOf)
   snapAuto: string                               // what 'auto' snaps to at the current zoom ("1/4 beat")
   onSetSnap: (patch: { on?: boolean; grid?: SnapGrid }) => void
@@ -44,7 +47,7 @@ const DANGER_S = 10
 
 export function TransportBar({
   engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord,
-  overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm,
+  overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm, arenaBpm, onToggleLinkTempo, onPushTempo,
   snap, snapAuto, onSetSnap,
 }: Props) {
   const { frame, playing, fps } = engineState
@@ -114,7 +117,8 @@ export function TransportBar({
         </span>
       </div>
 
-      <BpmBlock show={show} readOnly={readOnly} onSetBpm={onSetBpm} />
+      <BpmBlock show={show} readOnly={readOnly} onSetBpm={onSetBpm}
+        arenaBpm={arenaBpm} onToggleLink={onToggleLinkTempo} onPush={onPushTempo} />
 
       <SnapBlock snap={snap} hasTempo={!!tempo} grids={show ? snapGridsFor(show) : TC_SNAP_GRIDS} autoText={snapAuto} disabled={readOnly || !show} readOnly={readOnly} onSetSnap={onSetSnap} />
 
@@ -136,7 +140,10 @@ export function TransportBar({
 }
 
 // BPM display / inline editor + tap tempo. Always visible ("—" without a BPM).
-function BpmBlock({ show, readOnly, onSetBpm }: { show: Show | null; readOnly: boolean; onSetBpm: (bpm: number | undefined) => void }) {
+function BpmBlock({ show, readOnly, onSetBpm, arenaBpm, onToggleLink, onPush }: {
+  show: Show | null; readOnly: boolean; onSetBpm: (bpm: number | undefined) => void
+  arenaBpm: number | null; onToggleLink: () => void; onPush: () => void
+}) {
   const bpm = show?.bpm
   const has = validBpm(bpm)
   const tempo = show ? tempoOf(show) : null
@@ -198,6 +205,25 @@ function BpmBlock({ show, readOnly, onSetBpm }: { show: Show | null; readOnly: b
       <div className="bpm-head">
         <span className="remain-label">BPM</span>
         <span className="bpm-sig mono" title="Time signature (beats per bar) — ✎ Edit timeline › Tempo">{has ? sig : ''}</span>
+        {has && (() => {
+          // LINK: this timeline's BPM drives Arena's tempo (pushed on load / change, beat
+          // resynced at every bar line while playing). Arena at another tempo = amber, click to push.
+          const linked = show?.linkTempo !== false
+          const off = linked && arenaBpm != null && Math.abs(arenaBpm - (bpm as number)) >= 0.01
+          return off ? (
+            <button className="bpm-link off" tabIndex={-1} onMouseDown={e => e.preventDefault()} disabled={readOnly}
+              onClick={onPush}
+              title={`Arena runs at ${arenaBpm} BPM (changed in Resolume). Click to send ${bpm} BPM to Arena again.`}
+            >ARENA {Math.round(arenaBpm! * 10) / 10}</button>
+          ) : (
+            <button className={`bpm-link ${linked ? 'on' : ''}`} tabIndex={-1} onMouseDown={e => e.preventDefault()}
+              onClick={onToggleLink}
+              title={linked
+                ? `Linked to Resolume${arenaBpm == null ? ' (offline)' : ''}: Arena's tempo follows this timeline's BPM and its beat is resynced at every bar line while playing. Click to unlink.`
+                : 'Not linked: Arena keeps its own tempo. Click to link this timeline\'s BPM to Resolume.'}
+            >LINK</button>
+          )
+        })()}
       </div>
       <div className="bpm-row">
         {editing ? (

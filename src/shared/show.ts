@@ -9,6 +9,7 @@ export interface Show {
   bpm?: number              // tempo (20–300); none = no musical grid
   beatsPerBar?: number      // time signature numerator (default 4)
   downbeat?: string         // SMPTE, timeline position of bar 1 beat 1 (timeline-relative, default 00:00:00:00)
+  linkTempo?: boolean       // push bpm to Resolume's composition tempo + resync its beat at bar lines (default true)
   rulerMode?: 'timecode' | 'bars'  // ruler/grid view (default: 'bars' when bpm is set, else 'timecode')
   snap?: { on: boolean; grid: SnapGrid }  // snap to grid (default: on, 'auto')
   resolume: {

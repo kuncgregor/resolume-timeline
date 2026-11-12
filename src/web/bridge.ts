@@ -40,6 +40,8 @@ export function timelineBridge(): Plugin {
           if (comp) {
             emit('resolume:compositionUpdate', comp)
             scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
+            const tc = (comp as any).tempocontroller?.tempo
+            scheduler.setArenaTempo(tc?.id != null ? { id: tc.id, value: Number(rv(tc, 0)) } : null)
           }
         }
       }

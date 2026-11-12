@@ -639,3 +639,13 @@
 .health-manual-param:hover { background: var(--loop); color: var(--text-on-live); }
 .health-more { color: var(--text-dim); font-size: var(--fs-meta); white-space: nowrap; }
 .health-item .btn-sm.health-back { background: var(--loop); color: var(--text-on-live); font-weight: 800; border: none; }
+
+/* BPM ↔ Resolume tempo link */
+.bpm-link {
+  height: 14px; padding: 0 4px; border: none; cursor: pointer; background: transparent;
+  box-shadow: inset 0 0 0 1px var(--bg-splitter); color: var(--text-faint);
+  font-size: 9px; font-weight: 800; letter-spacing: 0.06em; white-space: nowrap;
+}
+.bpm-link.on { color: var(--live); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--live) 50%, transparent); }
+.bpm-link.off { color: var(--text-on-live); background: var(--loop); box-shadow: none; }
+.bpm-link:disabled { cursor: default; }
