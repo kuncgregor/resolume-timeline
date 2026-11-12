@@ -260,6 +260,9 @@ export function LaneHeaders({
                   const at = valueAtFrame(auto.keyframes, frame, fps, kind)
                   const releasedOutside = at != null && !at.inside && auto.outside !== 'hold'
                   const valueText = at ? formatValue(kind, at.value, range, at.option, status?.info?.suffix) : '—'
+                  // Taken over live: the value shown is the one the operator set in Resolume
+                  const ovr = overrides[auto.id]
+                  const ovrText = ovr != null ? formatValue(kind, ovr, range, undefined, status?.info?.suffix) : null
                   const { owner: refOwner, param } = splitLabel(auto)
                   const cue = (lt as Track).type === 'layer' ? laneCue(lt, auto) : null
                   const cueColor = cue ? (cue.color ?? cue.resolumeColor ?? lt.color ?? 'var(--scope-clip)') : ''
@@ -331,10 +334,16 @@ export function LaneHeaders({
                           </div>
                         )}
                         <div className="auto-line">
-                          <span
-                            className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
-                            title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}
-                          >{valueText}</span>
+                          {ovrText != null ? (
+                            <span className="auto-value mono ovr"
+                              title={`Resolume: ${ovrText} (set by hand, the lane is not sending)\nTimeline at the playhead: ${valueText}`}
+                            >{ovrText}</span>
+                          ) : (
+                            <span
+                              className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
+                              title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}
+                            >{valueText}</span>
+                          )}
                           <button
                             className={`bind-chip ${isLayerBound ? 'layer' : 'clip'}`}
                             title={isLayerBound

@@ -38,6 +38,8 @@
   --loop: #f2a33a;          /* loop, warnings, markers default */
   --danger: #ff5c5c;        /* error, LTC lost, broken */
   --danger-fill: #b3261e;   /* REC / armed / destructive confirm fill */
+  --mute: #ef7d3c;          /* M (mute) on: the layer / group sends nothing */
+  --mute-hover: #f5975e;
   --focus-ring: var(--select);
   /* Automation scope: layer-level parameters green, clip-level orange (lanes, faders, chips) */
   --scope-layer: #6fd6a8;

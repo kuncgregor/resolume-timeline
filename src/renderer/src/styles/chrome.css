@@ -367,7 +367,8 @@
 }
 .lane-path-edit:focus { border-color: var(--focus-ring); }
 
-/* M / L toggles: square, word + colour (mute = dim speaker grey, lock = yellow) */
+/* M / L toggles (Mute / Lock): square, letter + colour (mute = orange, lock = yellow); an
+   active toggle keeps its colour on hover */
 .lane-toggles { display: flex; align-items: center; gap: 1px; padding-right: 8px; }
 .lane-toggle {
   width: 22px; height: 22px; border: none; background: var(--bg-control); cursor: pointer;
@@ -375,8 +376,10 @@
 }
 .lane-toggle:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
 .lane-toggle:disabled { cursor: default; opacity: 0.6; }
-.lane-toggle.on-mute { background: var(--text-dim); color: var(--text-on-live); }
+.lane-toggle.on-mute { background: var(--mute); color: var(--text-on-live); }
 .lane-toggle.on-lock { background: var(--select); color: var(--text-on-live); }
+.lane-toggle.on-mute:hover:not(:disabled) { background: var(--mute-hover); color: var(--text-on-live); }
+.lane-toggle.on-lock:hover:not(:disabled) { background: #ffe07a; color: var(--text-on-live); }
 
 .lane-tool {
   align-self: center; margin-right: 8px; height: 20px; min-width: 20px; padding: 0 4px;
@@ -452,6 +455,7 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .auto-value.outside { color: var(--text-faint); }
+.auto-value.ovr { color: var(--loop); font-weight: 700; }
 .auto-spacer { flex: 1; }
 .auto-enable { flex-shrink: 0; cursor: pointer; }
 .auto-enable:disabled { cursor: default; }
