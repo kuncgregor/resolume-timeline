@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Show } from '../../../shared/show'
 
 type ClockSource = 'internal' | 'ltc-a' | 'ltc-b'
@@ -14,6 +14,33 @@ function normalizeSource(src: string): ClockSource {
   if (src === 'ltc-b') return 'ltc-b'
   if (src === 'ltc') return 'ltc-a'  // legacy mapping
   return 'internal'
+}
+
+// Opens the input briefly to read its channel count. Voice processing must be off,
+// otherwise Chromium reports a folded-down mono/stereo capture.
+async function probeInputChannels(deviceId: string): Promise<number | null> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: { exact: deviceId }, channelCount: { ideal: 32 },
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      },
+    })
+    const count = stream.getAudioTracks()[0]?.getSettings().channelCount ?? 1
+    stream.getTracks().forEach(t => t.stop())
+    return Math.max(1, count)
+  } catch { return null }
+}
+
+async function probeOutputChannels(deviceId: string): Promise<number | null> {
+  const ctx = new AudioContext()
+  try {
+    const ctxAny = ctx as any
+    if (typeof ctxAny.setSinkId === 'function') await ctxAny.setSinkId(deviceId)
+    return Math.max(2, ctx.destination.maxChannelCount)
+  } catch { return null } finally {
+    ctx.close().catch(() => {})  // always release: Chromium limits open AudioContexts
+  }
 }
 
 export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
@@ -54,32 +81,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
   // Fetch all audio devices on mount (need media permission for labels)
   useEffect(() => {
     let mounted = true
-
-    const probeInput = async (deviceId: string) => {
-      if (!deviceId) return
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { deviceId: { exact: deviceId }, channelCount: { ideal: 32 } },
-        })
-        const count = stream.getAudioTracks()[0]?.getSettings().channelCount ?? 1
-        stream.getTracks().forEach(t => t.stop())
-        if (mounted) setChannelCountByDevice(prev => ({ ...prev, [deviceId]: Math.max(1, count) }))
-      } catch {}
-    }
-
-    const probeOutput = async (deviceId: string) => {
-      if (!deviceId) return
-      try {
-        const ctx = new AudioContext()
-        const ctxAny = ctx as any
-        if (typeof ctxAny.setSinkId === 'function') await ctxAny.setSinkId(deviceId)
-        const count = ctx.destination.maxChannelCount
-        await ctx.close()
-        if (mounted) setChannelCountByDevice(prev => ({ ...prev, [deviceId]: Math.max(2, count) }))
-      } catch {}
-    }
-
-    const fetchDevices = async () => {
+    ;(async () => {
       try {
         try {
           const s = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -89,71 +91,55 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
         if (!mounted) return
         setAudioInputs(devices.filter(d => d.kind === 'audioinput'))
         setAudioOutputs(devices.filter(d => d.kind === 'audiooutput'))
-        await Promise.all([
-          probeInput(show.clock.ltcDeviceA ?? show.clock.ltcDevice ?? ''),
-          probeInput(show.clock.ltcDeviceB ?? ''),
-          probeOutput(show.clock.audioOutputDevice ?? ''),
-        ])
       } catch {}
-    }
-    fetchDevices()
+    })()
     return () => { mounted = false }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Re-probe when device selection changes
+  // Probe channel counts when a device is chosen. Channels are only clamped when the user
+  // picks a different device; the saved device keeps its saved channel even if the probe
+  // under-reports (some interfaces show 2 channels until they are opened natively).
+  const initialDevices = useRef({ a: ltcDeviceA, b: ltcDeviceB, out: audioOutputDevice })
   useEffect(() => {
     if (!ltcDeviceA) return
     let cancelled = false
-    navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: ltcDeviceA }, channelCount: { ideal: 32 } } })
-      .then(stream => {
-        const count = stream.getAudioTracks()[0]?.getSettings().channelCount ?? 1
-        stream.getTracks().forEach(t => t.stop())
-        if (!cancelled) {
-          const n = Math.max(1, count)
-          setChannelCountByDevice(prev => ({ ...prev, [ltcDeviceA]: n }))
-          setLtcChannelA(c => Math.min(c, n - 1))
-        }
-      }).catch(() => {})
+    probeInputChannels(ltcDeviceA).then(n => {
+      if (cancelled || n == null) return
+      setChannelCountByDevice(prev => ({ ...prev, [ltcDeviceA]: n }))
+      if (ltcDeviceA !== initialDevices.current.a) setLtcChannelA(c => Math.min(c, n - 1))
+    })
     return () => { cancelled = true }
   }, [ltcDeviceA])
 
   useEffect(() => {
     if (!ltcDeviceB) return
     let cancelled = false
-    navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: ltcDeviceB }, channelCount: { ideal: 32 } } })
-      .then(stream => {
-        const count = stream.getAudioTracks()[0]?.getSettings().channelCount ?? 1
-        stream.getTracks().forEach(t => t.stop())
-        if (!cancelled) {
-          const n = Math.max(1, count)
-          setChannelCountByDevice(prev => ({ ...prev, [ltcDeviceB]: n }))
-          setLtcChannelB(c => Math.min(c, n - 1))
-        }
-      }).catch(() => {})
+    probeInputChannels(ltcDeviceB).then(n => {
+      if (cancelled || n == null) return
+      setChannelCountByDevice(prev => ({ ...prev, [ltcDeviceB]: n }))
+      if (ltcDeviceB !== initialDevices.current.b) setLtcChannelB(c => Math.min(c, n - 1))
+    })
     return () => { cancelled = true }
   }, [ltcDeviceB])
 
   useEffect(() => {
     if (!audioOutputDevice) return
     let cancelled = false
-    ;(async () => {
-      try {
-        const ctx = new AudioContext()
-        const ctxAny = ctx as any
-        if (typeof ctxAny.setSinkId === 'function') await ctxAny.setSinkId(audioOutputDevice)
-        const count = ctx.destination.maxChannelCount
-        await ctx.close()
-        if (!cancelled) {
-          const n = Math.max(2, count)
-          setChannelCountByDevice(prev => ({ ...prev, [audioOutputDevice]: n }))
-          setAudioOutputChannelL(c => Math.min(c, n - 1))
-          setAudioOutputChannelR(c => Math.min(c, n - 1))
-        }
-      } catch {}
-    })()
+    probeOutputChannels(audioOutputDevice).then(n => {
+      if (cancelled || n == null) return
+      setChannelCountByDevice(prev => ({ ...prev, [audioOutputDevice]: n }))
+      if (audioOutputDevice !== initialDevices.current.out) {
+        setAudioOutputChannelL(c => Math.min(c, n - 1))
+        setAudioOutputChannelR(c => Math.min(c, n - 1))
+      }
+    })
     return () => { cancelled = true }
   }, [audioOutputDevice])
+
+  // A lower frame rate can leave the offset's frame field out of range (30 → 25 fps with ff=29)
+  useEffect(() => {
+    setParts(prev => prev.ff > fps - 1 ? { ...prev, ff: fps - 1 } : prev)
+  }, [fps])
 
   const handleSave = () => {
     onUpdate({
@@ -268,7 +254,8 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 ))}
               </select>
               {(() => {
-                const n = channelCountByDevice[audioOutputDevice] ?? 0
+                const n = channelCountByDevice[audioOutputDevice]
+                  ? Math.max(channelCountByDevice[audioOutputDevice], audioOutputChannelL + 1, audioOutputChannelR + 1) : 0
                 const opts = n > 0
                   ? Array.from({ length: n }, (_, i) => <option key={i} value={i}>Ch {i + 1}</option>)
                   : Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>Ch {i + 1}</option>)
@@ -302,7 +289,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 onChange={e => setLtcChannelA(Number(e.target.value))}
                 style={{ marginLeft: 6 }}
               >
-                {Array.from({ length: channelCountByDevice[ltcDeviceA] ?? 16 }, (_, i) => (
+                {Array.from({ length: Math.max(channelCountByDevice[ltcDeviceA] ?? 16, ltcChannelA + 1) }, (_, i) => (
                   <option key={i} value={i}>Ch {i + 1}</option>
                 ))}
               </select>
@@ -326,7 +313,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
                 onChange={e => setLtcChannelB(Number(e.target.value))}
                 style={{ marginLeft: 6 }}
               >
-                {Array.from({ length: channelCountByDevice[ltcDeviceB] ?? 16 }, (_, i) => (
+                {Array.from({ length: Math.max(channelCountByDevice[ltcDeviceB] ?? 16, ltcChannelB + 1) }, (_, i) => (
                   <option key={i} value={i}>Ch {i + 1}</option>
                 ))}
               </select>

@@ -7,6 +7,8 @@ export class Transport {
   private startFrame = 0
   frame = 0
   private ltcFrame: number | null = null
+  private ltcAt = 0          // performance.now() when ltcFrame arrived
+  freewheelFrames = 5        // keep running this many frames past the last LTC frame
 
   constructor(fps: number) {
     this.fps = fps
@@ -32,17 +34,28 @@ export class Transport {
   // Called by LTC decoder every incoming frame
   setLtcFrame(frame: number) {
     this.ltcFrame = frame
+    this.ltcAt = performance.now()
     this.playing = true
   }
 
+  // LTC signal gone: stop where it ended. Without this the internal clock would
+  // resume from its stale play() baseline and jump.
   clearLtc() {
+    if (this.ltcFrame !== null) {
+      this.frame = this.now()
+      this.playing = false
+    }
     this.ltcFrame = null
   }
 
   get isLtcActive() { return this.ltcFrame !== null }
 
   now(): number {
-    if (this.ltcFrame !== null) return this.ltcFrame
+    if (this.ltcFrame !== null) {
+      // Freewheel: bridge short dropouts, then hold until LTC returns or is cleared
+      const ahead = Math.floor(((performance.now() - this.ltcAt) / 1000) * this.fps)
+      return this.ltcFrame + Math.min(ahead, this.freewheelFrames)
+    }
     if (!this.playing) return this.frame
     const elapsedMs = performance.now() - this.startPerf
     return this.startFrame + Math.round((elapsedMs / 1000) * this.fps)

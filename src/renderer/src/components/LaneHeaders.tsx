@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Track, LayerTrack, Show } from '../../../shared/show'
 
 const DEFAULT_CLIP_H = 52
@@ -50,7 +50,10 @@ export function LaneHeaders({
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
   }, [resizing, onResizeLayer, onResizeAutoLane])
 
+  // Escape unmounts the input, which fires blur → commitEdit; this flag turns that commit off
+  const cancelEditRef = useRef(false)
   const commitEdit = () => {
+    if (cancelEditRef.current) { cancelEditRef.current = false; return }
     if (!editing) return
     onEditAutomationTarget(editing.ti, editing.ai, editValue.trim())
     setEditing(null)
@@ -180,7 +183,7 @@ export function LaneHeaders({
                               onBlur={commitEdit}
                               onKeyDown={e => {
                                 if (e.key === 'Enter') commitEdit()
-                                if (e.key === 'Escape') setEditing(null)
+                                if (e.key === 'Escape') { cancelEditRef.current = true; setEditing(null) }
                                 e.stopPropagation()
                               }}
                               onClick={e => e.stopPropagation()}
@@ -192,6 +195,7 @@ export function LaneHeaders({
                               title={`${auto.target}\n\nDvoklik za urejanje OSC poti`}
                               onDoubleClick={e => {
                                 e.stopPropagation()
+                                cancelEditRef.current = false
                                 setEditing({ ti: i, ai })
                                 setEditValue(auto.target)
                               }}

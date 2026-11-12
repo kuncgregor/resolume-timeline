@@ -330,21 +330,26 @@ export default function App() {
       decoder.stop().then(() => { setLtcActive(false); api.sendLtcStop() })
       return
     }
+    // "LTC live" means frames are arriving. When they stop for longer than the freewheel
+    // window, the indicator goes off and the transport stops at the last frame.
+    let lostTimer: ReturnType<typeof setTimeout> | undefined
+    const lostAfterMs = Math.max(400, ((show.clock.freewheelFrames ?? 5) + 3) / fps * 1000)
     decoder.onFrame = (absFrame, hh, mm, ss, ff) => {
       const pad = (n: number) => String(n).padStart(2, '0')
       setLtcRawTC(`${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`)
       setLtcActive(true)
       api.sendLtcFrame(absFrame)
+      clearTimeout(lostTimer)
+      lostTimer = setTimeout(() => { setLtcActive(false); api.sendLtcStop() }, lostAfterMs)
     }
     decoder.onError = (err) => console.error('[LTC]', err)
-    decoder.start(ltcDeviceId || undefined, ltcChannelIdx, fps).then(() => {
-      setLtcActive(decoder.isRunning)
-    })
+    decoder.start(ltcDeviceId || undefined, ltcChannelIdx, fps)
     return () => {
+      clearTimeout(lostTimer)
       decoder.stop().then(() => { setLtcActive(false); api.sendLtcStop() })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ltcShouldRun, ltcDeviceId, ltcChannelIdx, fps])
+  }, [ltcShouldRun, ltcDeviceId, ltcChannelIdx, fps, show.clock.freewheelFrames])
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 

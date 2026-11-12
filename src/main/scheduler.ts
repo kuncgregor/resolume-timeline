@@ -58,6 +58,7 @@ export class Scheduler {
     const first = this.show === null
     this.show = show
     if (show.frameRate !== this.transport.fps) this.transport.setFps(show.frameRate)
+    this.transport.freewheelFrames = show.clock.freewheelFrames ?? 5
     // Edits arrive many times while playing; resetting lastFrame here would skip the
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
