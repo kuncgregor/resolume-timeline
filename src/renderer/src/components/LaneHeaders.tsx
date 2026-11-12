@@ -3,10 +3,11 @@ import type { Track, LayerTrack, GroupTrack, Show, AutomationSubTrack, Keyframe,
 import type { ResolumeComposition, ResolumeLayer } from '../../../shared/resolume'
 import { formatValue, type ParamInfo } from '../../../shared/paramTree'
 import { laneColor } from '../laneColor'
-import { toFrameKeyframes, sampleLane } from '../../../shared/automation'
+import { frameKeyframes, sampleLane } from '../../../shared/automation'
 import type { LaneStatusMap } from '../laneStatus'
 import { DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_LANE_H, MIN_AUTO_H } from '../layout'
 import { smpteToFrames } from './timeUtils'
+import { useFrame } from '../frameStore'
 import { ParamPicker, KIND_GLYPH, type PickBinding, type PickerClip } from './ParamPicker'
 
 // Tablet view: the audio track and files belong to the app on the computer
@@ -21,7 +22,6 @@ interface Props {
   audioTrack?: Show['audioTrack']
   readOnly: boolean
   composition: ResolumeComposition | null
-  frame: number
   fps: number
   laneStatus: LaneStatusMap
   overrides: Record<string, number>          // lanes the operator took over in Resolume
@@ -70,10 +70,44 @@ const val = (p: unknown): unknown => (p && typeof p === 'object' && 'value' in (
  *  `inside` is false before the first / after the last keyframe. */
 function valueAtFrame(keyframes: Keyframe[], frame: number, fps: number, kind: LaneKind):
   { value: number; option?: string; inside: boolean } | null {
-  const kfs = toFrameKeyframes(keyframes, t => smpteToFrames(t, fps))
+  const kfs = frameKeyframes(keyframes, fps, t => smpteToFrames(t, fps))
   const v = sampleLane(kfs, frame, kind)
   if (!v || !kfs.length) return null
   return { ...v, inside: frame >= kfs[0].frame && frame <= kfs[kfs.length - 1].frame }
+}
+
+// A lane's value at the playhead. Its own components (value, OVR chip), so only they follow
+// the playhead and not the whole header column.
+interface LaneValueArgs {
+  keyframes: Keyframe[]; fps: number; kind: LaneKind
+  range: Parameters<typeof formatValue>[2]; suffix?: string
+  hold: boolean   // the lane keeps sending outside its keyframes
+}
+function useLaneValue({ keyframes, fps, kind, range, suffix, hold }: LaneValueArgs) {
+  const at = valueAtFrame(keyframes, useFrame(), fps, kind)
+  return {
+    text: at ? formatValue(kind, at.value, range, at.option, suffix) : '—',
+    releasedOutside: at != null && !at.inside && !hold,
+  }
+}
+function LaneValue(args: LaneValueArgs) {
+  const { text, releasedOutside } = useLaneValue(args)
+  return (
+    <span className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
+      title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}>{text}</span>
+  )
+}
+// Taken over: the operator's value replaces the playhead value and the LAYER/CLIP switch
+// until handed back (the header has no room for all three)
+function OvrChip({ ovrText, onClick, ...args }: LaneValueArgs & { ovrText: string; onClick: () => void }) {
+  const { text } = useLaneValue(args)
+  return (
+    <button className="ovr-chip"
+      title={`Set by hand in Resolume: ${ovrText}. The lane is not sending (the timeline is at ${text}).\nClick to hand it back to the timeline.`}
+      onClick={e => { e.stopPropagation(); onClick() }}>
+      <span className="ovr-tag">OVR</span><span className="ovr-val mono">{ovrText}</span><span>↺</span>
+    </button>
+  )
 }
 
 // The cue the scheduler keeps on this layer at `frame`: the last one started, while its
@@ -154,7 +188,7 @@ function splitLabel(auto: AutomationSubTrack): { owner: string; param: string } 
 
 export function LaneHeaders({
   tracks, selectedIdx, layerRowHeights, autoLaneHeights, scrollY, audioTrack, readOnly,
-  composition, frame, fps, laneStatus, overrides, onReenable, onToggleGroupCollapsed,
+  composition, fps, laneStatus, overrides, onReenable, onToggleGroupCollapsed,
   onSelect, onToggleExpand, onSetAllExpanded, onToggleMute, onToggleLock, onResizeLayer, onResizeAutoLane,
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
@@ -286,9 +320,7 @@ export function LaneHeaders({
                   const range = status?.info
                     ? { min: status.info.min, max: status.info.max, options: status.info.options, multiplier: status.info.multiplier }
                     : { min: auto.min, max: auto.max, options: auto.options }
-                  const at = valueAtFrame(auto.keyframes, frame, fps, kind)
-                  const releasedOutside = at != null && !at.inside && auto.outside !== 'hold'
-                  const valueText = at ? formatValue(kind, at.value, range, at.option, status?.info?.suffix) : '—'
+                  const valueArgs: LaneValueArgs = { keyframes: auto.keyframes, fps, kind, range, suffix: status?.info?.suffix, hold: auto.outside === 'hold' }
                   // Taken over live: the value shown is the one the operator set in Resolume
                   const ovr = overrides[auto.id]
                   const ovrText = ovr != null ? formatValue(kind, ovr, range, undefined, status?.info?.suffix) : null
@@ -363,12 +395,7 @@ export function LaneHeaders({
                           </div>
                         )}
                         <div className="auto-line">
-                          {ovrText == null && (
-                            <span
-                              className={`auto-value mono ${releasedOutside ? 'outside' : ''}`}
-                              title={releasedOutside ? 'Outside the keyframe range — lane is not sending' : 'Value at the playhead'}
-                            >{valueText}</span>
-                          )}
+                          {ovrText == null && <LaneValue {...valueArgs} />}
                           {ovrText == null && <button
                             className={`bind-chip ${isLayerBound ? 'layer' : 'clip'}`}
                             title={isLayerBound
@@ -380,11 +407,7 @@ export function LaneHeaders({
                           {ovrText != null && (
                             // Taken over: the operator's value replaces the playhead value and the
                             // LAYER/CLIP switch until handed back (the header has no room for all three)
-                            <button className="ovr-chip"
-                              title={`Set by hand in Resolume: ${ovrText}. The lane is not sending (the timeline is at ${valueText}).\nClick to hand it back to the timeline.`}
-                              onClick={e => { e.stopPropagation(); onReenable([auto.id]) }}>
-                              <span className="ovr-tag">OVR</span><span className="ovr-val mono">{ovrText}</span><span>↺</span>
-                            </button>
+                            <OvrChip {...valueArgs} ovrText={ovrText} onClick={() => onReenable([auto.id])} />
                           )}
                           <span className="auto-spacer" />
                           <button
@@ -630,7 +653,7 @@ export function LaneHeaders({
                       </div>
                     </div>
                     {h >= LIVE_STRIP_MIN_H && (
-                      <LiveStrip layer={layerOf(lt)} expected={expectedCue(lt.clips, frame, fps)}
+                      <LiveStrip layer={layerOf(lt)} clips={lt.clips} fps={fps}
                         offline={offline} connected={!!composition} />
                     )}
                   </div>
@@ -677,9 +700,10 @@ export function LaneHeaders({
 }
 
 // Second line of a layer header: what Resolume is actually playing on this layer
-function LiveStrip({ layer, expected, offline, connected }: {
-  layer: ResolumeLayer | null; expected: ClipCue | null; offline: boolean; connected: boolean
+function LiveStrip({ layer, clips, fps, offline, connected }: {
+  layer: ResolumeLayer | null; clips: ClipCue[]; fps: number; offline: boolean; connected: boolean
 }) {
+  const expected = expectedCue(clips, useFrame(), fps)
   if (!layer) {
     return (
       <div className="live-strip">

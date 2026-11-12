@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useFrame } from '../frameStore'
 import type { LayerTrack, GroupTrack, ClipCue, AutomationSubTrack } from '../../../shared/show'
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
@@ -24,7 +25,6 @@ interface Props {
   onResize: (h: number) => void
   onUpdateCue: (ti: number, ci: number, u: Partial<ClipCue>) => void
   onDeleteCue: (ti: number, ci: number) => void
-  frame: number
   // Keyframing like After Effects / Resolve: ◇ starts animating the parameter (lane +
   // keyframe at the playhead), ◆ toggles a keyframe at the playhead, and moving the fader
   // of an animated parameter writes a keyframe at the playhead.
@@ -36,7 +36,7 @@ interface Props {
 }
 
 export function BottomPanel({
-  track, cue, group, decks, cueIdx, trackIdx, fps, height, readOnly, onResize, frame,
+  track, cue, group, decks, cueIdx, trackIdx, fps, height, readOnly, onResize,
   onUpdateCue, onDeleteCue, onToggleKey, onParamEdit, onSeek, onSelectCue, onClose,
 }: Props) {
   const [tab, setTab] = useState<'cue' | 'layer' | 'clip'>('cue')
@@ -158,7 +158,7 @@ export function BottomPanel({
             live={groupLive}
             loading={false}
             lanes={group.automations}
-            frame={frame} fps={fps}
+            fps={fps}
             readOnly={readOnly}
             onToggleKey={(info, real) => onToggleKey(trackIdx, info, real, 'layer')}
             onEdit={(info, real) => { api.setParamById(info.id, real); onParamEdit(trackIdx, info, real) }}
@@ -314,7 +314,7 @@ export function BottomPanel({
             live={live}
             loading={loadingParams}
             lanes={track.automations}
-            frame={frame} fps={fps}
+            fps={fps}
             readOnly={readOnly}
             onToggleKey={(info, real) => onToggleKey(trackIdx, info, real, binding)}
             onEdit={(info, real) => { api.setParamById(info.id, real); onParamEdit(trackIdx, info, real) }}
@@ -328,15 +328,16 @@ export function BottomPanel({
 
 type Real = number | string | boolean
 
-function ParamList({ scope, tag, params, live, loading, lanes, frame, fps, readOnly, onToggleKey, onEdit, onSeek }: {
+function ParamList({ scope, tag, params, live, loading, lanes, fps, readOnly, onToggleKey, onEdit, onSeek }: {
   scope: 'layer' | 'clip'
   tag?: string   // Resolume colour tag of the layer / group / clip: faders take its colour
   params: ParamInfo[]; live: Record<number, Real>; loading: boolean
-  lanes: AutomationSubTrack[]; frame: number; fps: number; readOnly: boolean
+  lanes: AutomationSubTrack[]; fps: number; readOnly: boolean
   onToggleKey: (p: ParamInfo, real: Real) => void
   onEdit: (p: ParamInfo, real: Real) => void
   onSeek: (frame: number) => void
 }) {
+  const frame = useFrame()
   // While a fader is held, its value comes from the hand, not from polling
   const [held, setHeld] = useState<Record<number, Real>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())

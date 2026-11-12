@@ -23,6 +23,7 @@ import { resolveShow, laneFieldsFor, rememberClip, knownClip } from './resolver'
 import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
+import { frameStore } from './frameStore'
 import { PPF_MIN, PPF_MAX } from './layout'
 import { tempoOf, rulerModeOf, snapOf, gridSnapOf, formatSnapStep, type SnapGrid } from './grid'
 import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
@@ -242,6 +243,10 @@ const renameDefault = (r: ReturnType<typeof loadAutosave>) => r && {
 const _restored = REMOTE ? null : renameDefault(loadAutosave())
 const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
   ? _restored.activeId : (_restored?.rundown[0].id ?? _initEntry.id)
+
+/** Engine states that differ only in the frame (the frame store has that). */
+const sameEngineState = (a: EngineState, b: EngineState) =>
+  a.playing === b.playing && a.fps === b.fps && a.showName === b.showName && a.resolumeConnected === b.resolumeConnected
 
 export default function App() {
   const [rundown, setRundown] = useState<RundownEntry[]>(_restored?.rundown ?? [_initEntry])
@@ -483,7 +488,10 @@ export default function App() {
 
   useEffect(() => {
     const unsub = api.onTick((state: EngineState) => {
-      setEngineState(state)
+      // The frame goes to the frame store (only what shows it re-renders); the app
+      // re-renders when the rest changes (play / stop, connection)
+      frameStore.set(state.frame)
+      setEngineState(prev => sameEngineState(prev, state) ? prev : state)
       if (state.playing && autoScrollRef.current) {
         setScrollFrame(prev => {
           const cw = window.innerWidth - 200 - (showBrowserRef.current ? 260 : 0)
@@ -508,7 +516,7 @@ export default function App() {
   // Ticks only arrive while the frame changes, so the connection status needs its own
   // event, plus one query at startup in case that event fired before we subscribed
   useEffect(() => {
-    api.getState().then((s: EngineState | null) => { if (s) setEngineState(s) })
+    api.getState().then((s: EngineState | null) => { if (s) { frameStore.set(s.frame); setEngineState(s) } })
     return api.onResolumeStatus(({ connected }: { connected: boolean }) =>
       setEngineState(s => ({ ...s, resolumeConnected: connected })))
   }, [])
@@ -547,7 +555,7 @@ export default function App() {
     showRef.current.tracks.forEach((t, ti) => {
       if (t.type !== 'layer' && t.type !== 'group') return
       const ai = (t as LayerTrack | GroupTrack).automations.findIndex(a => a.id === laneId)
-      if (ai >= 0) handleAddKeyframe(ti, ai, engineRef.current.frame, value, option)
+      if (ai >= 0) handleAddKeyframe(ti, ai, frameStore.get(), value, option)
     })
   }), [])
   const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
@@ -572,7 +580,7 @@ export default function App() {
     return out
   }, [show.tracks, overrides])
 
-  const decks = decksOf(composition)
+  const decks = useMemo(() => decksOf(composition), [composition])
   const selectedDeck = decks.find(d => d.selected)
 
   // ── Showfile: name, save, autosave ─────────────────────────────────────────
@@ -877,7 +885,7 @@ export default function App() {
       return
     }
     api.play()
-    if (audioLoadedRef.current) audioEngineRef.current.play(engineRef.current.frame)
+    if (audioLoadedRef.current) audioEngineRef.current.play(frameStore.get())
   }, [])
   const playRef = useRef(handlePlay)
   playRef.current = handlePlay
@@ -1194,7 +1202,7 @@ export default function App() {
   // Audio that finishes loading while the transport runs joins in at the current frame
   useEffect(() => {
     if (audioLoaded && engineRef.current.playing)
-      audioEngineRef.current.play(engineRef.current.frame)
+      audioEngineRef.current.play(frameStore.get())
   }, [audioLoaded])
 
   useEffect(() => {
@@ -1661,7 +1669,7 @@ export default function App() {
   // animating with a keyframe at the playhead, or toggle the keyframe at the playhead
   const handleToggleKey = useCallback((trackIdx: number, info: ParamInfo, real: number | string | boolean, binding: 'layer' | { cueId: string }) => {
     const lt = showRef.current.tracks[trackIdx] as LayerTrack
-    const frame = engineRef.current.frame
+    const frame = frameStore.get()
     const value = normalize(info, real)
     const option = info.kind === 'choice' ? String(real) : undefined
     const autoIdx = lt?.automations.findIndex(a => sameRef(a.ref, info.ref)) ?? -1
@@ -1678,7 +1686,7 @@ export default function App() {
     const lt = showRef.current.tracks[trackIdx] as LayerTrack
     const autoIdx = lt?.automations.findIndex(a => sameRef(a.ref, info.ref)) ?? -1
     if (autoIdx < 0) return
-    handleAddKeyframe(trackIdx, autoIdx, engineRef.current.frame, normalize(info, real),
+    handleAddKeyframe(trackIdx, autoIdx, frameStore.get(), normalize(info, real),
       info.kind === 'choice' ? String(real) : undefined)
   }, [])
 
@@ -1703,7 +1711,7 @@ export default function App() {
     const p = await api.getParamById(info.id)
     if (!p) return
     const v = normalize(info, p.value)
-    handleAddKeyframe(trackIdx, autoIdx, engineRef.current.frame, v, info.kind === 'choice' ? String(p.value) : undefined)
+    handleAddKeyframe(trackIdx, autoIdx, frameStore.get(), v, info.kind === 'choice' ? String(p.value) : undefined)
   }, [])
 
   const handleSetAllExpanded = useCallback((expanded: boolean) => {
@@ -1901,7 +1909,7 @@ export default function App() {
     ? selectedTrack.clips[selectedCueIdx] ?? null : null
 
   // Last frame with content, for the transport's "time to end" countdown
-  const endFrame = (() => {
+  const endFrame = useMemo(() => {
     let end = 0
     for (const t of show.tracks) {
       if (t.type !== 'layer') continue
@@ -1911,15 +1919,19 @@ export default function App() {
     if (audioLoaded && show.audioTrack)
       end = Math.max(end, smpteToFrames(show.audioTrack.startOffset, fps) + Math.round(audioEngineRef.current.duration * fps))
     return end
-  })()
+  }, [show.tracks, show.audioTrack, audioLoaded, waveformInfo, fps])  // waveformInfo: a new audio file
 
   // End of the take: the timeline end, or the transport stopped (Stop, LTC gone)
   useEffect(() => {
     if (arenaRec.state !== 'recording') return
-    if (engineState.playing) { recSeenPlayingRef.current = true }
-    const atEnd = endFrame > 0 && engineState.frame >= endFrame
-    if (atEnd || (recSeenPlayingRef.current && !engineState.playing)) stopArenaRecording()
-  }, [engineState.frame, engineState.playing, arenaRec.state, endFrame, stopArenaRecording])
+    const check = () => {
+      if (engineState.playing) { recSeenPlayingRef.current = true }
+      const atEnd = endFrame > 0 && frameStore.get() >= endFrame
+      if (atEnd || (recSeenPlayingRef.current && !engineState.playing)) stopArenaRecording()
+    }
+    check()
+    return frameStore.subscribe(check)
+  }, [engineState.playing, arenaRec.state, endFrame, stopArenaRecording])
 
 
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
@@ -1930,7 +1942,7 @@ export default function App() {
         rundown={rundown}
         activeId={activeId}
         playing={engineState.playing}
-        nowRemaining={endFrame > 0 ? framesToSmpte(Math.max(0, endFrame - engineState.frame), fps) : null}
+        endFrame={endFrame} fps={fps}
         showMode={showMode}
         showfileName={showfileName}
         showfilePath={showfile.path}
@@ -2021,7 +2033,7 @@ export default function App() {
         brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
         manual={manualLanes}
         arenaRec={arenaRec}
-        recSeconds={engineState.frame / fps}
+        fps={fps}
         onDismissRecError={() => setArenaRec({ error: null })}
         onReenable={handleReenable}
         onReconnect={handleReconnect}
@@ -2041,7 +2053,7 @@ export default function App() {
           <div className="timeline-column">
           <OverviewBar
             tracks={show.tracks} markers={show.markers} fps={fps} decks={decks}
-            endFrame={endFrame} frame={engineState.frame} playing={engineState.playing}
+            endFrame={endFrame} playing={engineState.playing}
             readOnly={showMode} scrollFrame={scrollFrame} pxPerFrame={pxPerFrame}
             onScrollFrame={f => { autoScrollRef.current = false; setScrollFrame(f) }}
               onPxPerFrame={setPxPerFrame} onSeek={handleSeek}
@@ -2063,7 +2075,7 @@ export default function App() {
               onToggleLayerBound={handleToggleLayerBound}
               onEditAutomationTarget={handleEditAutomationTarget}
               composition={composition}
-              frame={engineState.frame} fps={fps}
+              fps={fps}
               laneStatus={laneStatus}
               overrides={overrides}
               onReenable={handleReenable}
@@ -2085,7 +2097,7 @@ export default function App() {
               tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode} snap={snap}
               onSetDownbeat={f => setShow(prev => ({ ...prev, downbeat: f > 0 ? framesToSmpte(f, prev.frameRate) : undefined }))}
               readOnly={showMode} laneStatus={laneStatus} overrides={overrides} decks={decks}
-              frame={engineState.frame} pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
+              pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}
               layerRowHeights={layerRowHeights}
               audioTrack={show.audioTrack}
@@ -2131,7 +2143,6 @@ export default function App() {
           track={selectedTrack} cue={selectedCue} readOnly={showMode}
           group={selectedTrackRaw?.type === 'group' ? selectedTrackRaw as GroupTrack : null}
           decks={decks}
-          frame={engineState.frame}
           onToggleKey={handleToggleKey} onParamEdit={handleParamEdit} onSeek={handleSeek}
           cueIdx={selectedCueIdx} trackIdx={selectedTrackIdx} fps={fps}
           height={bottomPanelHeight} onResize={setBottomPanelHeight}
@@ -2153,7 +2164,7 @@ export default function App() {
         <RundownEditModal
           entry={editingEntry}
           onSave={handleEditEntry}
-          playheadFrame={editingEntry.id === activeShowEntry?.id ? engineState.frame : null}
+          isActive={editingEntry.id === activeShowEntry?.id}
           otherTimelines={rundown.filter((e): e is ShowEntry => e.type === 'show' && e.id !== editingEntry.id)
             .map(e => ({ name: e.show.name, source: e.show.clock.source, offset: e.show.clock.offset || '00:00:00:00' }))}
           onClose={() => setEditingEntryId(null)}

@@ -66,6 +66,30 @@ export function toFrameKeyframes(kfs: Keyframe[], toFrames: (smpte: string) => n
     .sort((a, b) => a.frame - b.frame)
 }
 
+// Parsed keyframes per lane: the engine and the UI sample every lane at frame rate, and parsing
+// the "hh:mm:ss:ff" times each time costs more than the rest of a frame. Keyframe arrays are
+// never changed in place (every edit makes a new array), so the array itself is the key.
+const parsed = new WeakMap<readonly Keyframe[], { fps: number; kfs: FrameKeyframe[] }>()
+
+/** toFrameKeyframes, cached until the lane's keyframes change. Don't modify the result. */
+export function frameKeyframes(kfs: Keyframe[], fps: number, toFrames: (smpte: string) => number): FrameKeyframe[] {
+  const hit = parsed.get(kfs)
+  if (hit && hit.fps === fps) return hit.kfs
+  const out = toFrameKeyframes(kfs, toFrames)
+  parsed.set(kfs, { fps, kfs: out })
+  return out
+}
+
+/** First index whose frame is >= frame (kfs.length if none). */
+export function lowerBound(kfs: readonly { frame: number }[], frame: number): number {
+  let lo = 0, hi = kfs.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (kfs[mid].frame < frame) lo = mid + 1; else hi = mid
+  }
+  return lo
+}
+
 /** Value at a frame. The curve of a segment is the curve of its first keyframe; discrete
  *  lanes (choice / boolean) always step. Before the first / after the last keyframe the
  *  edge value holds. Returns the keyframe that owns the value for discrete lanes. */
@@ -76,13 +100,11 @@ export function sampleLane(
   if (frame <= kfs[0].frame) return { value: kfs[0].value, option: kfs[0].option }
   const last = kfs[kfs.length - 1]
   if (frame >= last.frame) return { value: last.value, option: last.option }
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const k0 = kfs[i], k1 = kfs[i + 1]
-    if (frame < k0.frame || frame > k1.frame) continue
-    if (kind !== 'range' || k0.curve === 'hold' || k1.frame === k0.frame)
-      return frame >= k1.frame ? { value: k1.value, option: k1.option } : { value: k0.value, option: k0.option }
-    const t = (frame - k0.frame) / (k1.frame - k0.frame)
-    return { value: k0.value + (k1.value - k0.value) * SHAPE[k0.curve](t) }
-  }
-  return null
+  // The segment is the first one that ends at or after the frame (it starts before it)
+  const j = lowerBound(kfs, frame)
+  const k0 = kfs[j - 1], k1 = kfs[j]
+  if (kind !== 'range' || k0.curve === 'hold' || k1.frame === k0.frame)
+    return frame >= k1.frame ? { value: k1.value, option: k1.option } : { value: k0.value, option: k0.option }
+  const t = (frame - k0.frame) / (k1.frame - k0.frame)
+  return { value: k0.value + (k1.value - k0.value) * SHAPE[k0.curve](t) }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useFrame } from '../frameStore'
 
 // Show-safety alarms under the top bar. Shown while playing or in SHOW mode, when a
 // silent failure would otherwise go unnoticed from FOH: Resolume gone, timecode gone,
@@ -13,7 +14,7 @@ interface Props {
   // Automated parameters the operator took over live in Resolume (lane id + readable name)
   manual: { id: string; name: string }[]
   arenaRec: { armed: boolean; state: 'idle' | 'starting' | 'recording'; file: string | null; error: string | null }
-  recSeconds: number          // take length so far (= timeline position, the take starts at 0)
+  fps: number                 // take length so far = timeline position (the take starts at 0)
   onDismissRecError: () => void
   onReenable: (ids?: string[]) => void
   onReconnect: () => void
@@ -31,7 +32,7 @@ const ago = (since: number, now: number) => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
 }
 
-export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, manual, arenaRec, recSeconds, onDismissRecError, onReenable, onReconnect }: Props) {
+export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, ltcNotHere, brokenLanes, manual, arenaRec, fps, onDismissRecError, onReenable, onReconnect }: Props) {
   const offline = !resolumeConnected
   const noLtc = ltcSelected && !ltcActive
   const offSince = useSince(offline)
@@ -56,7 +57,7 @@ export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, l
         <div className="health-item recording">
           <span className="health-rec-dot" />
           <b>RECORDING IN ARENA</b>
-          <span className="mono">{ago(Date.now() - recSeconds * 1000, Date.now())}</span>
+          <RecLength fps={fps} />
           <span className="health-file">{arenaRec.file ? arenaRec.file.split('/').pop() : ''}</span>
         </div>
       )}
@@ -116,4 +117,9 @@ export function HealthBar({ active, resolumeConnected, ltcSelected, ltcActive, l
       )}
     </div>
   )
+}
+
+function RecLength({ fps }: { fps: number }) {
+  const frame = useFrame()
+  return <span className="mono">{ago(Date.now() - frame / fps * 1000, Date.now())}</span>
 }

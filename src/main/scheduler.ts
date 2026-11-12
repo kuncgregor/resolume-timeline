@@ -3,7 +3,7 @@ import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
 import { ResolumeWs } from './resolume-ws'
 import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind, ClipCue } from '../shared/show'
-import { toFrameKeyframes, sampleLane } from '../shared/automation'
+import { frameKeyframes, sampleLane } from '../shared/automation'
 import { toRestValue, normalize, type LaneTarget } from '../shared/paramTree'
 
 export type { LaneTarget }
@@ -426,7 +426,7 @@ export class Scheduler {
     for (const track of this.show.tracks) {
       if (track.type === 'automation') {
         const at = track as AutomationTrack
-        const sample = sampleLane(toFrameKeyframes(at.keyframes, t => smpteToFrames(t, fps)), T)
+        const sample = sampleLane(frameKeyframes(at.keyframes, fps, t => smpteToFrames(t, fps)), T)
         if (sample && (force || this.lastSent.get(at.id) !== sample.value)) {
           this.osc.setParam(at.target, sample.value)
           this.lastSent.set(at.id, sample.value)
@@ -448,7 +448,7 @@ export class Scheduler {
       this.lastSent.delete(auto.id)
     }
     const kind = auto.kind ?? 'range'
-    const kfs = toFrameKeyframes(auto.keyframes, t => smpteToFrames(t, fps))
+    const kfs = frameKeyframes(auto.keyframes, fps, t => smpteToFrames(t, fps))
     const inside = T >= kfs[0].frame && T <= kfs[kfs.length - 1].frame
     const hold = auto.outside === 'hold'
     const afterEnd = T > kfs[kfs.length - 1].frame

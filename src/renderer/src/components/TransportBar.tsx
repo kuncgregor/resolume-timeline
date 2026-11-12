@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useFrame } from '../frameStore'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
 import {
@@ -56,7 +57,8 @@ export function TransportBar({
   overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm, arenaBpm, onToggleLinkTempo, onPushTempo,
   snap, snapAuto, onSetSnap,
 }: Props) {
-  const { frame, playing, fps } = engineState
+  const { playing, fps } = engineState
+  const frame = useFrame()
   const tc = framesToSmpte(frame + offsetFrames, fps)
   const source = show?.clock.source ?? 'internal'
   const isLtc = source === 'ltc' || source === 'ltc-a' || source === 'ltc-b'

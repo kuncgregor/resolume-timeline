@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { frameStore } from '../frameStore'
 import { useEscape } from './useEscape'
 import type { RundownEntry, BreakEntry, ShowEntry } from '../../../shared/concert'
 import { TAG_COLORS } from '../theme'
@@ -30,12 +31,12 @@ interface Props {
   entry: RundownEntry
   onSave: (id: string, updates: Updates) => void
   onClose: () => void
-  playheadFrame: number | null   // current playhead (timeline frame) when this is the active timeline
+  isActive: boolean   // the timeline being played: its playhead can set the downbeat
 }
 
 const ZERO_TC = '00:00:00:00'
 
-export function RundownEditModal({ entry, otherTimelines, onSave, onClose, playheadFrame }: Props) {
+export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isActive }: Props) {
   useEscape(onClose)
   const [color, setColor] = useState(entry.color)
   const [notes, setNotes] = useState(entry.notes)
@@ -185,8 +186,8 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, playh
                   onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
                   placeholder={ZERO_TC}
                 />
-                {playheadFrame != null && (
-                  <button className="btn" onClick={() => setDownbeat(framesToSmpte(playheadFrame, fps))}
+                {isActive && (
+                  <button className="btn" onClick={() => setDownbeat(framesToSmpte(frameStore.get(), fps))}
                     title="Use the current playhead position">Playhead</button>
                 )}
               </div>

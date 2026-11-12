@@ -1,12 +1,15 @@
 import { useState, useRef, useEffect } from 'react'
 import { TabletAccess } from './TabletAccess'
+import { useFrame } from '../frameStore'
+import { framesToSmpte } from './timeUtils'
 import type { RundownEntry, ShowEntry, BreakEntry } from '../../../shared/concert'
 
 interface Props {
   rundown: RundownEntry[]
   activeId: string
   playing: boolean
-  nowRemaining: string | null    // time to its end, null when empty
+  endFrame: number               // last frame with content of the active timeline (0 = empty)
+  fps: number
   showMode: boolean
   // The showfile (every timeline in one file)
   showfileName: string
@@ -51,7 +54,7 @@ const entryName = (e: RundownEntry) =>
 const tcSourceLabel = (src: string) => src === 'ltc-b' ? 'LTC B' : src === 'ltc-a' || src === 'ltc' ? 'LTC A' : 'INT'
 
 export function RundownStrip({
-  rundown, activeId, playing, nowRemaining, showMode,
+  rundown, activeId, playing, endFrame, fps, showMode,
   showfileName, showfilePath, showfileDirty, autosave, savedAt, saveError,
   resolumeConnected, resolumeHost, currentDeck,
   onSelect, confirmEntryId, onGo, onReorder, onAddShow, onAddBreak, onEdit, onDelete,
@@ -306,7 +309,7 @@ export function RundownStrip({
               onDoubleClick={() => { if (active && !showMode) onEdit(active.id) }}>{active ? entryName(active) : '—'}</div>
             <div className="nn-sub mono">
               {active?.type === 'break' ? `Break · ${(active as BreakEntry).duration}`
-                : nowRemaining ? <><span className="nn-remain">−{nowRemaining}</span> to end</> : 'Empty timeline'}
+                : endFrame > 0 ? <><Remaining endFrame={endFrame} fps={fps} /> to end</> : 'Empty timeline'}
             </div>
           </div>
           <div className="nn-arrow" aria-hidden>→</div>
@@ -327,4 +330,10 @@ export function RundownStrip({
       </div>
     </div>
   )
+}
+
+// Time to the end of the timeline; its own component, so only it follows the playhead
+function Remaining({ endFrame, fps }: { endFrame: number; fps: number }) {
+  const frame = useFrame()
+  return <span className="nn-remain">−{framesToSmpte(Math.max(0, endFrame - frame), fps)}</span>
 }

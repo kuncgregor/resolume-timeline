@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import { useFrame } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind } from '../../../shared/show'
 import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
 import type { CurveName, FrameKeyframe } from '../../../shared/automation'
@@ -135,6 +136,23 @@ export function convertItems(items: KeyframePasteItem[], from: LaneKind, to: Lan
 
 // One entry per automation index (indices stay aligned with track.automations); a hidden
 // lane (auto.visible === false) has h = 0 and is skipped by every draw and hit test.
+// A lane's keyframes as drawn (frame, normalized value, curve), sorted by time then index.
+// Cached per keyframes array (never changed in place): parsing every time on every frame is
+// what made long, dense lanes slow.
+interface LaneKey { ki: number; kf: Keyframe; f: number; v: number; c: CurveName; dragging: boolean; primary: boolean }
+interface LaneKeys { keys: LaneKey[]; fks: FrameKeyframe[] }
+const laneKeyCache = new WeakMap<Keyframe[], { fps: number; kind: LaneKind; optsKey: string; lk: LaneKeys }>()
+function sortLaneKeys(keys: LaneKey[]): LaneKeys {
+  keys.sort((a, b) => a.f - b.f || a.ki - b.ki)
+  return { keys, fks: keys.map(k => ({ frame: k.f, value: k.v, curve: k.c })) }
+}
+/** First index with f >= frame (keys.length if none). */
+function firstKeyAt(keys: LaneKey[], frame: number): number {
+  let lo = 0, hi = keys.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (keys[mid].f < frame) lo = mid + 1; else hi = mid }
+  return lo
+}
+
 interface AutoLaneLayout { y: number; h: number; id: string }
 interface TrackLayout { y: number; totalH: number; autoLanes: AutoLaneLayout[]; hidden?: boolean }
 
@@ -332,7 +350,6 @@ interface Props {
   onSetDownbeat: (frame: number) => void   // ruler right-click: where bar 1 beat 1 is
   rulerMode: 'timecode' | 'bars'      // in effect; 'bars' only with a tempo
   snap: SnapSettings                  // snap to grid in effect (⌘ during a drag = free; Alt = copy)
-  frame: number
   pxPerFrame: number
   scrollFrame: number
   draggingClip: DragClipData | null
@@ -387,7 +404,7 @@ interface Props {
 interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number }
 
 export function TimelineCanvas({
-  tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, frame, pxPerFrame, scrollFrame, draggingClip,
+  tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, onUpdateCue, onMoveCues, onInsertCues, onDeleteCues, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
@@ -396,10 +413,13 @@ export function TimelineCanvas({
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
+  // Only the overlay follows the playhead (see drawOverlay)
+  const frame = useFrame()
   const bars = rulerModeProp === 'bars' && tempo ? tempo : null   // musical ruler + grid in effect
   // Snap to grid: null when off. 'auto' follows the zoom, so it is recomputed every render.
   const gridSnap = gridSnapOf(snap, tempo, rulerModeProp, pxPerFrame, fps)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)   // playhead layer, see drawOverlay
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
   const [ctxInputVal, setCtxInputVal] = useState('')
@@ -516,6 +536,30 @@ export function TimelineCanvas({
     if (s.length !== selRef.current.length) updateSel(s)
   }, [tracks])
 
+  /** A lane's keyframes as drawn: dragged ones at their drag position. */
+  const drawnKeys = (trackIdx: number, ai: number, auto: AutomationSubTrack, kind: LaneKind, opts: string[]): LaneKeys => {
+    const kd = kfDragRef.current
+    const drags = kd?.moved && !kd.copy ? kd.items.filter(i => i.trackIdx === trackIdx && i.autoIdx === ai) : []
+    const curve = (kf: Keyframe): CurveName => kind === 'range' ? curveOf(kf.ease) : 'hold'
+    if (!drags.length) {
+      const optsKey = opts.join('\n'), hit = laneKeyCache.get(auto.keyframes)
+      if (hit && hit.fps === fps && hit.kind === kind && hit.optsKey === optsKey) return hit.lk
+      const lk = sortLaneKeys(auto.keyframes.map((kf, ki) => ({
+        ki, kf, f: smpteToFrames(kf.time, fps), v: kfValue(kind, kf, opts), c: curve(kf), dragging: false, primary: false,
+      })))
+      laneKeyCache.set(auto.keyframes, { fps, kind, optsKey, lk })
+      return lk
+    }
+    const byKi = new Map(drags.map(d => [d.kfIdx, d]))
+    return sortLaneKeys(auto.keyframes.map((kf, ki) => {
+      const d = byKi.get(ki)
+      return {
+        ki, kf, f: d ? d.f : smpteToFrames(kf.time, fps), v: d ? d.v : kfValue(kind, kf, opts), c: curve(kf),
+        dragging: !!d, primary: !!d && d === kd!.primary,
+      }
+    }))
+  }
+
   // ── Draw ──────────────────────────────────────────────────────────────────
 
   const draw = useCallback(() => {
@@ -539,9 +583,6 @@ export function TimelineCanvas({
     const tracksBottom = Math.min(H, last ? last.y + last.totalH : TRACKS_TOP)
     const tips: { text: string; x: number; y: number }[] = []
     const kd = kfDragRef.current
-    const dragMap = new Map<string, DragItem>()
-    // A copy-drag leaves the originals in place: the copies are drawn as ghosts
-    if (kd?.moved && !kd.copy) kd.items.forEach(i => dragMap.set(`${laneKey(i)}:${i.kfIdx}`, i))
     const pxToFrame = (px: number) => px / pxPerFrame + scrollFrame
 
     // Clip automation: the lane's cue spans as boxes in the cue colour, the rest dimmed
@@ -613,17 +654,15 @@ export function TimelineCanvas({
         ctx.fillText(formatValue('range', 0, range, undefined, range.suffix), 8, lane.y + lane.h - 3)
       }
 
-      // Keyframes as drawn: dragged ones sit at their drag position
-      const keys = auto.keyframes.map((kf, ki) => {
-        const d = dragMap.get(`${trackIdx}:${ai}:${ki}`)
-        const f = d ? d.f : smpteToFrames(kf.time, fps)
-        const v = d ? d.v : kfValue(kind, kf, opts)
-        const c: CurveName = kind === 'range' ? curveOf(kf.ease) : 'hold'
-        return { ki, kf, f, v, c, x: frameToX(f), y: toY(v), dragging: !!d, primary: !!d && d === kd?.primary }
-      })
-      const sorted = [...keys].sort((a, b) => a.f - b.f || a.ki - b.ki)
+      // Keyframes as drawn (dragged ones at their drag position). Only the ones on screen are
+      // drawn, plus one beyond each edge so the curve reaches the edges.
+      const { keys: all, fks: allFks } = drawnKeys(trackIdx, ai, auto, kind, opts)
+      const lo = Math.max(0, firstKeyAt(all, pxToFrame(0)) - 1)
+      const hi = Math.min(all.length, firstKeyAt(all, pxToFrame(W)) + 1)
+      const sorted = all.slice(lo, hi).map(k => ({ ...k, x: frameToX(k.f), y: toY(k.v) }))
+      const keys = sorted
       // Same interpolation as the engine; kfToY clamps elastic/back overshoot to the lane
-      const fks: FrameKeyframe[] = sorted.map(k => ({ frame: k.f, value: k.v, curve: k.c }))
+      const fks: FrameKeyframe[] = allFks.slice(lo, hi)
 
       if (sorted.length) {
         // Curve outline: holds as steps, eased segments sampled every 2px
@@ -739,14 +778,6 @@ export function TimelineCanvas({
         if (i === kd.primary) tips.push({ text: `+ copy  ${formatValue(kind, i.v, range, undefined, range.suffix)} · ${framesToSmpte(i.f, fps)}${kd.items.length > 1 ? `  (${kd.items.length})` : ''}`, x: gx, y: gy })
       })
 
-      // Value at the playhead
-      const cur = sampleLane(fks, frame, kind)?.value
-      const lx = frameToX(frame)
-      if (cur != null && lx >= -4 && lx <= W + 4) {
-        ctx.beginPath(); ctx.arc(lx, toY(cur), 2.5, 0, Math.PI * 2)
-        ctx.fillStyle = faded ? T.textFaint : T.live; ctx.fill()
-        ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
-      }
       ctx.restore()
     }
 
@@ -894,7 +925,6 @@ export function TimelineCanvas({
         const fullW = Math.round(spanWidth(durF, pxPerFrame))
         if (x + blockW < -4 || x > W + 4) return
         const isSel = clipSel.includes(clip.id)
-        const isLive = !muted && !isGhost && shownF > 0 && frame >= sf && frame < sf + shownF
         const isCut = shownF < durF
         const color = clip.color ?? clip.resolumeColor ?? trackColor
 
@@ -967,28 +997,19 @@ export function TimelineCanvas({
           ctx.fillRect(x + blockW - 5, gy, 1, gh)
         }
 
-        if (isLive) {
-          const p = Math.max(0, Math.min(1, (frame - sf) / shownF))
-          ctx.fillStyle = T.liveFill
-          ctx.fillRect(x + 2, by + bh - 4, Math.max(1, (blockW - 4) * p), 2)
-        }
-
-        // State outlines: 2px inside the block, 1px black halo outside
+        // State outlines: 2px inside the block, 1px black halo outside (the playing clip's
+        // outline is drawn by the overlay, it changes with the playhead)
         if (isGhost) {
           ctx.globalAlpha = 1
           ctx.strokeStyle = T.textHi; ctx.lineWidth = 1; ctx.setLineDash([4, 3])
           ctx.strokeRect(x + 0.5, by + 0.5, blockW - 1, bh - 1)
           ctx.setLineDash([])
-        } else if (isLive || isSel) {
+        } else if (isSel) {
           ctx.globalAlpha = 1
           ctx.strokeStyle = T.gutter; ctx.lineWidth = 1
           ctx.strokeRect(x - 0.5, by - 0.5, blockW + 1, bh + 1)
-          ctx.strokeStyle = isLive ? T.live : T.select; ctx.lineWidth = 2
+          ctx.strokeStyle = T.select; ctx.lineWidth = 2
           ctx.strokeRect(x + 1, by + 1, blockW - 2, bh - 2)
-          if (isLive && isSel) {
-            ctx.strokeStyle = T.select; ctx.lineWidth = 1
-            ctx.strokeRect(x + 2.5, by + 2.5, blockW - 5, bh - 5)
-          }
         }
         ctx.globalAlpha = 1
       })
@@ -1062,15 +1083,96 @@ export function TimelineCanvas({
     tips.forEach(t => drawTip(ctx, t.text, t.x, t.y, W, TRACKS_TOP))
 
     ctx.restore() // end track clip region
+    drawOverlayRef.current()
+  }, [tracks, markers, fps, bars, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf, clipSel])
+
+
+  // ── Overlay: what moves with the playhead ─────────────────────────────────
+  // Redrawn on every frame while the timeline runs; the timeline under it only on changes.
+
+  const drawOverlay = useCallback(() => {
+    const canvas = overlayRef.current, container = containerRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !container || !ctx) return
+    const W = container.clientWidth, H = container.clientHeight
+    if (W === 0 || H === 0) return
+    const dpr = window.devicePixelRatio || 1
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr)
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw; canvas.height = bh
+      canvas.style.width = `${W}px`; canvas.style.height = `${H}px`
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+
+    const layout = buildLayout(tracks, clipH, autoH, scrollY)
+    const lx = frameToX(frame)
+    ctx.save()
+    ctx.beginPath(); ctx.rect(0, TRACKS_TOP, W, H - TRACKS_TOP); ctx.clip()
+    tracks.forEach((track, trackIdx) => {
+      if (track.type !== 'layer') return
+      const lt = track as LayerTrack
+      const { y, totalH, autoLanes, hidden } = layout[trackIdx]
+      if (hidden || y > H || y + totalH < TRACKS_TOP) return
+
+      // The clip playing on this layer: progress bar and live outline
+      if (!lt.muted) {
+        const gc = ghostClipRef.current
+        const ghostMove = gc && !gc.copy
+          ? new Map(gc.items.filter(g => g.trackIdx === trackIdx).map(g => [g.cueIdx, g.frame])) : null
+        const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
+        const spans = clipSpans(lt, fps, ghostMove, ghostDur)
+        const by = y + CLIP_PAD, bh = clipH(lt.id) - 1 - CLIP_PAD * 2
+        lt.clips.forEach((clip, ci) => {
+          const { sf, shownF } = spans[ci]
+          if (ghostMove?.has(ci) || shownF <= 0 || frame < sf || frame >= sf + shownF) return
+          const x = Math.round(frameToX(sf)), blockW = Math.round(spanWidth(shownF, pxPerFrame))
+          if (x + blockW < -4 || x > W + 4) return
+          const p = Math.max(0, Math.min(1, (frame - sf) / shownF))
+          ctx.fillStyle = T.liveFill
+          ctx.fillRect(x + 2, by + bh - 4, Math.max(1, (blockW - 4) * p), 2)
+          ctx.strokeStyle = T.gutter; ctx.lineWidth = 1
+          ctx.strokeRect(x - 0.5, by - 0.5, blockW + 1, bh + 1)
+          ctx.strokeStyle = T.live; ctx.lineWidth = 2
+          ctx.strokeRect(x + 1, by + 1, blockW - 2, bh - 2)
+          if (clipSel.includes(clip.id)) {
+            ctx.strokeStyle = T.select; ctx.lineWidth = 1
+            ctx.strokeRect(x + 2.5, by + 2.5, blockW - 5, bh - 5)
+          }
+        })
+      }
+
+      // Each lane's value at the playhead
+      if (lx < -4 || lx > W + 4) return
+      autoLanes.forEach((lane, ai) => {
+        const auto = lt.automations[ai]
+        if (!auto || lane.h <= 0 || lane.y > H || lane.y + lane.h < TRACKS_TOP) return
+        const kind = laneKind(auto), status = laneStatus[auto.id]
+        const cur = sampleLane(drawnKeys(trackIdx, ai, auto, kind, laneRange(auto, status).options ?? []).fks, frame, kind)?.value
+        if (cur == null) return
+        const ovr = overrides[auto.id]
+        const faded = status?.state === 'broken' || auto.enabled === false || (typeof ovr === 'number' && Number.isFinite(ovr))
+        ctx.save()
+        ctx.beginPath(); ctx.rect(0, lane.y, W, lane.h - 1); ctx.clip()
+        ctx.beginPath(); ctx.arc(lx, kfToY(lane)(cur), 2.5, 0, Math.PI * 2)
+        ctx.fillStyle = faded ? T.textFaint : T.live; ctx.fill()
+        ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
+        ctx.restore()
+      })
+    })
+    ctx.restore()
 
     // Playhead over everything, cap in the ruler
-    const px = Math.round(frameToX(frame))
+    const px = Math.round(lx)
     if (px >= -6 && px <= W + 6) {
       ctx.fillStyle = T.live
       ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
-  }, [tracks, markers, fps, bars, frame, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf, clipSel])
+  }, [tracks, fps, frame, pxPerFrame, scrollFrame, autoLaneHeights, layerRowHeights, scrollY, laneStatus, overrides, clipSel])
+  const drawOverlayRef = useRef(drawOverlay)
+  drawOverlayRef.current = drawOverlay
+  useEffect(() => { drawOverlay() }, [drawOverlay])
 
   // ── Resize / DPR ───────────────────────────────────────────────────────────
 
@@ -1827,6 +1929,7 @@ export function TimelineCanvas({
         onContextMenu={handleContextMenu}
         onMouseLeave={() => { if (!isDragging()) setHoverKf(null) }}
       />
+      <canvas ref={overlayRef} className="timeline-overlay" />
 
       {contextMenu && (() => {
         const { trackIdx: ti, autoIdx: ai, kfIdx: ki } = contextMenu
@@ -2060,11 +2163,16 @@ export function TimelineCanvas({
 // Start/length of each clip on a layer, plus how much of it is actually shown: a layer
 // plays one clip at a time, so a clip stops showing where the next one starts.
 interface ClipSpan { sf: number; durF: number; shownF: number }
+// Without a drag in progress the spans only change with the clips (never changed in place)
+const spanCache = new WeakMap<ClipCue[], { fps: number; spans: ClipSpan[] }>()
 function clipSpans(
   lt: LayerTrack, fps: number,
   ghostMove: Map<number, number> | null,   // cue index → start frame while dragged
   ghostDur: { cueIdx: number; durF: number } | null,
 ): ClipSpan[] {
+  const cacheable = !ghostMove?.size && !ghostDur
+  const hit = cacheable ? spanCache.get(lt.clips) : undefined
+  if (hit && hit.fps === fps) return hit.spans
   const spans = lt.clips.map((c, i) => {
     const sf = ghostMove?.get(i) ?? smpteToFrames(c.time, fps)
     const durF = ghostDur?.cueIdx === i ? ghostDur.durF : smpteToFrames(c.duration, fps)
@@ -2075,6 +2183,7 @@ function clipSpans(
     const cur = spans[order[k]], next = spans[order[k + 1]]
     if (cur.durF > 0 && next.sf < cur.sf + cur.durF) cur.shownF = Math.max(0, next.sf - cur.sf)
   }
+  if (cacheable) spanCache.set(lt.clips, { fps, spans })
   return spans
 }
 

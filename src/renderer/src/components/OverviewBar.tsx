@@ -7,6 +7,7 @@
 // when the show, width or overall range change; every tick just blits it and draws the lens
 // and the playhead on top, so 3 h shows with hundreds of cues stay cheap.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFrame } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, Marker } from '../../../shared/show'
 import { T, TAG_COLORS } from '../theme'
 import { deckOfCue, type DeckInfo } from '../decks'
@@ -125,7 +126,6 @@ interface Props {
   fps: number
   decks: DeckInfo[]
   endFrame: number          // App's last frame with content (cues, audio)
-  frame: number
   playing: boolean
   readOnly: boolean         // SHOW mode: navigation works, double-click seek is off while playing
   scrollFrame: number
@@ -138,9 +138,10 @@ interface Props {
 type Drag = { mode: 'move' | 'left' | 'right'; grab: number; total: number; w: number; start: number; end: number }
 
 export function OverviewBar({
-  tracks, markers, fps, decks, endFrame, frame, playing, readOnly,
+  tracks, markers, fps, decks, endFrame, playing, readOnly,
   scrollFrame, pxPerFrame, onScrollFrame, onPxPerFrame, onSeek,
 }: Props) {
+  const frame = useFrame()
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ w: 0, dpr: window.devicePixelRatio || 1 })

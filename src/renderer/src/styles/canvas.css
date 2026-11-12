@@ -7,6 +7,8 @@
   flex: 1; min-width: 0; overflow: hidden; position: relative; background: var(--bg-well);
 }
 .timeline-canvas-container > canvas { display: block; }
+/* Playhead layer over the timeline (TimelineCanvas drawOverlay); clicks go to the timeline */
+.timeline-canvas-container > canvas.timeline-overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
 
 /* ── Menu surface (shared by context menu and colour picker) ──────── */
 
