@@ -7,7 +7,7 @@ import './styles/tokens.css'
 import './styles/chrome.css'
 import './styles/canvas.css'
 import './styles/panels.css'
-import './styles/remote.css'
+import './styles/show.css'
 import './styles/touch.css'
 import { applyTouchMode } from './touch'
 

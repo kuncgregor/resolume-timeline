@@ -3,6 +3,7 @@
 export const T = {
   gutter: '#000000',
   well: '#0a0909',
+  monitor: '#151514',
   lane: '#1b1a19',
   laneAlt: '#201f1e',
   track: '#2a2a2a',

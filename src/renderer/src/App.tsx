@@ -24,7 +24,9 @@ import { resolveShow, laneFieldsFor, rememberClip, knownClip } from './resolver'
 import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
-import { MobileRemote, useRemoteLayout } from './components/MobileRemote'
+import { alarmsOf, type ClockStatus } from './alarms'
+import { ShowView } from './components/show/ShowView'
+import { useRemoteLayout } from './components/show/view'
 import { useKeepAwake } from './wakeLock'
 import { frameStore } from './frameStore'
 import { frameKeyframes } from '../../shared/automation'
@@ -83,6 +85,7 @@ const shallowSame = (a: object, b: object) =>
 // the periodic sync does not mark the show dirty.
 const FOLLOW_TC_KEY = 'resolume-timeline:followTc'
 const ARENA_REC_LATENCY_MS = 40   // Arena starts writing ~38 ms after the record command (measured, 7.24)
+const isLtcSource = (src: string) => src === 'ltc' || src === 'ltc-a' || src === 'ltc-b'
 const STOP_CONFIRM_MS = 2500   // SHOW mode: second Space / ■ within this stops (a finger on a tablet needs the time)
 
 /** LTC input a clock source listens to ('ltc' = legacy A). */
@@ -644,6 +647,26 @@ export default function App() {
     return t?.id != null ? { id: t.id as number, value: Number(t.value) } : null
   }, [composition])
 
+  // The clock as the app window sees it (it decodes LTC); tablets show the window's, published
+  const localClock = useMemo<ClockStatus>(() => ({
+    ltcSelected: isLtcSource(show.clock.source),
+    ltcActive,
+    ltcNotHere: ltcOutside && isLtcSource(show.clock.source)
+      ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null,
+  }), [show.clock.source, show.clock.offset, ltcActive, ltcOutside, ltcRawTC, followTc])
+  const [remoteClock, setRemoteClock] = useState<ClockStatus | null>(null)
+  useEffect(() => { if (!REMOTE) api.clockPublish?.(localClock) }, [localClock])
+  useEffect(() => {
+    if (!REMOTE) return
+    const adopt = (c: ClockStatus | null) => { if (c) setRemoteClock(c) }
+    api.clockGet?.().then(adopt, () => {})
+    const unsubRe = api.onReconnect(() => { api.clockGet?.().then(adopt, () => {}) })
+    const unsub = api.onClock?.(adopt)
+    return () => { unsub?.(); unsubRe() }
+  }, [])
+  // Without the window's report a tablet knows only the timeline's setting, not the signal
+  const clock: ClockStatus = REMOTE ? remoteClock ?? { ltcSelected: false, ltcActive: false, ltcNotHere: null } : localClock
+
   // Taken-over lanes with a name an operator recognises: "Layer 2 › Rotation Y"
   const manualLanes = useMemo(() => {
     const out: { id: string; name: string }[] = []
@@ -864,7 +887,6 @@ export default function App() {
 
   // ── LTC decoder lifecycle ──────────────────────────────────────────────────
 
-  const isLtcSource = (src: string) => src === 'ltc' || src === 'ltc-a' || src === 'ltc-b'
   const deviceForSource = (s: Show): string | undefined => {
     const src = s.clock.source
     if (src === 'ltc-b') return s.clock.ltcDeviceB
@@ -2102,17 +2124,29 @@ export default function App() {
 
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
 
+  // One set of alarms for the health bar and the show view
+  const brokenLanes = Object.values(laneStatus).filter(st => st.state === 'broken').length
+  const health = {
+    ...clock, active: showMode || engineState.playing, resolumeConnected: engineState.resolumeConnected,
+    brokenLanes, manual: manualLanes, arenaRec,
+  }
+  const alarms = alarmsOf(health)
+
   if (phoneRemote) return (
-    <MobileRemote
-      awake={awake} tracks={show.tracks} laneStatus={laneStatus}
+    <ShowView
+      awake={awake} show={show} laneStatus={laneStatus}
       rundown={rundown} activeId={activeId}
       playing={engineState.playing} fps={fps} offsetFrames={offsetFrames} endFrame={endFrame}
-      tempo={tempo} markers={show.markers}
+      tempo={tempo}
       clockLabel={show.clock.source === 'ltc-b' ? 'LTC B' : isLtcSource(show.clock.source) ? 'LTC A' : 'INT'}
+      clockOk={isLtcSource(show.clock.source) ? clock.ltcActive : null}
       resolumeConnected={engineState.resolumeConnected}
       showMode={showMode}
       stopArmed={stopArmed === 'stop'}
-      goArmed={stopArmed && stopArmed !== 'stop' ? stopArmed : null}
+      goArmed={stopArmed && stopArmed !== 'stop' && stopArmed !== 'manual' ? stopArmed : null}
+      manualArmed={stopArmed === 'manual'}
+      alarms={alarms} manual={manualLanes}
+      onReenable={ids => { if (!needsConfirm('manual')) handleReenable(ids) }}
       arenaRec={arenaRec}
       onPlay={handlePlay} onStop={requestStop}
       onLocate={handleLocate} onSeek={handleSeek}
@@ -2147,7 +2181,7 @@ export default function App() {
         resolumeHost={show.resolume.host}
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
         onSelect={id => { if (id !== activeId && !needsConfirm(id)) handleSelectEntry(id) }}
-        confirmEntryId={stopArmed && stopArmed !== 'stop' ? stopArmed : null}
+        confirmEntryId={stopArmed && stopArmed !== 'stop' && stopArmed !== 'manual' ? stopArmed : null}
         onGo={handleGo}
         onReorder={handleReorder}
         onAddShow={handleAddShow}
@@ -2216,15 +2250,7 @@ export default function App() {
       />
 
       <HealthBar
-        active={showMode || engineState.playing}
-        resolumeConnected={engineState.resolumeConnected}
-        ltcSelected={!REMOTE && isLtcSource(show.clock.source)}
-        ltcActive={ltcActive}
-        ltcNotHere={ltcOutside && isLtcSource(show.clock.source)
-          ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null}
-        brokenLanes={Object.values(laneStatus).filter(st => st.state === 'broken').length}
-        manual={manualLanes}
-        arenaRec={arenaRec}
+        {...health}
         fps={fps}
         onDismissRecError={() => setArenaRec({ error: null })}
         onReenable={handleReenable}

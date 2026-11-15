@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
-import { setAppView } from './MobileRemote'
+import { setAppView } from './show/view'
 import { TabletAccess } from './TabletAccess'
 import { useFrame } from '../frameStore'
 import { framesToSmpte } from './timeUtils'

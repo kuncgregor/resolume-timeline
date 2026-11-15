@@ -25,7 +25,7 @@ host.addSink((channel, payload) => {
 
 const ENGINE_CHANNELS: Record<string, string> = {
   'engine:play': 'play', 'engine:stop': 'stop', 'engine:locate': 'locate', 'engine:getState': 'getState',
-  'record:start': 'recordStart', 'record:stop': 'recordStop', 'record:publish': 'arenaRecPublish',
+  'record:start': 'recordStart', 'record:stop': 'recordStop', 'record:publish': 'arenaRecPublish', 'clock:publish': 'clockPublish',
   'show:loadDirect': 'loadShowDirect', 'show:select': 'selectShow', 'show:getCurrent': 'getCurrentShow',
   'session:get': 'sessionGet', 'session:set': 'sessionSet',
   'showfile:write': 'showfileWrite', 'showfile:defaultPath': 'showfileDefaultPath', 'showfile:rename': 'showfileRename',

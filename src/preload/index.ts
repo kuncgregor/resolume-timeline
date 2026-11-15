@@ -20,6 +20,7 @@ const api = {
   recordStart: (): Promise<{ ok: boolean; latencyMs: number; file: string | null; dir: string }> => ipcRenderer.invoke('record:start'),
   recordStop: () => ipcRenderer.invoke('record:stop'),
   arenaRecPublish: (state: unknown) => ipcRenderer.invoke('record:publish', state),
+  clockPublish: (status: unknown) => ipcRenderer.invoke('clock:publish', status),
   onRemoteCmd: on<{ cmd: string; from: string | null }>('remote:cmd'),
   stop: () => ipcRenderer.invoke('engine:stop', clientId),
   locate: (frame: number) => ipcRenderer.invoke('engine:locate', frame, clientId),

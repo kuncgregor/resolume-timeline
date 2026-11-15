@@ -90,6 +90,8 @@ export class EngineHost {
   // Arena recording as the app window last reported it (that window runs the recorder;
   // tablets and phones show it and ask the window to arm / stop over 'remote:cmd')
   private arenaRec: unknown = null
+  // The clock (LTC) as the app window last reported it: it decodes LTC, tablets show its alarms
+  private clockStatus: unknown = null
 
   constructor() {
     try {
@@ -187,6 +189,8 @@ export class EngineHost {
     recordStop: () => { this.recorder.stop(); return null },
     arenaRecPublish: (state: unknown) => { this.arenaRec = state; this.emit('arena:rec', state); return null },
     arenaRecGet: () => this.arenaRec,
+    clockPublish: (status: unknown) => { this.clockStatus = status; this.emit('clock:status', status); return null },
+    clockGet: () => this.clockStatus,
     // A tablet / phone asks the app window to do what only it can ('arenaRec', 'play' armed)
     remoteCommand: (cmd: string, from?: string) => { this.emit('remote:cmd', { cmd, from: from ?? null }); return null },
 
