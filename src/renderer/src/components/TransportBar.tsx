@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { showModelOf, sectionAt } from '../showModel'
+import { showModelOf, sectionAt, countdown, clockText } from '../showModel'
 import { useFrame } from '../frameStore'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
@@ -76,15 +76,8 @@ export function TransportBar({
   // The end warning colours only matter while it runs toward the end
   const remainClass = endFrame === 0 ? 'idle' : !playing ? '' : remainingS <= DANGER_S ? 'danger' : remainingS <= WARN_S ? 'warn' : ''
 
-  return (
-    <div className="transport-bar">
-      <div className="tc-block">
-        <div className={`tc-display ${playing ? 'running' : ''}`}>{tc}</div>
-        <div className="tc-badges">
-          <span className="fps-badge" title="Project frame rate">{fps}</span>
-          {barPos && <span className={`bar-pos mono ${playing ? 'running' : ''}`} title="Musical position at the playhead (bar.beat.sixteenth)">{barPos}</span>}
-          {section && <span className="chip section" style={{ color: section.marker.color, boxShadow: `inset 0 0 0 1px ${section.marker.color}` }}
-            title="Song section at the playhead (from the markers)">◆ {section.marker.name || 'marker'}</span>}
+  const clockChips = (
+    <>
           {isLtc ? (
             !ltcActive
               ? <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
@@ -101,9 +94,10 @@ export function TransportBar({
                 : 'Follow TC off: LTC only drives the selected timeline (click to switch timelines by timecode)'}
             >Follow TC</button>
           )}
-        </div>
-      </div>
+    </>
+  )
 
+  const buttons = (
       <div className="transport-buttons">
         <button className="tbtn" onClick={() => onLocate(0)} disabled={readOnly && playing}
           title={readOnly && playing ? 'Locked while the show runs (SHOW mode)' : 'Go to start (Home)'}>⏮</button>
@@ -112,17 +106,20 @@ export function TransportBar({
           ■{stopArmed && <span className="tbtn-label">AGAIN</span>}
         </button>
         {/* Playing, it stops too (as Space does): armed, it says so itself, where the finger is */}
-        <button className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={playing ? onStop : onPlay}
-          title={playing ? (readOnly ? 'Playing — tap twice to stop (SHOW mode)' : 'Playing — Space to stop') : 'Play (Space)'}>
-          {stopArmed ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">PLAY</span>}</>}
+        {/* SHOW mode: only ■ stops (a second "did it register?" press on ▶ must not end the show) */}
+        <button className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed && !readOnly ? 'stop-armed' : ''}`}
+          onClick={playing ? (readOnly ? undefined : onStop) : onPlay}
+          title={playing ? (readOnly ? 'Playing — ■ stops (twice, SHOW mode)' : 'Playing — Space to stop') : 'Play (Space)'}>
+          {stopArmed && !readOnly ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">{readOnly ? 'PLAYING' : 'PLAY'}</span>}</>}
         </button>
-        {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume */}
-        <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly || remote}
+        {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume
+            (not in SHOW mode: nothing is edited there) */}
+        {!readOnly && <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={remote}
           title={remote ? 'KEYS records on the computer running the app' : recordArmed
             ? 'KEYS armed (auto-key): changes to automated parameters in Resolume are written as keyframes at the playhead'
             : 'KEYS (auto-key): record changes you make in Resolume as keyframes — not a video recording (that is REC ARENA)'}>
           <span className="rec-dot">◆</span><span className="tbtn-label">KEYS</span>
-        </button>
+        </button>}
         {/* Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first) */}
         <button
           className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
@@ -136,6 +133,52 @@ export function TransportBar({
           : arenaRec.state === 'starting' ? 'START…'
           : arenaRec.armed ? 'ARMED' : 'REC ARENA'}</span></button>
       </div>
+  )
+
+  // SHOW mode: the show view's language — where in the song, what comes next, time to end, big
+  if (readOnly && show) {
+    const model = showModelOf(show)
+    const nextSec = model.sections.find(sc => sc.start > frame)
+    return (
+      <div className="transport-bar show-bar">
+        <div className="sb-pos">
+          <div className="sb-pos-row">
+            <span className={`sb-bar mono ${playing ? 'running' : ''}`}>{tempo ? `BAR ${formatBarBeat(frameToBarBeat(frame, tempo), 2)}` : tc}</span>
+            {tempo && <span className="sb-tc mono">{tc}</span>}
+            <span className="tc-badges">{clockChips}</span>
+          </div>
+          <div className="sb-sect">
+            {section && <span style={{ color: section.marker.color }}>{section.marker.name || 'marker'}</span>}
+            {nextSec && <span className="sb-sect-next">{section ? ' · ' : ''}◆ {nextSec.marker.name || 'marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
+            {!section && !nextSec && <span className="sb-sect-next">{tempo ? `${formatBpm(show.bpm)} BPM` : 'No sections — add markers to name the song parts'}</span>}
+          </div>
+        </div>
+        {buttons}
+        <div className={`sb-remain ${remainClass}`} title="Time until the end of the last clip or audio">
+          <span className="sb-remain-value mono">{endFrame === 0 ? '—' : remaining === 0 ? 'END' : `−${clockText(remaining, fps, true)}`}</span>
+          <span className="sb-remain-label">{endFrame === 0 ? 'EMPTY TIMELINE' : 'TO END'}</span>
+          <span className="sb-prog"><i style={{ width: `${endFrame > 0 ? Math.min(100, frame / endFrame * 100) : 0}%` }} /></span>
+        </div>
+        {tempo && <div className="sb-bpm"><span className="mono">{formatBpm(show.bpm)}</span><span>BPM</span></div>}
+        <div className="spacer" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="transport-bar">
+      <div className="tc-block">
+        <div className={`tc-display ${playing ? 'running' : ''}`}>{tc}</div>
+        <div className="tc-badges">
+          <span className="fps-badge" title="Project frame rate">{fps}</span>
+          {barPos && <span className={`bar-pos mono ${playing ? 'running' : ''}`} title="Musical position at the playhead (bar.beat.sixteenth)">{barPos}</span>}
+          {section && <span className="chip section" style={{ color: section.marker.color, boxShadow: `inset 0 0 0 1px ${section.marker.color}` }}
+            title="Song section at the playhead (from the markers)">◆ {section.marker.name || 'marker'}</span>}
+          {clockChips}
+        </div>
+      </div>
+
+      {buttons}
 
       <div className={`remain ${remainClass}`} title="Time until the end of the last clip or audio">
         <span className="remain-label">

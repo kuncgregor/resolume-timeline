@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
-import { setAppView } from './show/view'
+import { showStyle, useShowStyle } from './show/view'
 import { TabletAccess } from './TabletAccess'
 import { useFrame } from '../frameStore'
 import { framesToSmpte } from './timeUtils'
@@ -66,6 +66,7 @@ export function RundownStrip({
   onImportTimeline, onExportTimeline, onSettings,
   onToggleShowMode, onReconnect,
 }: Props) {
+  const style = useShowStyle()
   const [menu, setMenu] = useState<'add' | 'file' | 'view' | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -224,10 +225,15 @@ export function RundownStrip({
             </button>
             {menu === 'view' && (
               <div className="dropdown view-menu" onClick={e => e.stopPropagation()}>
-                <button className="dropdown-item" onClick={() => { setMenu(null); setAppView('remote') }}
-                  title="Clock, NOW / NEXT, play / stop, GO and the rundown, big for a tablet on the desk (SETUP comes back here)">
-                  Show view
-                </button>
+                {/* What SHOW mode looks like on this device */}
+                <div className="view-menu-row" title="How this device looks in SHOW mode. Tablet: big clock, radar of the next bars and the coming events. Desktop: the timeline with the show bar and the coming events.">
+                  <span>Show view</span>
+                  {(['tablet', 'desktop'] as const).map(v => (
+                    <button key={v} className={`seg-btn${style === v ? ' on' : ''}`}
+                      onClick={() => showStyle.set(v)}>{v === 'tablet' ? 'Tablet' : 'Desktop'}</button>
+                  ))}
+                </div>
+                <div className="view-menu-note">Used in SHOW mode{showMode ? '' : ' — switch to SHOW to see it'}</div>
                 <div className="dropdown-sep" />
                 <div className="view-menu-row">
                   <span>Touch</span>

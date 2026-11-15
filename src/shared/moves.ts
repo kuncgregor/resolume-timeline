@@ -72,3 +72,26 @@ export function moveAtOrAfter(moves: readonly Move[], frame: number): number {
   }
   return lo
 }
+
+/** A run of quick steps on one lane (a strobe, a flicker): moves[first..last], three steps or more,
+ *  each within `maxGap` frames of the one before. The show view treats it as one event. */
+export interface StepRun { first: number; last: number; from: number; to: number }
+
+const runCache = new WeakMap<readonly Move[], { gap: number; runs: StepRun[] }>()
+
+export function stepRuns(moves: readonly Move[], maxGap: number): StepRun[] {
+  const hit = runCache.get(moves)
+  if (hit && hit.gap === maxGap) return hit.runs
+  const runs: StepRun[] = []
+  const step = (m: Move) => m.to === m.from
+  for (let i = 0; i < moves.length; i++) {
+    let j = i
+    while (j + 1 < moves.length && step(moves[j]) && step(moves[j + 1]) && moves[j + 1].from - moves[j].from <= maxGap) j++
+    if (j - i >= 2) { runs.push({ first: i, last: j, from: moves[i].from, to: moves[j].from }); i = j }
+  }
+  runCache.set(moves, { gap: maxGap, runs })
+  return runs
+}
+
+/** The run a move belongs to, if any. */
+export const runOf = (runs: readonly StepRun[], i: number) => runs.find(r => i >= r.first && i <= r.last) ?? null

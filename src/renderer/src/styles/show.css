@@ -98,6 +98,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-rec.recording .sv-rec-dot { color: var(--text-hi); animation: chip-blink 1s steps(2, start) infinite; }
 .sv-rec:disabled, .sv-setup:disabled { color: var(--text-faint); box-shadow: none; }
 .sv-setup:active, .sv-rec:active { background: var(--bg-hover); }
+.sv-setup.armed { background: var(--danger-fill); color: var(--text-hi); }
 
 .sv-offline {
   position: absolute; left: 0; right: 0; top: 44px; z-index: 6; padding: var(--sp-2) var(--sp-3);
@@ -200,8 +201,10 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.12em;
 }
 .sv-tabs button.on { background: var(--bg-lane); color: var(--text-hi); box-shadow: inset 0 -2px 0 var(--live); }
-.sv-events { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; scrollbar-width: none; }
-.sv-events::after { content: ''; flex: 1 0 0; background: var(--bg-lane); }
+/* Rows that don't fit whole wrap into a second column, out of sight: no row is ever cut in half */
+.sv-events { flex: 1; min-height: 0; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start; gap: 1px; overflow: hidden; }
+.sv-events > * { width: 100%; }
+.sv-events::after { content: ''; flex: 1 0 0; width: 100%; background: var(--bg-lane); }
 .sv-ev {
   flex-shrink: 0; display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 2px var(--sp-3);
   padding: var(--sp-2) var(--sp-3); background: var(--bg-lane);

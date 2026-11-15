@@ -3,7 +3,7 @@
 // moves, song sections from the markers), and the wording an operator reads from two metres.
 import type { Show, LayerTrack, GroupTrack, AutomationSubTrack, LaneKind, Marker } from '../../shared/show'
 import { frameKeyframes, sampleLane, type FrameKeyframe } from '../../shared/automation'
-import { movesOf, moveAtOrAfter, type Move } from '../../shared/moves'
+import { movesOf, moveAtOrAfter, stepRuns, type Move, type StepRun } from '../../shared/moves'
 import { formatValue } from '../../shared/paramTree'
 import type { LaneStatusMap } from './laneStatus'
 import { smpteToFrames } from './components/timeUtils'
@@ -17,6 +17,7 @@ export interface ShowLane {
   kind: LaneKind
   kfs: FrameKeyframe[]
   moves: Move[]
+  runs: StepRun[]           // quick step runs (strobes): one event each
 }
 
 export interface ShowLayer {
@@ -33,6 +34,8 @@ export type ShowEvent =
   | { kind: 'clip'; frame: number; layer: ShowLayer; name: string; from: string | null }
   | { kind: 'clear'; frame: number; layer: ShowLayer; name: string }
   | { kind: 'move'; frame: number; layer: ShowLayer; lane: ShowLane; move: Move }
+  // A run of quick steps on one lane (a strobe, a flicker): one event, not one per step
+  | { kind: 'steps'; frame: number; layer: ShowLayer; lane: ShowLane; count: number; to: number }
 
 export interface Section { start: number; end: number; marker: Marker }
 
@@ -75,7 +78,8 @@ function build(show: Show): ShowModel {
       const kind = a.kind ?? 'range'
       const kfs = frameKeyframes(a.keyframes, fps, toF)
       const moves = movesOf(kfs, kind)
-      if (moves.length) lanes.push({ lane: a, name: laneShortName(a), kind, kfs, moves })
+      // Steps under a second apart make a run (a strobe)
+      if (moves.length) lanes.push({ lane: a, name: laneShortName(a), kind, kfs, moves, runs: stepRuns(moves, fps) })
     }
     const clips = t.type === 'layer' ? clipSpans(t as LayerTrack, toF) : []
     if (!lanes.length && !clips.length) continue
@@ -100,7 +104,14 @@ function build(show: Show): ShowModel {
       const next = layer.clips[i + 1]
       if (c.end !== Infinity && (!next || next.start - c.end > changeGap)) events.push({ kind: 'clear', frame: c.end, layer, name: c.name })
     })
-    for (const lane of layer.lanes) for (const move of lane.moves) events.push({ kind: 'move', frame: move.from, layer, lane, move })
+    for (const lane of layer.lanes) {
+      const ms = lane.moves
+      for (let i = 0; i < ms.length; i++) {
+        const run = lane.runs.find(r => r.first === i)
+        if (run) { events.push({ kind: 'steps', frame: run.from, layer, lane, count: run.last - run.first + 1, to: run.to }); i = run.last; continue }
+        events.push({ kind: 'move', frame: ms[i].from, layer, lane, move: ms[i] })
+      }
+    }
   }
   events.sort((a, b) => a.frame - b.frame || (a.kind === 'section' ? -1 : 0) - (b.kind === 'section' ? -1 : 0))
   return { layers, events, sections }
@@ -128,6 +139,9 @@ export function moveAt(lane: ShowLane, frame: number): Move | null {
   const m = lane.moves[moveAtOrAfter(lane.moves, frame)]
   return m && m.from <= frame && frame < m.to ? m : null
 }
+
+/** The lane's step run (strobe) under way at the frame, if any. */
+export const runAt = (lane: ShowLane, frame: number) => lane.runs.find(r => r.from <= frame && frame <= r.to) ?? null
 
 /** Where a running move goes next: its next turning point (or its end). */
 export function moveTarget(m: Move, frame: number): number {
@@ -162,9 +176,11 @@ export function laneValue(lane: ShowLane, laneStatus: LaneStatusMap, value: numb
 /** A move in words: "FADE OUT", "Strobe ON", "Blur 0 → 45 %", "Scale 100 → 140 → 100 %". */
 export function moveText(lane: ShowLane, m: Move, laneStatus: LaneStatusMap): string {
   const v = m.values, last = v[v.length - 1]
-  if (/^opacity$/i.test(lane.name) && lane.kind === 'range') {
-    if (last < 0.01 && v.length === 2) return 'FADE OUT'
-    if (v[0] < 0.01 && v.length === 2) return 'FADE IN'
+  if (/^opacity$/i.test(lane.name) && lane.kind === 'range' && v.length === 2) {
+    // A ramp fades, a step (hold) cuts
+    const step = m.to === m.from
+    if (last < 0.01) return step ? 'CUT OUT' : 'FADE OUT'
+    if (v[0] < 0.01) return step ? 'CUT IN' : 'FADE IN'
   }
   if (lane.kind === 'boolean') return `${lane.name} ${last >= 0.5 ? 'ON' : 'OFF'}`
   if (lane.kind === 'choice') return `${lane.name} → ${m.options?.[m.options.length - 1] || '—'}`
@@ -172,7 +188,7 @@ export function moveText(lane: ShowLane, m: Move, laneStatus: LaneStatusMap): st
   const parts = v.map(x => laneValue(lane, laneStatus, x))
   const unit = /\s(\S+)$/.exec(parts[parts.length - 1])?.[1]
   const bare = unit ? parts.map((p, i) => i < parts.length - 1 && p.endsWith(` ${unit}`) ? p.slice(0, -unit.length - 1) : p) : parts
-  return `${lane.name} ${bare.join(' → ')}`
+  return `${lane.name} ${bare.join(' → ').replace(/ (\S+)$/, '\u00a0$1')}`
 }
 
 /** Frames from now to an event in the words a musician counts in: "2 BARS", "3 BEATS";

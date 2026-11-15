@@ -7,11 +7,11 @@ import type { Alarm, ArenaRecState } from '../../alarms'
 import { framesToSmpte, smpteToFrames } from '../timeUtils'
 import { beatsToFrame, formatBarBeat, frameToBarBeat, frameToBeats, tempoOf, type Tempo } from '../../grid'
 import {
-  showModelOf, countdown, seconds, clockText, imminent, eventAtOrAfter, sectionAt, clipAtFrame, moveAt, moveTarget,
+  showModelOf, countdown, seconds, clockText, imminent, eventAtOrAfter, sectionAt, clipAtFrame, moveAt, moveTarget, runAt,
   sampleAt, laneValue, moveText, type ShowModel, type ShowEvent, type ShowLayer,
 } from '../../showModel'
 import { Radar } from './Radar'
-import { setAppView, useMedia } from './view'
+import { showStyle, useMedia } from './view'
 
 // Show view: what an operator needs at showtime, readable from two metres, on a tablet, a phone
 // or the computer (VIEW › Show view). Where in the song you are (bar, section, time to end), what
@@ -42,6 +42,7 @@ interface Props {
   stopArmed: boolean            // SHOW mode: first Stop press done
   goArmed: string | null        // SHOW mode: the entry a first GO press asked for
   manualArmed: boolean          // SHOW mode: first "give back" press done
+  setupArmed: boolean           // SHOW mode while playing: first SETUP press done
   arenaRec: ArenaRecState
   alarms: Alarm[]
   manual: { id: string; name: string }[]
@@ -54,6 +55,7 @@ interface Props {
   onGo: (direction: 1 | -1) => void
   onToggleArenaRec: () => void
   onReenable: (ids?: string[]) => void
+  onSetup: () => void           // leave SHOW mode: the editor
 }
 
 type Layout = 'phone' | 'portrait' | 'landscape'
@@ -104,7 +106,7 @@ export function ShowView(p: Props) {
   const rundownList = <RundownList rundown={p.rundown} idx={idx} />
   return (
     <div className={`sv sv-${layout}${big ? ' big' : ''}${huge ? ' huge' : ''}${p.showMode ? ' show-mode' : ''}${off ? ' offline' : ''}`}>
-      <Band {...p} off={off} locked={locked} />
+      <Band {...p} off={off} locked={locked} phone={layout === 'phone'} />
       {off && <div className="sv-offline">No connection to the app — reconnecting…</div>}
       <Head entry={entry} next={next} idx={idx} count={p.rundown.length} fps={p.fps} tempo={p.tempo}
         offsetFrames={p.offsetFrames} endFrame={p.endFrame} model={isBreak ? EMPTY_MODEL : model} playing={p.playing && !off} />
@@ -134,7 +136,7 @@ export function ShowView(p: Props) {
   )
 }
 
-const EMPTY_MODEL: ShowModel = { layers: [], events: [], sections: [] }
+export const EMPTY_MODEL: ShowModel = { layers: [], events: [], sections: [] }
 
 /** Whether the page reaches the engine (the app window over IPC always does). */
 function useEngineLink(): boolean {
@@ -145,7 +147,7 @@ function useEngineLink(): boolean {
 
 // ── Top band: status and alarms ─────────────────────────────────────────────
 
-function Band(p: Props & { off: boolean; locked: boolean }) {
+function Band(p: Props & { off: boolean; locked: boolean; phone: boolean }) {
   const recording = p.arenaRec.state !== 'idle'
   // Arena recording has its own button here; the band lists what needs attention
   const alarms = p.alarms.filter(a => a.level !== 'rec')
@@ -175,8 +177,17 @@ function Band(p: Props & { off: boolean; locked: boolean }) {
       {/* Rarely used and must not be hit by accident: up here, away from the thumb */}
       <RecButton rec={p.arenaRec} fps={p.fps} stopArmed={p.stopArmed && recording}
         disabled={p.off || (p.locked && !recording)} onToggle={() => { buzz(); p.onToggleArenaRec() }} />
-      <button className="sv-setup" onClick={() => setAppView('full')}
-        title="Open the full editor (timeline, lanes, clips). VIEW › Show view comes back here.">SETUP</button>
+      {/* This device only: the editor in its SHOW dress, SHOW mode stays on for everyone */}
+      {!p.phone && (
+        <button className="sv-setup" onClick={() => showStyle.set('desktop')}
+          title="Show this device the Desktop style (the timeline with the show bar). SHOW mode stays on. VIEW › Show view › Tablet comes back.">DESKTOP</button>
+      )}
+      {/* A phone has only this view: no editor to go to */}
+      {!p.phone && (
+        <button className={`sv-setup${p.setupArmed ? ' armed' : ''}`} disabled={p.off} onClick={() => { buzz(); p.onSetup() }}
+          title="Leave SHOW mode: the editor (timeline, lanes, clips). SHOW comes back here (VIEW › Show view: Tablet).">
+          {p.setupArmed ? 'AGAIN' : 'SETUP'}</button>
+      )}
     </header>
   )
 }
@@ -398,8 +409,9 @@ function LayerCell({ layer, frame, fps, tempo, laneStatus }: {
 }) {
   const clip = clipAtFrame(layer, frame)
   const moving = layer.lanes.flatMap(lane => { const m = moveAt(lane, frame); return m ? [{ lane, m }] : [] })
+  const strobing = layer.lanes.flatMap(lane => { const r = runAt(lane, frame); return r ? [{ lane, r }] : [] })
   // Nothing moving: the layer's next move, so a quiet layer still says what it waits for
-  const upcoming = moving.length ? null : layer.lanes
+  const upcoming = moving.length || strobing.length ? null : layer.lanes
     .flatMap(lane => lane.moves.filter(m => m.from > frame).slice(0, 1).map(m => ({ lane, m })))
     .sort((a, b) => a.m.from - b.m.from)[0]
   return (
@@ -414,6 +426,16 @@ function LayerCell({ layer, frame, fps, tempo, laneStatus }: {
             <span className="sv-mv-name">{lane.name}</span>
             <span className="sv-mv-bar"><i style={{ width: `${v * 100}%` }} /></span>
             <span className="sv-mv-val mono">{now ? laneValue(lane, laneStatus, now.value, now.option) : '—'} → {laneValue(lane, laneStatus, moveTarget(m, frame))}</span>
+          </div>
+        )
+      })}
+      {strobing.map(({ lane, r }) => {
+        const now = sampleAt(lane, frame)
+        return (
+          <div key={lane.lane.id} className="sv-mv">
+            <span className="sv-mv-name">{lane.name}</span>
+            <span className="sv-mv-bar"><i style={{ width: `${Math.max(0, Math.min(1, now?.value ?? 0)) * 100}%` }} /></span>
+            <span className="sv-mv-val mono">×{r.last - r.first + 1} steps · {now ? laneValue(lane, laneStatus, now.value, now.option) : '—'}</span>
           </div>
         )
       })}
@@ -447,7 +469,8 @@ function PhoneLayers({ model, laneStatus, fixedFrame }: { model: ShowModel; lane
 
 // ── COMING: the next events, grouped by time, with a countdown ──────────────
 
-function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
+/** The next events, grouped by time, with a countdown (also the editor's COMING column in SHOW mode). */
+export function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
   model: ShowModel; tempo: Tempo | null; fps: number; laneStatus: LaneStatusMap; max: number; fixedFrame?: number
 }) {
   const frame = useShownFrame(fixedFrame)
@@ -456,7 +479,7 @@ function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
   for (let i = eventAtOrAfter(model.events, frame + 1); i < model.events.length && groups.length <= max; i++) {
     const ev = model.events[i]
     const g = groups[groups.length - 1]
-    if (g && g.frame === ev.frame) g.items.push(ev)
+    if (g && g.frame === ev.frame) { g.items.push(ev); g.items.sort((a, b) => ORDER[a.kind] - ORDER[b.kind]) }
     else if (groups.length < max) groups.push({ frame: ev.frame, items: [ev] })
     else break
   }
@@ -470,8 +493,8 @@ function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
           <div key={g.frame} className={`sv-ev${i === 0 ? ' first' : ''}${soon ? ' imminent' : ''}`}>
             <div className="sv-cd mono">{countdown(d, tempo, fps)}{tempo && <small>{seconds(d, fps)}</small>}</div>
             <div className="sv-its">
-              {g.items.slice(0, 3).map((ev, k) => <div key={k} className={`sv-it${ev.kind === 'section' ? ' sec' : ''}`}>{eventText(ev, laneStatus)}</div>)}
-              {g.items.length > 3 && <div className="sv-it more">+{g.items.length - 3} more</div>}
+              {(g.items.length > 4 ? g.items.slice(0, 3) : g.items).map((ev, k) => <div key={k} className={`sv-it${ev.kind === 'section' ? ' sec' : ''}`}>{eventText(ev, laneStatus)}</div>)}
+              {g.items.length > 4 && <div className="sv-it more">+{g.items.length - 3} more</div>}
             </div>
           </div>
         )
@@ -481,12 +504,16 @@ function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
 }
 
 // The layer tag in its own column, so a text that wraps keeps its indent
+// Within one moment: the section, then what moves, then the clips
+const ORDER: Record<ShowEvent['kind'], number> = { section: 0, move: 1, steps: 1, clip: 2, clear: 3 }
+
 function eventText(ev: ShowEvent, laneStatus: LaneStatusMap): ReactNode {
   if (ev.kind === 'section') return <span className="sv-it-text">◆ {ev.marker.name || 'marker'}</span>
   const ly = <span className="sv-ly mono">{ev.layer.tag}</span>
   const text = ev.kind === 'clip'
     ? ev.from ? <>{ev.from === ev.name ? '↻ ' : `${ev.from} → `}<b>{ev.name}</b></> : <>▶ <b>{ev.name}</b></>
     : ev.kind === 'clear' ? <>■ <b>{ev.name}</b> out</>
+    : ev.kind === 'steps' ? <><b>{ev.lane.name}</b> ×{ev.count} steps</>
     : (() => {
       const t = moveText(ev.lane, ev.move, laneStatus)
       return t.startsWith(ev.lane.name + ' ') ? <><b>{ev.lane.name}</b>{t.slice(ev.lane.name.length)}</> : <b>{t}</b>

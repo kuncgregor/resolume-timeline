@@ -26,7 +26,8 @@ import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
 import { alarmsOf, type ClockStatus } from './alarms'
 import { ShowView } from './components/show/ShowView'
-import { useRemoteLayout } from './components/show/view'
+import { ShowColumn } from './components/show/ShowColumn'
+import { useShowViewActive, clearForcedView } from './components/show/view'
 import { useKeepAwake } from './wakeLock'
 import { frameStore } from './frameStore'
 import { frameKeyframes } from '../../shared/automation'
@@ -284,14 +285,17 @@ export default function App() {
   const [autosaveFailed, setAutosaveFailed] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   // SHOW mode locks every editing gesture (QLab Show Mode / console "live" lock)
-  const [showMode, setShowMode] = useState(false)
-  const showModeRef = useRef(false)
+  // From this window's autosave when it wins at startup: a reload during a show must not drop
+  // every device out of SHOW mode
+  const [showMode, setShowMode] = useState(!!_restored?.showMode)
+  const showModeRef = useRef(!!_restored?.showMode)
   showModeRef.current = showMode
   // Playhead locked: SHOW mode while playing (only GO / the clock move it)
   const showLockedRef = () => showModeRef.current && engineRef.current.playing
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   // Small portrait screen (the tablet link opened on a phone): the remote control instead of the timeline
-  const phoneRemote = useRemoteLayout()
+  // SHOW mode in the Tablet style (and always on a phone): the show view instead of the editor
+  const phoneRemote = useShowViewActive(showMode)
   // Tablets and phones on the LAN link stay awake while the app is open (show view on a desk)
   const awake = useKeepAwake(REMOTE)
   const activeIdRef = useRef<string>(_initActiveId)
@@ -552,6 +556,13 @@ export default function App() {
   }, [])
   const handleScrollYTo = useCallback((y: number) => setScrollY(Math.max(0, y)), [])
   const autoScrollRef = useRef(true)
+  // Entering SHOW mode: the timeline shows the playhead (it follows it from here on)
+  useEffect(() => {
+    if (!showMode) return
+    autoScrollRef.current = true
+    const f = frameStore.get(), vf = (window.innerWidth - 200 - 360) / pxPerFrame
+    setScrollFrame(prev => f >= prev && f <= prev + vf * 0.75 ? prev : Math.max(0, f - Math.floor(vf * 0.25)))
+  }, [showMode])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Engine tick ────────────────────────────────────────────────────────────
 
@@ -561,9 +572,11 @@ export default function App() {
       // re-renders when the rest changes (play / stop, connection)
       frameStore.set(state.frame)
       setEngineState(prev => sameEngineState(prev, state) ? prev : state)
-      if (state.playing && autoScrollRef.current) {
+      // SHOW mode follows the playhead stopped too (a GO, a locate from a tablet)
+      if ((state.playing || showModeRef.current) && autoScrollRef.current) {
         setScrollFrame(prev => {
-          const cw = window.innerWidth - 200 - (showBrowserRef.current ? 260 : 0)
+          const side = showModeRef.current ? 360 : showBrowserRef.current ? 260 : 0   // COMING column / clip browser
+          const cw = window.innerWidth - 200 - side
           const vf = cw / pxPerFrame
           const px = (state.frame - prev) * pxPerFrame
           if (px > cw * 0.75) return state.frame - Math.floor(vf * 0.25)
@@ -2124,6 +2137,9 @@ export default function App() {
 
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
 
+  // A pending confirmation that is a rundown entry (GO / ◀ / a card), not Stop or the show view's buttons
+  const entryArmed = stopArmed && !['stop', 'manual', 'setup'].includes(stopArmed) ? stopArmed : null
+
   // One set of alarms for the health bar and the show view
   const brokenLanes = Object.values(laneStatus).filter(st => st.state === 'broken').length
   const health = {
@@ -2143,8 +2159,14 @@ export default function App() {
       resolumeConnected={engineState.resolumeConnected}
       showMode={showMode}
       stopArmed={stopArmed === 'stop'}
-      goArmed={stopArmed && stopArmed !== 'stop' && stopArmed !== 'manual' ? stopArmed : null}
+      goArmed={entryArmed}
       manualArmed={stopArmed === 'manual'}
+      setupArmed={stopArmed === 'setup'}
+      onSetup={() => {
+        // Leaving SHOW mode is for every device: while it plays, it takes a second tap
+        if (needsConfirm('setup')) return
+        clearForcedView(); setShowMode(false)
+      }}
       alarms={alarms} manual={manualLanes}
       onReenable={ids => { if (!needsConfirm('manual')) handleReenable(ids) }}
       arenaRec={arenaRec}
@@ -2181,7 +2203,7 @@ export default function App() {
         resolumeHost={show.resolume.host}
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
         onSelect={id => { if (id !== activeId && !needsConfirm(id)) handleSelectEntry(id) }}
-        confirmEntryId={stopArmed && stopArmed !== 'stop' && stopArmed !== 'manual' ? stopArmed : null}
+        confirmEntryId={entryArmed}
         onGo={handleGo}
         onReorder={handleReorder}
         onAddShow={handleAddShow}
@@ -2348,7 +2370,13 @@ export default function App() {
           </div>
         )}
 
-        {showBrowser && !activeIsBreak && (
+        {/* SHOW mode: what comes next where the clip browser is (nothing is placed during a show) */}
+        {showMode && (() => {
+          const next = rundown[rundown.findIndex(e => e.id === activeId) + 1]
+          const preview = activeIsBreak ? (next?.type === 'show' ? next.show : null) : show
+          return <ShowColumn show={preview} preview={activeIsBreak} laneStatus={laneStatus} />
+        })()}
+        {showBrowser && !activeIsBreak && !showMode && (
           <ClipBrowser
             tracks={show.tracks}
             liveComposition={composition}
@@ -2360,7 +2388,8 @@ export default function App() {
         )}
       </div>
 
-      {!activeIsBreak && (
+      {/* The inspector edits: not in SHOW mode (the timeline gets its height) */}
+      {!activeIsBreak && !showMode && (
         <BottomPanel
           track={selectedTrack} cue={selectedCue} readOnly={showMode}
           group={selectedTrackRaw?.type === 'group' ? selectedTrackRaw as GroupTrack : null}

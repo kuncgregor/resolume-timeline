@@ -137,7 +137,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
     }
     // Lanes: curves over the rest of the row (top = 1, bottom = 0)
     // Room at the top for the names (and the section names over the first row)
-    const top = y0 + (v.labels ? 54 : 36), bottom = cy - 6
+    const top = y0 + (v.labels ? 64 : 36), bottom = cy - 6   // portrait: under the layer name plate (y+20..40)
     if (bottom - top >= 10) {
       const labelXs: number[] = []
       for (const lane of layer.lanes) {
@@ -154,22 +154,26 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
         }
         ctx.strokeStyle = 'rgba(154, 154, 154, 0.35)'; ctx.lineWidth = 1
         path(start, start + span)
-        for (const m of lane.moves) {
-          if (m.to < start || m.from > start + span) continue
-          const running = m.from <= frame && frame < m.to
-          const color = running ? T.live : m.from > frame ? T.next : T.textFaint
+        lane.moves.forEach((m, mi) => {
+          if (m.to < start || m.from > start + span) return
+          // A strobe (run of quick steps) is one thing: lit as a whole, named once ("Opacity ×8")
+          const run = lane.runs.find(r => mi >= r.first && mi <= r.last)
+          const running = run ? run.from <= frame && frame <= run.to : m.from <= frame && frame < m.to
+          const ahead = run ? run.from > frame : m.from > frame
+          const color = running ? T.live : ahead ? T.next : T.textFaint
           ctx.strokeStyle = color; ctx.lineWidth = 2
           if (m.to === m.from) {
             const xs = x(m.from)
             ctx.beginPath(); ctx.moveTo(xs, yv(m.values[0])); ctx.lineTo(xs, yv(m.values[1])); ctx.stroke()
           } else path(m.from, m.to)
           // Its name where it starts (or at the playhead while it runs), unless one is drawn close by
+          if (run && mi !== run.first && !(running && mi === run.last)) return
           const lx = running ? xNow + 6 : x(m.from) + 4
-          if ((running || m.from > frame) && lx < W - 60 && labelXs.every(x0 => Math.abs(lx - x0) >= 70)) {
-            laneLabels.push({ text: lane.name, x: lx, y: top - 11, color })
+          if ((running || ahead) && lx < W - 60 && labelXs.every(x0 => Math.abs(lx - x0) >= 70)) {
+            laneLabels.push({ text: run ? `${lane.name} ×${run.last - run.first + 1}` : lane.name, x: lx, y: top - 11, color })
             labelXs.push(lx)
           }
-        }
+        })
       }
     }
     // Layer colour rail
@@ -180,18 +184,11 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
   // What already happened: dimmed
   ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'; ctx.fillRect(0, 0, xNow, H)
 
-  // Song sections: a line through every row, the name at the top
-  for (const s of model.sections) {
-    if (s.start < start || s.start > start + span) continue
-    const xs = Math.round(x(s.start))
-    ctx.strokeStyle = s.marker.color; ctx.lineWidth = 2; line(ctx, xs, 0, H)
-    ctx.font = `800 11px ${T.fontUi}`
-    const label = `◆ ${s.marker.name || 'marker'}`, lw = ctx.measureText(label).width
-    const lx = xs + lw + 10 > W ? xs - lw - 11 : xs + 1   // near the right edge: left of the line
-    ctx.fillStyle = T.gutter; ctx.fillRect(lx, 0, lw + 10, 16)
-    ctx.fillStyle = s.marker.color; ctx.fillText(label, lx + 4, 9)
-  }
+  // Song sections: a line through every row (its name comes after the playhead, on top)
+  const secs = model.sections.filter(sc => sc.start >= start && sc.start <= start + span)
+  for (const sc of secs) { ctx.strokeStyle = sc.marker.color; ctx.lineWidth = 2; line(ctx, Math.round(x(sc.start)), 0, H) }
 
+  // Lane names on their own background: no line runs through one
   ctx.font = `700 11px ${T.fontUi}`
   for (const l of laneLabels) {
     ctx.fillStyle = T.lane; ctx.fillRect(l.x - 3, l.y - 8, ctx.measureText(l.text).width + 6, 16)
@@ -200,6 +197,16 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
 
   // Playhead
   ctx.fillStyle = T.live; ctx.fillRect(Math.round(xNow) - 1, 0, 2, H)
+
+  // Section names at the top, over the playhead line
+  ctx.font = `800 11px ${T.fontUi}`
+  for (const sc of secs) {
+    const xs = Math.round(x(sc.start))
+    const label = `◆ ${sc.marker.name || 'marker'}`, lw = ctx.measureText(label).width
+    const lx = xs + lw + 10 > W ? xs - lw - 11 : xs + 1   // near the right edge: left of the line
+    ctx.fillStyle = T.gutter; ctx.fillRect(lx, 0, lw + 10, 16)
+    ctx.fillStyle = sc.marker.color; ctx.fillText(label, lx + 4, 9)
+  }
 
   // Portrait: each layer's name and its clip on air, over everything (the playhead runs under it)
   if (v.labels) model.layers.forEach((layer, i) => {
@@ -211,7 +218,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
     ctx.font = `600 12px ${T.fontUi}`
     const w2 = clip ? ctx.measureText(`▶ ${clip.name}`).width + 10 : 0
     // Under the section names (they run across the top of the canvas)
-    const ly = y0 + 18
+    const ly = y0 + 20
     ctx.fillStyle = T.lane; ctx.fillRect(4, ly, w1 + w2 + 14, 20)
     ctx.fillStyle = T.textHi; ctx.font = `800 12px ${T.fontUi}`; ctx.fillText(name, 10, ly + 10)
     if (clip) { ctx.fillStyle = T.live; ctx.font = `600 12px ${T.fontUi}`; ctx.fillText(`▶ ${clip.name}`, 10 + w1 + 10, ly + 10) }
