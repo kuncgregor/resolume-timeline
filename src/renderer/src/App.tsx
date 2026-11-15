@@ -269,6 +269,8 @@ const _initActiveId = _restored?.rundown.some(e => e.id === _restored.activeId)
 
 const UNDO_GROUP_MS = 300   // edits closer together than this are one undo step
 const UNDO_STEPS = 100
+/** An undo step of the rundown: how it was, which timeline was in front, when. */
+interface RundownStep { rundown: RundownEntry[]; activeId: string; at: number; whole?: string }
 
 /** Engine states that differ only in the frame (the frame store has that). */
 const sameEngineState = (a: EngineState, b: EngineState) =>
@@ -359,7 +361,11 @@ export default function App() {
   // setShow is for the user's edits: each one can be undone (⌘Z) and redone (⌘⇧Z), per
   // timeline. syncShow is for what follows Resolume (layers, colours, resolved targets).
 
-  const historyRef = useRef(new Map<string, { past: Show[]; future: Show[] }>())
+  // Undo steps: each timeline's edits (its show before them), and the rundown's own changes
+  // (timelines and breaks added, deleted, moved, edited). ⌘Z takes back the latest of the two
+  // for the timeline in front; `at` keeps their order.
+  const historyRef = useRef(new Map<string, { past: { show: Show; at: number }[]; future: { show: Show; at: number }[] }>())
+  const rundownHistoryRef = useRef<{ past: RundownStep[]; future: RundownStep[] }>({ past: [], future: [] })
   const [historyTick, setHistoryTick] = useState(0)
   const lastEditRef = useRef(0)
   const setShow = useCallback((updater: Show | ((prev: Show) => Show)) => {
@@ -368,9 +374,10 @@ export default function App() {
     if (now - lastEditRef.current > UNDO_GROUP_MS) {
       const id = activeIdRef.current
       const h = historyRef.current.get(id) ?? { past: [], future: [] }
-      h.past.push(showRef.current)
+      h.past.push({ show: showRef.current, at: now })
       if (h.past.length > UNDO_STEPS) h.past.shift()
-      h.future = []
+      // A new edit ends redo, the rundown's too (its steps are interleaved with these)
+      h.future = []; rundownHistoryRef.current.future = []
       historyRef.current.set(id, h)
     }
     lastEditRef.current = now
@@ -522,23 +529,68 @@ export default function App() {
   showRef.current = show
 
   /** ⌘Z / ⌘⇧Z: the timeline as it was before the last edit / after the last undo. */
+  /** Before a change of the rundown itself: one undo step. `whole`: an entry whose content
+   *  comes back too (another timeline's ✎ edits); otherwise each timeline keeps its own edits. */
+  const recordRundown = useCallback((whole?: string) => {
+    const h = rundownHistoryRef.current
+    h.past.push({ rundown: rundownRef.current, activeId: activeIdRef.current, at: Date.now(), whole })
+    if (h.past.length > UNDO_STEPS) h.past.shift()
+    h.future = []
+    for (const t of historyRef.current.values()) t.future = []
+    setHistoryTick(n => n + 1)
+  }, [])
+  // One undo per render: a second one in the same tick (a held ⌘Z) would build on the state
+  // before the first one landed
+  const undoPendingRef = useRef(false)
+  useEffect(() => { undoPendingRef.current = false })
   const undo = useCallback((redo: boolean) => {
+    if (undoPendingRef.current) return
     const h = historyRef.current.get(activeIdRef.current)
-    if (!h) return
-    const from = redo ? h.future : h.past, to = redo ? h.past : h.future
-    let target = from.pop()
-    while (target && target === showRef.current) target = from.pop()
-    if (!target) return
-    to.push(showRef.current)
+    const r = rundownHistoryRef.current
+    const showStack = h ? (redo ? h.future : h.past) : []
+    const rdStack = redo ? r.future : r.past
+    const sTop = showStack[showStack.length - 1], rTop = rdStack[rdStack.length - 1]
+    // Undo: the latest step; redo: the one taken back last (the earliest of the two)
+    const useRundown = !!rTop && (!sTop || (redo ? rTop.at < sTop.at : rTop.at > sTop.at))
     lastEditRef.current = 0
+    if (useRundown) {
+      const step = rdStack.pop()!
+      const cur = rundownRef.current
+      ;(redo ? r.past : r.future).push({ rundown: cur, activeId: activeIdRef.current, at: step.at, whole: step.whole })
+      // Each timeline still there keeps its own edits since (they are its own undo steps)
+      const restored = step.rundown.map(e => {
+        const now = cur.find(c => c.id === e.id)
+        return now && now.type === 'show' && e.type === 'show' && e.id !== step.whole ? { ...e, show: (now as ShowEntry).show, dirty: (now as ShowEntry).dirty } : e
+      })
+      undoPendingRef.current = true
+      setHistoryTick(n => n + 1)
+      setRundown(restored)
+      if (!restored.some(e => e.id === activeIdRef.current)) {
+        // The timeline in front went away (its adding undone): back to the one before
+        const back = restored.some(e => e.id === step.activeId) ? step.activeId : restored[0].id
+        const entry = restored.find(e => e.id === back)
+        activeIdRef.current = back
+        api.stop(); audioEngineRef.current.stop()
+        api.selectShow(withProject(entry?.type === 'show' ? (entry as ShowEntry).show : EMPTY_SHOW, settingsRef.current))
+        setActiveId(back); clearSelection(); setScrollFrame(0)
+      }
+      return
+    }
+    if (!h) return
+    const from = showStack, to = redo ? h.past : h.future
+    let target = from.pop()
+    while (target && target.show === showRef.current) target = from.pop()
+    if (!target) return
+    to.push({ show: showRef.current, at: target.at })
+    undoPendingRef.current = true
     setHistoryTick(n => n + 1)
     // View and edit settings stay as they are now (they are not undo steps), and so does
     // what Resolume says now (layer names, colours)
     const cur = showRef.current
-    const restored = { ...target, snap: cur.snap, rulerMode: cur.rulerMode, lockEnvelopes: cur.lockEnvelopes }
+    const restored = { ...target.show, snap: cur.snap, rulerMode: cur.rulerMode, lockEnvelopes: cur.lockEnvelopes }
     const comp = compositionRef.current
     syncShow(comp ? syncLayers(restored, comp) : restored)
-  }, [syncShow])
+  }, [syncShow])   // eslint-disable-line react-hooks/exhaustive-deps
   const undoRef = useRef(undo)
   undoRef.current = undo
   const selectedTrackIdx = (() => {
@@ -1271,6 +1323,7 @@ export default function App() {
     const idx = rundown.length
     const timelines = rundown.filter(e => e.type === 'show').length
     const entry = makeShowEntry({ ...EMPTY_SHOW, name: `Timeline ${timelines + 1}` }, null, idx)
+    recordRundown()
     setRundown(prev => [...prev, entry])
     setActiveId(entry.id)
     api.stop(); audioEngineRef.current.stop()
@@ -1284,6 +1337,7 @@ export default function App() {
     if (!result) return
     const idx = rundown.length
     const entry = makeShowEntry(result.show, null, idx)
+    recordRundown()
     setRundown(prev => [...prev, entry])
     setActiveId(entry.id)
     api.stop(); audioEngineRef.current.stop()
@@ -1292,8 +1346,9 @@ export default function App() {
 
   const handleAddBreak = useCallback(() => {
     const entry = makeBreakEntry()
+    recordRundown()
     setRundown(prev => [...prev, entry])
-  }, [])
+  }, [recordRundown])
 
   const rundownRef = useRef(rundown)
   rundownRef.current = rundown
@@ -1343,6 +1398,7 @@ export default function App() {
 
   const handleDeleteEntry = useCallback((id: string) => {
     if (rundown.length <= 1) return  // always keep at least one
+    recordRundown()   // ⌘Z brings a deleted timeline back, with everything on it
     const next = rundown.filter(e => e.id !== id)
     if (id === activeIdRef.current) {
       // The running show is going away: stop before switching to another one
@@ -1354,8 +1410,9 @@ export default function App() {
   }, [rundown, clearSelection])
 
   const handleReorder = useCallback((newOrder: RundownEntry[]) => {
+    recordRundown()
     setRundown(newOrder)
-  }, [])
+  }, [recordRundown])
 
   const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
     name?: string; clock?: { source: Show['clock']['source']; offset: string; freewheelFrames: number }; frameRate?: number
@@ -1381,6 +1438,11 @@ export default function App() {
     // would quietly take them back together with the edit before)
     const active = id === activeIdRef.current
     if (active && edited(showRef.current) !== showRef.current) setShow(edited)
+    // The rest (colour, notes, a break, another timeline's clock and tempo) is a rundown step
+    const entry = rundownRef.current.find(e => e.id === id)
+    const touches = !!entry && (updates.color !== undefined && updates.color !== entry.color || updates.notes !== undefined && updates.notes !== entry.notes
+      || entry.type === 'break' || (!active && entry.type === 'show' && edited((entry as ShowEntry).show) !== (entry as ShowEntry).show))
+    if (touches) recordRundown(active ? undefined : id)
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
       if (e.type === 'show') {
@@ -1392,7 +1454,7 @@ export default function App() {
       }
       return { ...e, ...updates }
     }))
-  }, [setShow])
+  }, [setShow, recordRundown])
 
   // Export the active timeline as its own file (a copy; the showfile keeps it too)
   const handleExportTimeline = useCallback(async () => {
@@ -1422,6 +1484,28 @@ export default function App() {
     setShowfileDirty(!result.path)
     setShowfileError(null); setRestoredAt(null)
   }, [clearSelection])
+
+  // The app menu (File, Edit): the same commands as the top bar and the keys. Edit › Undo in a
+  // text field is the field's own undo; File › New / Open wait in SHOW mode, like the top bar
+  const menuRef = useRef({ handleNewShowfile, handleOpenShowfile, handleSaveShowfileAs, handleExportTimeline })
+  menuRef.current = { handleNewShowfile, handleOpenShowfile, handleSaveShowfileAs, handleExportTimeline }
+  useEffect(() => api.onMenuCmd?.((cmd: string) => {
+    const el = document.activeElement
+    const text = el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
+      || (el instanceof HTMLInputElement && !['range', 'checkbox', 'radio', 'button'].includes(el.type))
+    const m = menuRef.current
+    if (cmd === 'undo' || cmd === 'redo') {
+      if (text) api.nativeEdit(cmd)
+      else if (!showModeRef.current) undoRef.current(cmd === 'redo')
+    } else if (cmd === 'save') saveRef.current()
+    else if (cmd === 'saveAs') m.handleSaveShowfileAs()
+    else if (cmd === 'export') m.handleExportTimeline()
+    else if ((cmd === 'new' || cmd === 'open') && !showModeRef.current) {
+      const sf = showfileRef.current
+      if (autosaveRef.current.showfileDirty && !(sf.autosave && sf.path) && !window.confirm('The showfile has unsaved changes. Discard them?')) return
+      if (cmd === 'new') m.handleNewShowfile(); else m.handleOpenShowfile()
+    }
+  }), [])
 
   // ⚙ Project settings: the showfile's (saved with it, the same for every timeline)
   const updateSettings = useCallback((patch: Partial<ProjectSettings>) => {
@@ -2458,7 +2542,8 @@ export default function App() {
               onDropClip={handleDropClip} placing={placing} onPlaced={() => setPlacing(null)} onUndo={undo} onScaleRows={handleScaleRows}
               onUpdateCue={handleUpdateCue}
               onEditTracks={handleEditTracks} historyTick={historyTick}
-              canUndo={!!historyRef.current.get(activeId)?.past.length} canRedo={!!historyRef.current.get(activeId)?.future.length} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
+              canUndo={!!historyRef.current.get(activeId)?.past.length || !!rundownHistoryRef.current.past.length}
+              canRedo={!!historyRef.current.get(activeId)?.future.length || !!rundownHistoryRef.current.future.length} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}

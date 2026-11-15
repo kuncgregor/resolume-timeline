@@ -169,6 +169,12 @@ onMiniChange(state => {
   buildMenu()   // the View menu's check mark
 })
 
+const menuCmd = (cmd: string) => () => { if (win && !win.isDestroyed()) win.webContents.send('menu:cmd', cmd) }
+// A text field's own undo / redo (the window asks when one has the focus)
+ipcMain.on('menu:native', (e, action: string) => {
+  if (action === 'undo') e.sender.undo(); else if (action === 'redo') e.sender.redo()
+})
+
 // The app menu: the standard ones, and View › Mini Window (an option beside the main window,
 // which always stays open). No zoom items: VIEW › Scale is the page zoom. Reload and DevTools only
 // in development: a reload mid-show drops the LTC decoder and the audio track.
@@ -176,8 +182,32 @@ function buildMenu() {
   const mac = process.platform === 'darwin'
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(mac ? [{ role: 'appMenu' as const }] : []),
-    { role: 'fileMenu' as const },
-    { role: 'editMenu' as const },
+    // File and Edit run the app's own commands (the window's handlers): Edit › Undo undoes the
+    // timeline, not only a text field. Keys reach the page first; these fire for a menu click,
+    // or for a key the page left alone (⌘Z in a text field: its own undo, see menu:native)
+    {
+      label: 'File',
+      submenu: [
+        { label: 'New Showfile', click: menuCmd('new') },
+        { label: 'Open Showfile…', accelerator: 'CmdOrCtrl+O', click: menuCmd('open') },
+        { type: 'separator' as const },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: menuCmd('save') },
+        { label: 'Save As…', accelerator: 'Shift+CmdOrCtrl+S', click: menuCmd('saveAs') },
+        { label: 'Export Timeline…', click: menuCmd('export') },
+        { type: 'separator' as const },
+        { role: 'close' as const },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: menuCmd('undo') },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: menuCmd('redo') },
+        { type: 'separator' as const },
+        { role: 'cut' as const }, { role: 'copy' as const }, { role: 'paste' as const },
+        { role: 'selectAll' as const },
+      ],
+    },
     {
       label: 'View',
       submenu: [

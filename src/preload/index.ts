@@ -100,6 +100,13 @@ const api = {
 
   fireCue: (cue: CueEvent, layer: number) => ipcRenderer.invoke('cue:manualFire', cue, layer),
   fireClip: (cue: ClipCue, layer: number) => ipcRenderer.invoke('clip:fire', cue, layer),
+  // The app menu's File / Edit commands, and a text field's own undo / redo
+  onMenuCmd: (cb: (cmd: string) => void) => {
+    const h = (_: unknown, cmd: string) => cb(cmd)
+    ipcRenderer.on('menu:cmd', h)
+    return () => ipcRenderer.removeListener('menu:cmd', h)
+  },
+  nativeEdit: (action: 'undo' | 'redo') => ipcRenderer.send('menu:native', action),
 
   sendLtcFrame: (ltcAbsFrame: number) => ipcRenderer.send('ltc:frame', ltcAbsFrame),
   sendLtcStop: () => ipcRenderer.send('ltc:stop'),
