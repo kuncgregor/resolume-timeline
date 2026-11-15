@@ -236,6 +236,9 @@ app.on('second-instance', () => {
 app.whenReady().then(() => {
   // macOS App Nap would slow the engine's timers while the app is in the background
   powerSaveBlocker.start('prevent-app-suspension')
+  // A regular app with its Dock icon (a mini window from an older version could have turned it
+  // into a background-only one)
+  if (process.platform === 'darwin') app.dock?.show()
   createWindow()
   buildMenu()
   applyRemote()

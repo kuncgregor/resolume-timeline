@@ -96,7 +96,11 @@ export function openMini(rendererUrl: string | undefined, rendererFile: string) 
     },
   })
   mini.setAlwaysOnTop(true, 'floating')
-  mini.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // macOS: the panel type already floats over full-screen apps on every space. Electron's
+  // setVisibleOnAllWorkspaces(…, { visibleOnFullScreen }) would turn the whole app into a
+  // background-only process: no Dock icon, and the main window hidden for a moment (it looked
+  // like the app had quit)
+  if (process.platform !== 'darwin') mini.setVisibleOnAllWorkspaces(true)
   // A screen added, removed or changed (resolution, dock): back along its edge, the whole length
   // (the screen module only works once the app is ready, so this is set up here)
   if (!watchingScreens) { watchingScreens = true; screen.on('display-metrics-changed', place); screen.on('display-removed', place) }
