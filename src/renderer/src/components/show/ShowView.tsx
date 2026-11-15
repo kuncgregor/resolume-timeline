@@ -561,7 +561,7 @@ function Controls(p: Props & { prev: RundownEntry | null; next: RundownEntry | n
     <section className="sv-ctl">
       <button className={`sv-btn prev ${prevArmed ? 'armed' : ''}`} disabled={!p.prev || p.off} onClick={() => { buzz(); p.onGo(-1) }}
         aria-label={p.prev ? `Previous: ${entryName(p.prev)}` : 'No previous timeline'}>
-        <span className="sv-ic">◀</span><span className="sv-lb">{prevArmed ? 'AGAIN' : 'BACK'}</span>
+        <span className="sv-ic">←</span><span className="sv-lb">{prevArmed ? 'AGAIN' : 'BACK'}</span>
       </button>
       <button className={`sv-btn stop ${p.stopArmed ? 'armed' : ''}`} disabled={p.off} onClick={() => { buzz(); p.onStop() }}>
         <span className="sv-ic">■</span><span className="sv-lb">{p.stopArmed ? 'AGAIN TO STOP' : 'STOP'}</span>
@@ -574,8 +574,8 @@ function Controls(p: Props & { prev: RundownEntry | null; next: RundownEntry | n
         <span className="sv-lb">{p.playing ? 'PLAYING' : p.arenaRec.armed ? 'PLAY + REC' : 'PLAY'}</span>
       </button>
       <button className={`sv-btn go ${goArmed ? 'armed' : ''}`} disabled={!p.next || p.off} onClick={() => { buzz(); p.onGo(1) }}>
-        <span className="sv-lb">{goArmed ? 'AGAIN TO GO' : 'GO'}</span>
-        <span className="sv-sub">{prevArmed ? `◀ back to ${entryName(p.prev)}` : p.next ? entryName(p.next) : 'end of rundown'}</span>
+        <span className="sv-lb">{goArmed ? 'AGAIN TO GO' : 'GO →'}</span>
+        <span className="sv-sub">{prevArmed ? `← back to ${entryName(p.prev)}` : p.next ? entryName(p.next) : 'end of rundown'}</span>
       </button>
     </section>
   )

@@ -107,8 +107,9 @@ export function MiniShow() {
       </div>
 
       <div className="mini-transport">
-        <button className={`mini-btn back${armed === 'back' ? ' armed' : ''}`} disabled={!prev} title={prev ? `Back to ${entryName(prev)}` : 'First entry'}
-          onClick={() => confirmFirst('back', () => send('back'))}>{armed === 'back' ? 'AGAIN' : '◀'}</button>
+        {/* To the timeline's start: locked while a SHOW runs (the playhead moves only with the clock) */}
+        <button className="mini-btn start" disabled={!!session.showMode && playing} title="To the start of the timeline"
+          onClick={() => send('start')}>⏮</button>
         <button className={`mini-btn stop${armed === 'stop' ? ' armed' : ''}`} title="Stop (twice while a SHOW runs)"
           onClick={() => confirmFirst('stop', () => send('stop'))}>{armed === 'stop' ? 'AGAIN' : '■'}</button>
         {/* Only STOP stops: a second "did it register?" tap on PLAY must not end the show */}
@@ -121,15 +122,21 @@ export function MiniShow() {
         <div className="mini-next"><span className="mini-tag next">NEXT</span>{entryName(next)}</div>
       </div>
 
-      {show ? <Position show={show} /> : <div className="mini-pos"><div className="mini-bar">BREAK</div><div className="mini-sect">GO starts {entryName(next)}</div></div>}
+      {show ? <Position show={show} /> : <div className="mini-pos"><div className="mini-bar">BREAK</div></div>}
+      {show ? <SectionBar show={show} /> : <div className="mini-section"><div className="mini-sec-row"><span className="mini-sec-now">GO starts {entryName(next)}</span></div></div>}
       {show && <Remaining show={show} playing={playing} />}
-      {show && <Coming show={show} max={vertical ? 8 : 1} />}
+      {show && <Coming show={show} max={vertical ? 16 : 1} />}
 
-      <button className={`mini-btn go${armed === 'go' ? ' armed' : ''}`} disabled={!next} onClick={() => confirmFirst('go', () => send('go'))}
-        title={next ? `GO: ${entryName(next)}` : 'End of rundown'}>
-        <span className="mini-go-lb">{armed === 'go' ? 'AGAIN' : 'GO'}</span>
-        <span className="mini-go-sub">{next ? entryName(next) : 'end'}</span>
-      </button>
+      {/* The rundown: back to the previous timeline beside GO to the next one */}
+      <div className="mini-rundown">
+        <button className={`mini-btn back${armed === 'back' ? ' armed' : ''}`} disabled={!prev} title={prev ? `Back to ${entryName(prev)}` : 'First entry'}
+          onClick={() => confirmFirst('back', () => send('back'))}>{armed === 'back' ? 'AGAIN' : '←'}</button>
+        <button className={`mini-btn go${armed === 'go' ? ' armed' : ''}`} disabled={!next} onClick={() => confirmFirst('go', () => send('go'))}
+          title={next ? `GO: ${entryName(next)}` : 'End of rundown'}>
+          <span className="mini-go-lb">{armed === 'go' ? 'AGAIN' : 'GO →'}</span>
+          <span className="mini-go-sub">{next ? entryName(next) : 'end'}</span>
+        </button>
+      </div>
 
       <div className="mini-menu-anchor">
         <button className="mini-more" onClick={() => setMenu(m => !m)} aria-expanded={menu} title="Layout and size">⋯</button>
@@ -169,16 +176,39 @@ function Position({ show }: { show: Show }) {
   const tempo = tempoOf(show)
   const model = showModelOf(show)
   const tc = framesToSmpte(frame + smpteToFrames(show.clock.offset || '00:00:00:00', show.frameRate), show.frameRate)
-  const cur = sectionAt(model.sections, frame)
-  const nextSec = model.sections.find(s => s.start > frame)
   return (
     <div className="mini-pos">
-      <div className="mini-bar mono">{tempo ? `BAR ${formatBarBeat(frameToBarBeat(frame, tempo), 2)}` : tc}{tempo && <small className="mono">{tc}</small>}</div>
-      <div className="mini-sect">
-        {/* On a very small strip the current section's name goes first: the countdown matters more */}
-        {cur && <span className="mini-cur" style={{ color: cur.marker.color }}>{cur.marker.name || 'Marker'}{nextSec ? ' · ' : ''}</span>}
-        {nextSec && <span className="dim">◆ {nextSec.marker.name || 'Marker'} in {countdown(nextSec.start - frame, tempo, show.frameRate)}</span>}
+      <div className="mini-bar mono">{tempo ? `BAR ${formatBarBeat(frameToBarBeat(frame, tempo), 2)}` : tc}</div>
+      {tempo && <div className="mini-tc mono">{tc}</div>}
+    </div>
+  )
+}
+
+/** The song section: where you are on the left, what comes on the right with its countdown, and
+ *  how far into this section the playhead is (a bar of its own, in the section's colour). */
+function SectionBar({ show }: { show: Show }) {
+  const frame = useFrame()
+  const model = showModelOf(show)
+  const tempo = tempoOf(show)
+  const end = useMemo(() => endOf(show), [show])
+  const cur = sectionAt(model.sections, frame)
+  const nextSec = model.sections.find(s => s.start > frame)
+  if (!model.sections.length) return <div className="mini-section empty"><div className="mini-sec-row"><span className="mini-sec-now dim">No sections (add markers)</span></div></div>
+  // Before the first marker the "section" runs from 0 to it; the last one to the timeline's end
+  const from = cur?.start ?? 0
+  const to = cur ? (cur.end === Infinity ? Math.max(end, from + 1) : cur.end) : nextSec!.start
+  const p = Math.max(0, Math.min(1, (frame - from) / Math.max(1, to - from)))
+  const color = cur?.marker.color ?? 'var(--text-faint)'
+  return (
+    <div className="mini-section">
+      <div className="mini-sec-row">
+        <span className="mini-sec-now" style={{ color }}>{cur ? cur.marker.name || 'Marker' : 'Start'}</span>
+        {nextSec && <span className="mini-sec-next">
+          <span style={{ color: nextSec.marker.color }}>◆ {nextSec.marker.name || 'Marker'}</span>
+          <b className="mono">{countdown(nextSec.start - frame, tempo, show.frameRate)}</b>
+        </span>}
       </div>
+      <div className="mini-sec-prog"><i style={{ width: `${p * 100}%`, background: color }} /></div>
     </div>
   )
 }

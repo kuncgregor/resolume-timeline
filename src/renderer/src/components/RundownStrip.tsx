@@ -317,7 +317,7 @@ export function RundownStrip({
         {/* Now → Next → GO: what is running, what GO will load, and the button itself */}
         <div className="now-next">
           <button className="nn-back" onClick={() => onGo(-1)} disabled={activeIdx <= 0}
-            title={activeIdx > 0 ? `Back to: ${entryName(rundown[activeIdx - 1])}` : 'This is the first entry'}>◀</button>
+            title={activeIdx > 0 ? `Back to: ${entryName(rundown[activeIdx - 1])}` : 'This is the first entry'}>←</button>
           <div className={`nn-card now ${playing ? 'live' : ''}`}>
             <div className="nn-head">
               <span className="nn-label">Now</span>
@@ -342,7 +342,7 @@ export function RundownStrip({
           </div>
           <button className="go-btn" onClick={() => onGo(1)} disabled={!next}
             title={next ? `GO: load “${entryName(next)}” (Enter)` : 'No next entry'}>
-            <span className="go-word">GO</span>
+            <span className="go-word">GO →</span>
             <span className="go-hint">{next ? `load ${String(activeIdx + 2).padStart(2, '0')}` : 'end'}</span>
           </button>
         </div>

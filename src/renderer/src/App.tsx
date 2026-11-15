@@ -1182,6 +1182,8 @@ export default function App() {
       else if (cmd === 'stop') stopNowRef.current()
       else if (cmd === 'go') goRef.current(1)
       else if (cmd === 'back') goRef.current(-1)
+      // To the timeline's start, as Home does; not while a SHOW runs (the playhead is locked)
+      else if (cmd === 'start' && !showLockedRef()) { api.locate(0); setScrollFrame(0); autoScrollRef.current = true }
     })
   }, [setArenaRec])
 
