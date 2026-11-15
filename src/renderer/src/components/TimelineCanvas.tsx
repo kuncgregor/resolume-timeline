@@ -7,7 +7,7 @@ import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '..
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
   extractTime, deleteTime, extractCues, deleteCues, pasteMaterial, splitAt, moveKeys, keysIn, isEmptyMaterial, pruneAddedKeys,
-  snapValue, optionAt, crossfadePartners, trimStart,
+  snapValue, optionAt, crossfadePartners, crossfadeFade, trimStart,
 } from '../material'
 import type { CurveName, FrameKeyframe } from '../../../shared/automation'
 import type { WaveformInfo } from '../audio-engine'
@@ -384,7 +384,8 @@ export function TimelineCanvas({
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null)
   const [ctxInputVal, setCtxInputVal] = useState('')
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
-  const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number } | null>(null)
+  // frame: where a marker goes (snapped); raw: the frame clicked (bar 1 is set exactly there)
+  const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number; raw: number } | null>(null)
   // The Bar 1 menu closes on any click outside it (headers, transport, panels) and on Escape
   useEffect(() => {
     if (!rulerMenu) return
@@ -480,6 +481,7 @@ export function TimelineCanvas({
     return run(tracksProp)
   }
 
+  const [containerH, setContainerH] = useState(0)   // from the resize observer
   const autoH = (id: string) => autoLaneHeights[id] ?? DEFAULT_AUTO_H
   const clipH = (id: string) => layerRowHeights[id] ?? DEFAULT_LANE_H
   const canEdit = (ti: number) => !readOnly && !(tracks[ti] as LayerTrack | undefined)?.locked
@@ -1297,7 +1299,7 @@ export function TimelineCanvas({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const ro = new ResizeObserver(() => drawRef.current())
+    const ro = new ResizeObserver(() => { setContainerH(container.clientHeight); drawRef.current() })
     ro.observe(container)
     // Moving the window to a display with another pixel ratio; the query is re-armed
     // for the new ratio after each change
@@ -1888,7 +1890,11 @@ export function TimelineCanvas({
   const isDragging = () => !!(isDraggingPlayhead.current || markerDragRef.current || autoResizeRef.current || kfDragRef.current ||
     bendDragRef.current || selDragRef.current || matDragRef.current || resizeClipRef.current)
 
+  // Touch makes its own double tap and long press (touchUp, the long-press timer); the browser's
+  // native dblclick / contextmenu after a touch would run them a second time
+  const lastPointerRef = useRef<string>('mouse')
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    lastPointerRef.current = e.pointerType
     if (e.pointerType === 'touch') { touchRef.current.down(e); return }
     handleMouseDown(e)
     if (!isDragging()) return
@@ -1920,12 +1926,14 @@ export function TimelineCanvas({
   const pinchRef = useRef<{ cx: number; cy: number; dist: number } | null>(null)
 
   // How far the lanes can scroll: their full height against the space under the ruler
-  const contentH = (() => {
+  // The canvas re-renders every frame (the overlay): the content height only when rows change,
+  // the view height from the resize observer (reading clientHeight here forced a reflow)
+  const contentH = useMemo(() => {
     const lay = buildLayout(tracks, clipH, autoH, 0).filter(l => !l.hidden)
     const last = lay[lay.length - 1]
     return last ? last.y + last.totalH - TRACKS_TOP : 0
-  })()
-  const viewH = Math.max(0, (containerRef.current?.clientHeight ?? 0) - TRACKS_TOP)
+  }, [tracks, layerRowHeights, autoLaneHeights])   // eslint-disable-line react-hooks/exhaustive-deps
+  const viewH = Math.max(0, containerH - TRACKS_TOP)
   const maxScrollY = Math.max(0, contentH - viewH)
   const clampScrollY = (y: number) => Math.round(Math.max(0, Math.min(maxScrollY, y)))
   // Touch tool: Scroll (default; one finger pans everywhere, a tap selects / seeks, nothing is
@@ -2134,7 +2142,7 @@ export function TimelineCanvas({
       const mk = markerAt(x)
       if (mk) { setMarkerMenu({ x, y, id: mk.id }); setRulerMenu(null); return }
       setMarkerMenu(null)
-      setRulerMenu({ x, y, frame: snapDrag(x / pxPerFrame + scrollFrame, false).f })
+      setRulerMenu({ x, y, frame: snapDrag(x / pxPerFrame + scrollFrame, false).f, raw: xToFrame(x) })
       return
     }
     const kfHit = hitTestKeyframe(x, y, getLayout(), tracks, fps, frameToX, laneStatus)
@@ -2450,8 +2458,8 @@ export function TimelineCanvas({
         ref={canvasRef}
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={e => { if (e.pointerType !== 'touch' && !isDragging()) handleMouseMove(e) }}
-        onDoubleClick={handleDblClick}
-        onContextMenu={handleContextMenu}
+        onDoubleClick={e => { if (lastPointerRef.current !== 'touch') handleDblClick(e) }}
+        onContextMenu={e => { if (lastPointerRef.current === 'touch') e.preventDefault(); else handleContextMenu(e) }}
         onMouseLeave={() => { if (!isDragging()) setHoverKf(null) }}
       />
       <canvas ref={overlayRef} className="timeline-overlay" />
@@ -2638,7 +2646,7 @@ export function TimelineCanvas({
             <div className="ctx-divider" />
             <div className="ctx-title">Bar 1</div>
             <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
-            <button className="ctx-btn" onClick={() => set(rulerMenu.frame)}>Set bar 1 here ({framesToSmpte(rulerMenu.frame, fps)})</button>
+            <button className="ctx-btn" onClick={() => set(rulerMenu.raw)}>Set bar 1 here ({framesToSmpte(rulerMenu.raw, fps)})</button>
             <button className="ctx-btn" onClick={() => set(frameRef.current)}>Set bar 1 at playhead</button>
             <div className="ctx-row">
               <label>Nudge</label>
@@ -2737,12 +2745,19 @@ export function TimelineCanvas({
                 // Crossfade with an overlapping clip on another layer (the top clip fades)
                 const partners = crossfadePartners(tracks, cue.id, fps)
                 if (!partners.length) return null
-                return partners.slice(0, 3).map(p => (
-                  <button key={p.cue.id} className="ctx-btn" disabled={!editable}
-                    title={`Blend over the overlap: the clip on the higher layer gets an opacity fade (keyframes you can edit), the lower one stays at full opacity`}
-                    onClick={() => { onCrossfade(cue.id, p.cue.id); close() }}
-                  >Crossfade with {p.cue.clipName || `Clip ${p.cue.clipIndex}`} · {p.layerName}</button>
-                ))
+                return partners.slice(0, 3).map(p => {
+                  // The top clip of the pair gets the fade: it needs its opacity parameter
+                  const xf = crossfadeFade(tracks, cue.id, p.cue.id, fps)
+                  const ti2 = xf ? tracks.findIndex(t => t.type === 'layer' && (t as LayerTrack).clips.some(c => c.id === xf.cueId)) : -1
+                  const ci2 = ti2 >= 0 ? (tracks[ti2] as LayerTrack).clips.findIndex(c => c.id === xf!.cueId) : -1
+                  const why = ci2 >= 0 ? clipFadeUnavailable(ti2, ci2) : 'No overlap to blend over'
+                  return (
+                    <button key={p.cue.id} className="ctx-btn" disabled={!editable || !!why}
+                      title={why ?? `Blend over the overlap: the clip on the higher layer gets an opacity fade (keyframes you can edit), the lower one stays at full opacity`}
+                      onClick={() => { onCrossfade(cue.id, p.cue.id); close() }}
+                    >Crossfade with {p.cue.clipName || `Clip ${p.cue.clipIndex}`} · {p.layerName}</button>
+                  )
+                })
               })()}
               <div className="ctx-divider" />
               <button className="ctx-btn" disabled={!editable}

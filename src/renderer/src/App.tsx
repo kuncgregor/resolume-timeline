@@ -831,24 +831,44 @@ export default function App() {
   // - another timeline is selected: every parameter the previous one automated, except those
   //   the new one sets at its start (its lanes send them; resetting would flash)
   const releaseRef = useRef<{ entryId: string; show: Show } | null>(null)
+  const showNowRef = useRef(show)
+  showNowRef.current = show
   useEffect(() => {
     const prev = releaseRef.current
     releaseRef.current = { entryId: activeId, show }
     if (REMOTE || !prev || prev.show === show) return
-    const lanes = (s: Show) => {
+    // The lanes the engine sends: a disabled lane or a muted layer / group never drove its
+    // parameter, so letting go of it must not reset what the operator set by hand
+    const lanes = (s: Show, sentOnly = true) => {
       const out = new Map<string, AutomationSubTrack>()
-      for (const t of s.tracks) if (t.type === 'layer' || t.type === 'group')
-        for (const a of (t as LayerTrack | GroupTrack).automations) out.set(a.id, a)
+      if (!sentOnly) {
+        for (const t of s.tracks) if (t.type === 'layer' || t.type === 'group')
+          for (const a of (t as LayerTrack | GroupTrack).automations) out.set(a.id, a)
+        return out
+      }
+      const mutedGroups = new Set(s.tracks.filter(t => t.type === 'group' && (t as GroupTrack).muted).map(t => (t as GroupTrack).resolumeGroupId))
+      for (const t of s.tracks) {
+        if (t.type !== 'layer' && t.type !== 'group') continue
+        const tr = t as LayerTrack | GroupTrack
+        if (tr.muted || (t.type === 'layer' && (t as LayerTrack).groupId != null && mutedGroups.has((t as LayerTrack).groupId!))) continue
+        for (const a of tr.automations) if (a.enabled !== false) out.set(a.id, a)
+      }
       return out
     }
-    const before = lanes(prev.show), now = lanes(show)
+    // Before: what was sent; now: every lane (one just disabled or muted is not "removed")
+    const before = lanes(prev.show), now = lanes(show, false)
+    // Parameters a show holds at a frame: resolved against the composition (lanes an edit has
+    // just made aren't in laneStatus yet)
+    const heldBy = (s: Show, frame: number) => {
+      const targets = resolveShow(s, compositionRef.current).targets
+      return new Set([...lanes(s).values()].filter(a => laneCovers(a, frame, s.frameRate)).map(a => targets[a.id]?.paramId))
+    }
     // The previous timeline's lanes were resolved; the new one's aren't yet, resolve them here
     const status = laneStatusRef.current
     const paramOf = (id: string) => { const st = status[id]; return st?.state === 'ok' ? st.info?.id : undefined }
     if (prev.entryId !== activeId) {
       const comp = compositionRef.current
-      const targets = resolveShow(show, comp).targets
-      const held = new Set([...now.values()].filter(a => laneCovers(a, 0, show.frameRate)).map(a => targets[a.id]?.paramId))
+      const held = heldBy(show, 0)
       // A layer the new timeline doesn't start a clip on is cleared, and with a layer transition
       // its old clip blends out for that long: its parameters go back to default once it's gone
       // (resetting them at once would bring a faded-out clip back for the blend)
@@ -860,10 +880,12 @@ export default function App() {
       for (const t of prev.show.tracks) {
         if (t.type !== 'layer' && t.type !== 'group') continue
         const lt = t as LayerTrack
+        if (!lt.automations.some(a => before.has(a.id))) continue   // muted: it sent nothing
         const layer = t.type === 'layer' ? comp?.layers?.find(l => l?.id === lt.resolumeLayerId) : null
         const blendMs = Math.round((layerTransition(layer)?.seconds ?? 0) * 1000)
         const next = t.type === 'layer' ? startsOn(lt.resolumeLayerId) : undefined
         for (const a of lt.automations) {
+          if (!before.has(a.id)) continue
           const paramId = paramOf(a.id)
           if (paramId === undefined || held.has(paramId) || done.has(paramId)) continue
           done.add(paramId)
@@ -874,18 +896,27 @@ export default function App() {
         }
       }
       for (const [delay, ids] of later) {
-        if (delay) setTimeout(() => api.resetParams(ids), delay); else api.resetParams(ids)
+        if (!delay) { api.resetParams(ids); continue }
+        // After the blend: unless the timeline selected by then (the operator may have switched
+        // again, even back) drives the parameter at its playhead
+        setTimeout(() => {
+          const keep = heldBy(showNowRef.current, frameStore.get())
+          const go = ids.filter(id => !keep.has(id))
+          if (go.length) api.resetParams(go)
+        }, delay)
       }
       return
     }
     const T = frameStore.get(), fr = show.frameRate
-    const held = new Set([...now.values()].filter(a => laneCovers(a, T, fr)).map(a => paramOf(a.id)))
+    let held: Set<number | undefined> | null = null
     for (const [id, old] of before) {
       const cur = now.get(id)
       // Removed (it had keyframes), or no longer covering the playhead after the edit
       const released = cur ? laneCovers(old, T, fr) && !laneCovers(cur, T, fr) : old.keyframes.length > 0
       const paramId = released ? paramOf(id) : undefined
-      if (paramId !== undefined && !held.has(paramId)) api.resetParam(paramId)
+      if (paramId === undefined) continue
+      held ??= heldBy(show, T)   // only when something was let go (edits run at drag rate)
+      if (!held.has(paramId)) api.resetParam(paramId)
     }
   }, [show, activeId])
 

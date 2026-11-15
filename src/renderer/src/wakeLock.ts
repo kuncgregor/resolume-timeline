@@ -19,9 +19,10 @@ export function useKeepAwake(active: boolean): boolean {
 
     const viaApi = async () => {
       if (!nav.wakeLock || !window.isSecureContext) return false
+      if (lock) return true   // already held: a second request would leave the first unreleased
       try {
         const l = await nav.wakeLock.request('screen')
-        if (!alive) { l.release(); return true }
+        if (!alive || lock) { l.release(); return true }   // ended, or another start won meanwhile
         lock = l
         l.addEventListener('release', () => { lock = null; if (alive) setAwake(false) })
         setAwake(true)
@@ -43,7 +44,7 @@ export function useKeepAwake(active: boolean): boolean {
     // The lock is dropped when the page is hidden; take it again when it comes back
     const onVisible = () => { if (document.visibilityState === 'visible' && !lock) start() }
     // Without a gesture the browser may refuse: the first touch / click anywhere starts it
-    const onGesture = () => { start() }
+    const onGesture = () => { if (!lock && !video?.played.length) start() }
     start()
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('pointerdown', onGesture, { capture: true, once: true })

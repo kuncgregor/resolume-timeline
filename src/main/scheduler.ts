@@ -146,6 +146,7 @@ export class Scheduler {
     // Edits arrive many times while playing; resetting lastFrame here would skip the
     // cues between the last tick and now.
     if (first) this.lastFrame = this.transport.now()
+    this.dropGoneLanes()
     this.indexLanes()
     this.pushTempo()
     // Only lanes whose value at the playhead changed are sent (dedupe by lane); re-sending
@@ -222,16 +223,25 @@ export class Scheduler {
   /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
   setTargets(map: Record<string, LaneTarget>) {
     this.targets = new Map(Object.entries(map))
-    // Lanes no longer here (another timeline): what was seen of them is stale; when they come
-    // back their parameter may have changed meanwhile (reset, another timeline) without the
-    // operator touching it, so they start from a fresh baseline and not overridden
-    for (const id of [...this.lastSeen.keys()]) if (!this.targets.has(id)) this.lastSeen.delete(id)
-    let dropped = false
-    for (const id of [...this.overridden.keys()]) if (!this.targets.has(id)) { this.overridden.delete(id); dropped = true }
-    if (dropped) this.emitOverrides()
+    this.dropGoneLanes()
     this.ws.setParams(new Set([...this.targets.values()].map(t => t.paramId)))
     this.indexLanes()
     this.updateAllAutomation(this.transport.now())
+  }
+
+  // Lanes no longer in the show (another timeline): what was seen of them is stale; when they
+  // come back their parameter may have changed meanwhile (reset, another timeline) without the
+  // operator touching it, so they start from a fresh baseline and not overridden. A lane still
+  // in the show but unresolved for a moment (its clip's deck not shown, Resolume reconnecting)
+  // keeps its override: the operator's hand stays on that parameter.
+  private dropGoneLanes() {
+    const ids = new Set<string>()
+    for (const t of this.show?.tracks ?? []) if (t.type === 'layer' || t.type === 'group')
+      for (const a of (t as LayerTrack | GroupTrack).automations) ids.add(a.id)
+    for (const id of [...this.lastSeen.keys()]) if (!ids.has(id)) this.lastSeen.delete(id)
+    let dropped = false
+    for (const id of [...this.overridden.keys()]) if (!ids.has(id)) { this.overridden.delete(id); dropped = true }
+    if (dropped) this.emitOverrides()
   }
 
   onTick(cb: (frame: number) => void) { this.tickCb = cb }
@@ -430,11 +440,15 @@ export class Scheduler {
     const dir = String(dirP.value)
     const away = awayP ? String(awayP.value) : null
     const hold = !this.transport.playing && follows(cue)
-    if (awayP && away !== 'Continue') await this.rest.setParamById(awayP.id, 'Continue')
-    if (hold && dir !== '||') await this.rest.setParamById(dirP.id, '||')
+    // The three sets are independent (each only has to land before the connect): sent together,
+    // the connect waits one round trip, not three — during playback every one of them is late
     // A free-running clip starts from its own start, a following one from the playhead
     const ms = mediaMsAt(cue, c, follows(cue) ? this.transport.exactFrame() : smpteToFrames(cue.time, fps), fps)
-    if (ms !== null) await this.rest.setParamById(pos.id, ms)
+    await Promise.all([
+      awayP && away !== 'Continue' ? this.rest.setParamById(awayP.id, 'Continue') : null,
+      hold && dir !== '||' ? this.rest.setParamById(dirP.id, '||') : null,
+      ms !== null ? this.rest.setParamById(pos.id, ms) : null,
+    ])
     const restoreAway = () => { if (awayP && away && away !== 'Continue') setTimeout(() => this.rest.setParamById(awayP.id, away), AWAY_RESTORE_MS) }
     if (this.activeCue.get(layer) !== cue.id) {   // another clip took the layer meanwhile
       if (hold && dir !== '||') this.rest.setParamById(dirP.id, dir)
@@ -442,6 +456,7 @@ export class Scheduler {
       return
     }
     this.osc.connectClip(layer, cue.clipIndex, releaseMs)
+    this.connectedAt.set(layer, Date.now())   // the poll's grace counts from the real connect
     restoreAway()
     if (hold) {
       if (dir !== '||') this.pausedDir.set(cue.clipId, { layer, paramId: dirP.id, value: dir })
@@ -478,6 +493,8 @@ export class Scheduler {
     for (const [layer, cueId] of this.activeCue) {
       const cue = cues.get(cueId)
       if (!cue || polledAt < (this.connectedAt.get(layer) ?? 0) + 200) continue
+      // A prepared connect still on its way (REST sets before the OSC connect): not disconnected
+      if (this.linkPending.get(layer)?.connectMs !== undefined || this.linkRunning.has(layer)) continue
       const deck = this.deckIndexOf(cue)
       if (deck && deck !== this.shownDeck) continue
       const clip = layers[layer - 1]?.clips?.find(c => c.id === cue.clipId)
