@@ -125,8 +125,11 @@ const webServer = new WebServer(host, join(__dirname, '../renderer'))
 let remoteError: string | null = null
 
 function remoteInfo() {
-  const urls = webServer.running ? lanAddresses().map(ip => `http://${ip}:${remote.port}/?k=${remote.key}`) : []
-  return { enabled: remote.enabled, running: webServer.running, port: remote.port, urls, error: remoteError }
+  const lan = webServer.running ? lanAddresses() : []
+  const urls = lan.map(a => `http://${a.address}:${remote.port}/?k=${remote.key}`)
+  // urls[0] is the one to use (the QR code); the rest are other networks (virtual ones flagged)
+  return { enabled: remote.enabled, running: webServer.running, port: remote.port, urls,
+    networks: lan.map(a => ({ name: a.name, virtual: a.virtual })), error: remoteError }
 }
 
 async function applyRemote() {

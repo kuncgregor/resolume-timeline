@@ -93,13 +93,21 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.wav': 'audio/wav',
 }
 
-/** IPv4 addresses a tablet on the same network can reach this computer at. */
-export function lanAddresses(): string[] {
-  const out: string[] = []
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const a of list ?? []) if (a.family === 'IPv4' && !a.internal) out.push(a.address)
+// Interfaces a tablet can't be on: virtual machines, Docker, VPN tunnels, Internet Sharing bridges,
+// Apple's peer-to-peer links. A Mac often has several, each with its own address.
+const VIRTUAL_IF = /^(bridge|utun|vmnet|vboxnet|docker|veth|br-|awdl|llw|anpi|ap\d|gif|stf|tap|tun|zt|tailscale|wg)/i
+
+/** IPv4 addresses a tablet on the same network can reach this computer at: the real network
+ *  (Wi-Fi, Ethernet) first, virtual ones after it, each with its interface's name. */
+export function lanAddresses(): { address: string; name: string; virtual: boolean }[] {
+  const out: { address: string; name: string; virtual: boolean }[] = []
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family === 'IPv4' && !a.internal) out.push({ address: a.address, name, virtual: VIRTUAL_IF.test(name) })
+    }
   }
-  return out
+  // Real before virtual; among them en0 / eth0 (built-in) before en5 (adapters)
+  return out.sort((a, b) => Number(a.virtual) - Number(b.virtual) || a.name.localeCompare(b.name, undefined, { numeric: true }))
 }
 
 /** The built UI + the engine API on the LAN (port, access key). The page it serves runs as a

@@ -725,6 +725,11 @@
   font-size: var(--fs-meta); word-break: break-all; white-space: normal; }
 .tablet-url:hover { background: var(--bg-gutter); }
 .tablet-copied { font-size: var(--fs-meta); color: var(--live); }
+.tablet-others { align-self: flex-start; padding: 2px 0; border: none; background: none; cursor: pointer;
+  color: var(--text-dim); font-size: var(--fs-meta); }
+.tablet-others:hover { color: var(--text-hi); }
+.tablet-url.other { color: var(--text-dim); }
+.tablet-if { display: block; margin-top: 2px; font-family: var(--font-ui); color: var(--text-faint); }
 .chip.follow-chip:disabled { cursor: default; opacity: 0.5; }
 .tbtn:disabled { opacity: 0.4; cursor: default; }
 

@@ -3,7 +3,11 @@ import QRCode from 'qrcode'
 
 // Top-bar control for the app's tablet server: the UI in a browser on the same network
 // (src/main/web-server.ts). In a tablet's browser it shows that this UI is the remote.
-interface RemoteInfo { enabled: boolean; running: boolean; port: number; urls: string[]; error: string | null }
+interface RemoteInfo {
+  enabled: boolean; running: boolean; port: number; error: string | null
+  urls: string[]                                    // the first is the one to use (real network first)
+  networks?: { name: string; virtual: boolean }[]   // per url: interface name, virtual (VM, Docker, VPN…)
+}
 
 const api = (window as any).timeline
 
@@ -13,6 +17,7 @@ export function TabletAccess() {
   const [busy, setBusy] = useState(false)
   const [qr, setQr] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [others, setOthers] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { api.getRemoteServer?.().then((i: RemoteInfo | null) => setInfo(i)) }, [])
@@ -74,11 +79,25 @@ export function TabletAccess() {
           {info.running && url && (
             <>
               <div className="tablet-qr">{qr && <img src={qr} alt="QR code of the tablet link" width={168} height={168} />}</div>
-              <p className="tablet-note">Scan with the tablet's camera, or open:</p>
-              {info.urls.map(u => (
-                <button key={u} className="tablet-url mono" onClick={() => copy(u)} title="Copy the link">{u}</button>
-              ))}
+              <p className="tablet-note">Scan with the tablet's camera, or open (on the same Wi-Fi):</p>
+              <button className="tablet-url mono" onClick={() => copy(url)} title="Copy the link">{url}</button>
               {copied && <span className="tablet-copied">Copied</span>}
+              {/* A Mac has more addresses (virtual machines, Docker, VPN, Internet Sharing): only if the first doesn't work */}
+              {info.urls.length > 1 && (
+                <>
+                  <button className="tablet-others" onClick={() => setOthers(o => !o)} aria-expanded={others}>
+                    {others ? '▾' : '▸'} Other networks ({info.urls.length - 1})
+                  </button>
+                  {others && info.urls.slice(1).map((u, i) => {
+                    const n = info.networks?.[i + 1]
+                    return (
+                      <button key={u} className="tablet-url mono other" onClick={() => copy(u)} title="Copy the link">
+                        {u}{n ? <span className="tablet-if">{n.name}{n.virtual ? ' · virtual' : ''}</span> : null}
+                      </button>
+                    )
+                  })}
+                </>
+              )}
               <p className="tablet-note dim">LTC, the audio track and recording stay on this computer. The link holds an access key: share it only with your crew.</p>
             </>
           )}
