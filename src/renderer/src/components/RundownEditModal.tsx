@@ -20,7 +20,7 @@ interface Updates {
   duration?: string
   name?: string        // timeline name (show.name)
   clock?: { source: TcSource; offset: string }   // timeline: which timecode it follows
-  tempo?: { bpm?: number; beatsPerBar?: number; downbeat?: string }  // undefined = none / default
+  tempo?: { bpm?: number; beatsPerBar?: number; downbeat?: string; tempoResync?: 'start' | 'phrase' | 'bar' | 'off' }  // undefined = none / default
 }
 
 export type TcSource = 'internal' | 'ltc-a' | 'ltc-b'
@@ -59,6 +59,7 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
   const showData = entry.type === 'show' ? (entry as ShowEntry).show : null
   const [bpmText, setBpmText] = useState(showData?.bpm != null ? String(showData.bpm) : '')
   const [bpbText, setBpbText] = useState(String(showData?.beatsPerBar ?? DEFAULT_BEATS_PER_BAR))
+  const [resync, setResync] = useState<'start' | 'phrase' | 'bar' | 'off'>(showData?.tempoResync ?? 'start')
   const [downbeat, setDownbeat] = useState(showData?.downbeat || ZERO_TC)
   const bpmNum = bpmText.trim() === '' ? undefined : Number(bpmText.trim().replace(',', '.'))
   const bpmValid = bpmNum === undefined || (Number.isFinite(bpmNum) && bpmNum >= BPM_MIN && bpmNum <= BPM_MAX)
@@ -85,6 +86,7 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
         bpm: bpmNum === undefined ? undefined : roundBpm(bpmNum),
         beatsPerBar: bpbNum === DEFAULT_BEATS_PER_BAR ? undefined : bpbNum,
         downbeat: db === ZERO_TC ? undefined : db,
+        tempoResync: resync === 'start' ? undefined : resync,
       }
       const offset = startTc.trim().replace(';', ':')
       // Untouched (e.g. only the colour changed): keep a legacy 'ltc' / 'mtc' source as it is
@@ -193,6 +195,18 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
               </div>
               <div className="modal-hint modal-hint-indent">
                 Timeline position of the first downbeat (after a pickup / intro), counted from the timeline start — the start TC is not included. Earlier bars count down: 0, −1 …
+              </div>
+              <div className="modal-row">
+                <span className="modal-label">Beat resync</span>
+                <div className="seg">
+                  {(['start', 'phrase', 'bar', 'off'] as const).map(m => (
+                    <button key={m} className={`seg-btn${resync === m ? ' on' : ''}`} onClick={() => setResync(m)}>
+                      {m === 'start' ? 'Once' : m === 'phrase' ? 'Every 8 bars' : m === 'bar' ? 'Every bar' : 'Off'}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="modal-hint modal-hint-indent">
+                With the BPM linked to Resolume, Arena's beat is set to the timeline's bars by pressing its Resync. Once (at the first bar line after Play or a jump) keeps them together for a whole song; every bar makes beat-synced clips and effects in Arena jump each bar.
               </div>
             </div>
           )}

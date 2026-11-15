@@ -9,7 +9,11 @@ export interface Show {
   bpm?: number              // tempo (20–300); none = no musical grid
   beatsPerBar?: number      // time signature numerator (default 4)
   downbeat?: string         // SMPTE, timeline position of bar 1 beat 1 (timeline-relative, default 00:00:00:00)
-  linkTempo?: boolean       // push bpm to Resolume's composition tempo + resync its beat at bar lines (default true)
+  linkTempo?: boolean       // push bpm to Resolume's composition tempo + resync its beat (default true)
+  // When Arena's beat is resynced to the bars while playing (linked tempo): 'start' (default) once,
+  // at the first bar line after Play / a jump; 'phrase' then every 8 bars; 'bar' every bar; 'off' never.
+  // Every bar made beat-synced content in Arena jump each bar (the press lands up to a frame late).
+  tempoResync?: 'start' | 'phrase' | 'bar' | 'off'
   rulerMode?: 'timecode' | 'bars'  // ruler/grid view (default: 'bars' when bpm is set, else 'timecode')
   snap?: { on: boolean; grid: SnapGrid }  // snap to grid (default: on, 'auto')
   lockEnvelopes?: boolean  // Ableton Live's Lock Envelopes: automation stays put when clips move

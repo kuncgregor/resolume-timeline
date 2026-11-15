@@ -1319,7 +1319,7 @@ export default function App() {
 
   const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
     name?: string; clock?: { source: Show['clock']['source']; offset: string }
-    tempo?: Pick<Show, 'bpm' | 'beatsPerBar' | 'downbeat'>   // undefined fields = none / default
+    tempo?: Pick<Show, 'bpm' | 'beatsPerBar' | 'downbeat' | 'tempoResync'>   // undefined fields = none / default
   }) => {
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
@@ -1328,12 +1328,12 @@ export default function App() {
         const reclocked = !!updates.clock && (updates.clock.source !== e.show.clock.source || updates.clock.offset !== e.show.clock.offset)
         const t = updates.tempo
         const retimed = !!t && (t.bpm !== e.show.bpm || (t.beatsPerBar ?? 4) !== (e.show.beatsPerBar ?? 4)
-          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00'))
+          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'start') !== (e.show.tempoResync ?? 'start'))
         const show = renamed || reclocked || retimed ? {
           ...e.show,
           ...(renamed ? { name: updates.name! } : {}),
           ...(reclocked ? { clock: { ...e.show.clock, ...updates.clock } } : {}),
-          ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat } : {}),
+          ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat, tempoResync: t!.tempoResync } : {}),
         } : e.show
         return {
           ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes,

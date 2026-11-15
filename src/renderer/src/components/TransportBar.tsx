@@ -303,7 +303,7 @@ function BpmBlock({ show, readOnly, onSetBpm, arenaBpm, onToggleLink, onPush }: 
               title={off
                 ? `Arena runs at ${arenaBpm} BPM (changed in Resolume). Click: send ${bpm} BPM to Arena. Alt-click: unlink and keep Arena's tempo.`
                 : linked
-                  ? `Linked to Resolume${arenaBpm == null ? ' (offline)' : ''}: Arena's tempo follows this timeline's BPM and its beat is resynced at every bar line while playing. Click to unlink.`
+                  ? `Linked to Resolume${arenaBpm == null ? ' (offline)' : ''}: Arena's tempo follows this timeline's BPM and its beat is resynced to the bars (once after Play by default — ✎ Edit timeline › Tempo › Beat resync). Click to unlink.`
                   : 'Free: Arena keeps its own tempo. Click to link this timeline\'s BPM to Resolume.'}
             >{off ? `↻ ${r(arenaBpm!)}→${r(bpm as number)}` : linked ? 'LINK' : 'FREE'}</button>
           )

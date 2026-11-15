@@ -209,17 +209,27 @@ export class Scheduler {
 
   // Playing over a bar line resyncs Arena's beat, so clips the operator triggers by hand
   // (and Arena's beat-synced effects) run in phase with the timeline's bars
+  // Arena's beat resynced to the timeline's bars (linked tempo). Both clocks then run at the same
+  // tempo and stay together to a few ms over a song, so by default it happens once: at the first
+  // bar line after Play or a jump. Every bar (the old way) makes beat-synced content in Arena jump
+  // each bar: the line is seen on the next frame, so the press lands up to a frame late.
+  private resyncedSinceStart = false
   private resyncAtBars(lo: number, hi: number) {
     const bpm = this.linkedBpm()
-    if (bpm == null || !this.arenaTempo || !this.show) return
+    const mode = this.show?.tempoResync ?? 'start'
+    // Only while playing (scrubbing across a bar line stopped doesn't press it)
+    if (bpm == null || !this.arenaTempo || !this.show || mode === 'off' || !this.transport.playing) return
     const fps = this.show.frameRate
     const barF = (fps * 60 / bpm) * (this.show.beatsPerBar ?? 4)
     const db = this.show.downbeat ? smpteToFrames(this.show.downbeat, fps) : 0
     if (hi < db || !(barF > 0)) return
-    if (Math.floor((lo - db) / barF) < Math.floor((hi - db) / barF)) {
-      this.osc.send('/composition/tempocontroller/resync', 1)   // press + release, like the button
-      setTimeout(() => this.osc.send('/composition/tempocontroller/resync', 0), 30)
-    }
+    const bar = Math.floor((hi - db) / barF)   // 0 = bar 1
+    if (Math.floor((lo - db) / barF) >= bar) return
+    const first = !this.resyncedSinceStart
+    if (!first && (mode === 'start' || (mode === 'phrase' && bar % 8 !== 0))) return
+    this.resyncedSinceStart = true
+    this.osc.send('/composition/tempocontroller/resync', 1)   // press + release, like the button
+    setTimeout(() => this.osc.send('/composition/tempocontroller/resync', 0), 30)
   }
 
   /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
@@ -680,6 +690,7 @@ export class Scheduler {
     }
     const starting = !this.wasPlaying
     this.wasPlaying = this.transport.playing
+    if (starting) this.resyncedSinceStart = false   // Play: the next bar line resyncs Arena's beat
     const delta = T - this.lastFrame
     if (Math.abs(delta) >= SEEK_THRESHOLD || delta < 0) {
       this.recallStateAt(T)
@@ -876,6 +887,7 @@ export class Scheduler {
 
   private recallStateAt(T: number) {
     if (!this.show) return
+    this.resyncedSinceStart = false   // a jump: the next bar line resyncs Arena's beat
     this.prerolled.clear()
     const fps = this.show.frameRate
     const mutedGroups = mutedGroupIds(this.show)
