@@ -224,6 +224,8 @@ export function RundownStrip({
 
         <button
           className={`mode-switch ${showMode ? 'show' : 'setup'}`}
+          // Never takes the focus: no focus ring after a click, and Space (Play) can't toggle it
+          tabIndex={-1} onMouseDown={e => e.preventDefault()}
           onClick={onToggleShowMode}
           title={showMode
             ? 'SHOW: editing is locked. Click for SETUP.'

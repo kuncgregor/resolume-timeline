@@ -64,8 +64,10 @@
 .dropdown-item.confirm { color: var(--select); font-weight: 700; }
 
 /* SETUP | SHOW segmented switch */
+/* align-items: Electron's Chromium gives buttons align-items: flex-start, which left the two
+   halves at text height over a black strip */
 .mode-switch {
-  display: flex; height: 24px; padding: 0; border: none; background: var(--bg-gutter);
+  display: flex; align-items: stretch; height: 24px; padding: 0; border: none; background: var(--bg-gutter);
   gap: 1px; cursor: pointer;
 }
 .mode-switch span {
