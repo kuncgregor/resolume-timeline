@@ -109,6 +109,15 @@ export interface ClipCue {
   deckId?: number      // runtime id (valid while the composition stays loaded)
   deckIndex?: number   // 1-based position, used when the id is gone
   deckName?: string
+  // false = the clip runs free in Resolume: Stop doesn't pause it, scrubbing doesn't move it
+  // (backgrounds, loops). Missing = follows the playhead.
+  follow?: boolean
+  // Where in its media the clip starts, in frames at the show's fps (0 / missing = the media's
+  // start). trim 'edit' = like an editor: trimming the clip's start or splitting it moves this
+  // with the cut, so the picture stays where it was on the timeline. 'loop' (default) = the
+  // clip always starts at mediaStart, whatever is trimmed (VJ loops).
+  mediaStart?: number
+  trim?: 'loop' | 'edit'
 }
 
 export interface AutomationSubTrack {

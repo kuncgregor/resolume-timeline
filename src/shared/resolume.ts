@@ -65,3 +65,17 @@ export interface ResolumeComposition {
   columns: ({ id: number; name: ResolumeParam<string> | string } | null)[]
   [key: string]: unknown
 }
+
+/** A Resolume layer's own transition (layer.transition.duration, seconds 0..10, measured on
+ *  Arena 7.24): clip changes on the layer blend over it, in Resolume's own time (the blend
+ *  doesn't pause or scrub). null = none (0) or not reported. */
+export function layerTransition(layer: unknown): { seconds: number; paramId: number } | null {
+  const tr = layerTransitionParam(layer)
+  return tr && tr.seconds > 0 ? tr : null
+}
+
+/** The layer's transition-time parameter, also at 0 (to set it from the app). */
+export function layerTransitionParam(layer: unknown): { seconds: number; paramId: number } | null {
+  const d = (layer as any)?.transition?.duration
+  return d?.id != null ? { seconds: Number(rv(d, 0)), paramId: d.id as number } : null
+}

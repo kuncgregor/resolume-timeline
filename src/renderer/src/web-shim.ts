@@ -34,10 +34,25 @@ if (!w.timeline) {
   // the session after a reconnect (a tablet waking up)
   let opened = false
   const reconnectCbs = new Set<() => void>()
+  // Whether this page reaches the engine (a phone remote must show when its taps go nowhere)
+  // The server sends a heartbeat every 3 s (web-server.ts); a link that died without an error
+  // (Wi-Fi gone) only shows as silence
+  const LINK_TIMEOUT_MS = 7000
+  const linkCbs = new Set<(up: boolean) => void>()
+  let linkUp = true
+  let silence: ReturnType<typeof setTimeout> | undefined
+  const setLink = (up: boolean) => {
+    if (up !== linkUp) { linkUp = up; linkCbs.forEach(cb => cb(up)) }
+    clearTimeout(silence)
+    if (up) silence = setTimeout(() => setLink(false), LINK_TIMEOUT_MS)
+  }
   events.addEventListener('open', () => {
     if (opened) reconnectCbs.forEach(cb => cb())
     opened = true
+    setLink(true)
   })
+  events.addEventListener('hb', () => setLink(true))
+  events.addEventListener('error', () => { if (events.readyState !== EventSource.OPEN) setLink(false) })
   const on = (channel: string) => (cb: (payload: any) => void) => {
     const h = (e: MessageEvent) => cb(JSON.parse(e.data))
     events.addEventListener(channel, h)
@@ -73,6 +88,11 @@ if (!w.timeline) {
     play: () => rpc('play', clientId),
     recordStart: () => rpc('recordStart'),
     recordStop: () => rpc('recordStop'),
+    arenaRecPublish: (state: unknown) => rpc('arenaRecPublish', state),
+    arenaRecGet: () => rpc('arenaRecGet'),
+    onArenaRec: on('arena:rec'),
+    remoteCommand: (cmd: string) => rpc('remoteCommand', cmd, clientId),
+    onRemoteCmd: on('remote:cmd'),
     stop: () => rpc('stop', clientId),
     locate: (frame: number) => rpc('locate', frame, clientId),
     getState: () => rpc('getState'),
@@ -81,11 +101,13 @@ if (!w.timeline) {
     saveShow: async (show: Show) => download(`${show.name ?? 'show'}.json`, show),
     openShowFile,
     loadShowDirect: (show: Show) => rpc('loadShowDirect', show),
+    selectShow: (show: Show) => rpc('selectShow', show, clientId),
     getCurrentShow: () => rpc('getCurrentShow'),
     sessionGet: () => rpc('sessionGet'),
     sessionSet: (data: unknown, baseRev: number | null) => rpc('sessionSet', data, clientId, baseRev),
     onSession: on('session:changed'),
     onReconnect: (cb: () => void) => { reconnectCbs.add(cb); return () => { reconnectCbs.delete(cb) } },
+    onLink: (cb: (up: boolean) => void) => { linkCbs.add(cb); cb(linkUp); return () => { linkCbs.delete(cb) } },
     onTransportCmd: on('transport:cmd'),
     getRemoteServer: async () => null,
     setRemoteServer: async () => null,
@@ -127,6 +149,8 @@ if (!w.timeline) {
     sendOsc: (address: string, value: number) => rpc('sendOsc', address, value),
     selectDeck: (index: number) => rpc('selectDeck', index),
     setParamById: (id: number, value: number | string | boolean) => rpc('setParamById', id, value),
+    resetParam: (id: number) => rpc('resetParam', id),
+    resetParams: (ids: number[]) => rpc('resetParams', ids),
     getParamById: (id: number) => rpc('getParamById', id),
     setTargets: (map: Record<string, unknown>) => rpc('setTargets', map),
     reenableAutomation: (ids?: string[]) => rpc('reenableAutomation', ids),

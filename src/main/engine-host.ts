@@ -87,6 +87,9 @@ export class EngineHost {
   private rev = Date.now()
   private sessionFile = path.join(appDataDir(), 'session.json')
   private sessionTimer: NodeJS.Timeout | null = null
+  // Arena recording as the app window last reported it (that window runs the recorder;
+  // tablets and phones show it and ask the window to arm / stop over 'remote:cmd')
+  private arenaRec: unknown = null
 
   constructor() {
     try {
@@ -125,9 +128,11 @@ export class EngineHost {
       this.emit('resolume:status', { connected: ok })
     }
     if (!ok) return
+    const polledAt = Date.now()
     const comp = await this.rest.getComposition()
     if (!comp) return
     this.emit('resolume:compositionUpdate', comp)
+    this.scheduler.noteClipStates((comp as any).layers ?? [], polledAt)
     this.scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
     const tc = (comp as any).tempocontroller?.tempo
     this.scheduler.setArenaTempo(tc?.id != null ? { id: tc.id, value: Number(rv(tc, 0)) } : null)
@@ -180,8 +185,21 @@ export class EngineHost {
     getState: () => this.state(),
     recordStart: () => this.recorder.start(),
     recordStop: () => { this.recorder.stop(); return null },
+    arenaRecPublish: (state: unknown) => { this.arenaRec = state; this.emit('arena:rec', state); return null },
+    arenaRecGet: () => this.arenaRec,
+    // A tablet / phone asks the app window to do what only it can ('arenaRec', 'play' armed)
+    remoteCommand: (cmd: string, from?: string) => { this.emit('remote:cmd', { cmd, from: from ?? null }); return null },
 
     loadShowDirect: (show: Show) => this.loadShow(show),
+    // Another timeline selected: loaded, stopped and at its start in one step, so the locate
+    // recalls the new timeline's state (not the old one's), also when the playhead was at 0
+    selectShow: (show: Show, from?: string) => {
+      this.transport.stop()
+      this.loadShow(show)
+      this.transport.locate(0)
+      this.scheduler.recallNow()
+      return this.transportCmd('locate', from)
+    },
     getCurrentShow: () => this.currentShow,
     sessionGet: () => this.session && { ...this.session, rev: this.rev },
 
@@ -233,6 +251,12 @@ export class EngineHost {
       return this.rest.setParamById(id, value)
     },
     getParamById: (id: number) => this.rest.getParamById(id),
+    resetParam: (id: number) => { this.scheduler.forgetParam(id); return this.rest.resetParam(id) },
+    // Several at once (a timeline switch): all requests in flight together
+    resetParams: async (ids: number[]) => {
+      for (const id of ids) this.scheduler.forgetParam(id)
+      return (await Promise.all(ids.map(id => this.rest.resetParam(id)))).every(Boolean)
+    },
     setTargets: (map: Record<string, LaneTarget>) => { this.scheduler.setTargets(map); return null },
     reenableAutomation: (ids?: string[]) => { this.scheduler.reenable(ids); return null },
     setRecordArmed: (armed: boolean) => { this.scheduler.setRecordArmed(armed); return null },
@@ -267,9 +291,15 @@ export class EngineHost {
     },
   }
 
+  /** Before quitting: clips the engine paused play on again (at most `ms` waiting for Resolume). */
+  releaseClips(ms = 500): Promise<unknown> {
+    return Promise.race([this.scheduler.restoreAllClips(), new Promise(r => setTimeout(r, ms))])
+  }
+
   dispose() {
     clearInterval(this.pingTimer)
     this.flushSession()
+    void this.scheduler.restoreAllClips()   // usually done by releaseClips() already
     this.scheduler.stop()
     this.osc.close()
   }

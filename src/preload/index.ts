@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { Show, CueEvent, EngineState } from '../shared/show'
 import type { ResolumeComposition } from '../shared/resolume'
 
@@ -19,6 +19,8 @@ const api = {
   play: () => ipcRenderer.invoke('engine:play', clientId),
   recordStart: (): Promise<{ ok: boolean; latencyMs: number; file: string | null; dir: string }> => ipcRenderer.invoke('record:start'),
   recordStop: () => ipcRenderer.invoke('record:stop'),
+  arenaRecPublish: (state: unknown) => ipcRenderer.invoke('record:publish', state),
+  onRemoteCmd: on<{ cmd: string; from: string | null }>('remote:cmd'),
   stop: () => ipcRenderer.invoke('engine:stop', clientId),
   locate: (frame: number) => ipcRenderer.invoke('engine:locate', frame, clientId),
   getState: (): Promise<EngineState> => ipcRenderer.invoke('engine:getState'),
@@ -27,6 +29,7 @@ const api = {
   saveShow: (show: Show): Promise<string | null> => ipcRenderer.invoke('show:save', show),
   openShowFile: (): Promise<{ show: Show; filePath: string } | null> => ipcRenderer.invoke('show:open'),
   loadShowDirect: (show: Show): Promise<Show> => ipcRenderer.invoke('show:loadDirect', show),
+  selectShow: (show: Show): Promise<null> => ipcRenderer.invoke('show:select', show),
   getCurrentShow: (): Promise<Show | null> => ipcRenderer.invoke('show:getCurrent'),
   sessionGet: (): Promise<any> => ipcRenderer.invoke('session:get'),
   sessionSet: (data: unknown, baseRev: number | null): Promise<{ ok: boolean; rev: number; data?: any }> =>
@@ -65,6 +68,10 @@ const api = {
   selectDeck: (index: number): Promise<boolean> => ipcRenderer.invoke('resolume:selectDeck', index),
   setParamById: (id: number, value: number | string | boolean): Promise<boolean> =>
     ipcRenderer.invoke('resolume:setParamById', id, value),
+  resetParam: (id: number): Promise<boolean> => ipcRenderer.invoke('resolume:resetParam', id),
+  resetParams: (ids: number[]): Promise<boolean> => ipcRenderer.invoke('resolume:resetParams', ids),
+  // VIEW › Scale in the app window: the page zoom (pointer coordinates stay consistent)
+  setUiZoom: (factor: number) => webFrame.setZoomFactor(factor),
   getParamById: (id: number): Promise<any> => ipcRenderer.invoke('resolume:getParamById', id),
   setTargets: (map: Record<string, unknown>) => ipcRenderer.invoke('engine:setTargets', map),
   reenableAutomation: (ids?: string[]) => ipcRenderer.invoke('engine:reenable', ids),

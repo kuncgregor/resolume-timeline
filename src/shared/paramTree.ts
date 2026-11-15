@@ -26,6 +26,9 @@ export interface ParamInfo {
   multiplier?: number  // display = real × multiplier (opacity 0..1 shown as 0..100 %)
 }
 
+/** A clip's own video opacity (clip fades, opacity templates). */
+export const CLIP_OPACITY_PATH: ParamRef['path'] = ['video', 'opacity']
+
 const AUTOMATABLE = new Set(['ParamRange', 'ParamChoice', 'ParamState', 'ParamBoolean'])
 
 // Keys that hold Resolume UI/state, not show parameters

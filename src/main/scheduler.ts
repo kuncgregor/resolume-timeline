@@ -5,6 +5,8 @@ import { ResolumeWs } from './resolume-ws'
 import type { Show, LayerTrack, GroupTrack, TriggerTrack, AutomationTrack, AutomationSubTrack, CueEvent, LaneKind, ClipCue } from '../shared/show'
 import { frameKeyframes, sampleLane } from '../shared/automation'
 import { toRestValue, normalize, type LaneTarget } from '../shared/paramTree'
+import { rv } from '../shared/resolume'
+import { continuesFrom, mediaStartOf } from '../shared/cues'
 
 export type { LaneTarget }
 
@@ -13,6 +15,11 @@ const ECHO_MS = 600        // how long a value we sent may still come back from 
 const RELEASE_MS = 600     // REC: no operator change for this long = parameter released
 const RECORD_MS = 40       // REC: at most one keyframe per lane per 40 ms (one frame at 25 fps)
 const PREROLL_MS = 150     // cross-deck cues: deck switch starts this early (deck load ~100 ms)
+const DRIFT_FRAMES = 2            // drift guard: a playing clip further off than this is corrected
+const DRIFT_CHECK_MS = 2000       // ... checked this often (and after any small jump of the clock)
+const TAKEOVER_FRAMES = 2         // a clip starting this soon after the previous one ends replaces it (no clear)
+const AWAY_RESTORE_MS = 150      // a prepared connect puts the clip's playmodeaway back after this
+const LINK_AFTER_CONNECT_MS = 30   // Resolume restarts a clip on connect; position it after that (~10 ms measured)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 // Equal within half a percent of the range (Resolume rounds floats), exact for discrete values
@@ -29,6 +36,42 @@ function mutedGroupIds(show: Show): Set<number> {
 }
 const isMuted = (lt: LayerTrack, mutedGroups: Set<number>) =>
   !!lt.muted || (lt.groupId !== undefined && mutedGroups.has(lt.groupId))
+const follows = (cue: ClipCue) => cue.follow !== false
+// What of a cue decides how it is linked: an edit of these while stopped links it again
+const linkSig = (cue: ClipCue) => `${cue.id}|${follows(cue)}|${mediaStartOf(cue)}|${cue.time}`
+
+// The clip a layer shows at frame T: the last one started, while its duration runs
+// (trigger-only clips, duration 0, until the next one)
+function clipAt(lt: LayerTrack, T: number, fps: number): ClipCue | null {
+  let best: ClipCue | null = null, bestF = -1
+  for (const c of lt.clips) {
+    const f = smpteToFrames(c.time, fps)
+    if (f <= T && f > bestF) { best = c; bestF = f }
+  }
+  if (!best) return null
+  const dur = smpteToFrames(best.duration, fps)
+  return dur === 0 || T < bestF + dur ? best : null
+}
+
+// Where a cue's media should be at a playhead frame, from its clip's JSON: time since the cue's
+// start plus its media start, × speed, inside in/out per play mode. null = not positioned
+// (BPM Sync transport, Random play mode).
+function mediaMsAt(cue: ClipCue, c: any, frame: number, fps: number): number | null {
+  if (rv(c.transporttype, 'Timeline') !== 'Timeline') return null
+  const pos = c.transport.position, ctl = c.transport.controls
+  const ms = ((frame - smpteToFrames(cue.time, fps) + mediaStartOf(cue)) / fps) * 1000 * Number(rv(ctl?.speed, 1))
+  return mediaPosition(Math.max(0, ms), Number(pos.in ?? pos.min ?? 0), Number(pos.out ?? pos.max ?? 0), String(rv(ctl?.playmode, 'Loop')))
+}
+
+// Where a clip's media is after `ms` of playing, per Resolume play mode (in..out range)
+function mediaPosition(ms: number, inMs: number, outMs: number, mode: string): number | null {
+  const len = outMs - inMs
+  if (!(len > 0)) return null
+  if (mode === 'Random') return null
+  if (mode === 'Loop') return inMs + (ms % len)
+  if (mode === 'Bounce') { const p = ms % (2 * len); return inMs + (p < len ? p : 2 * len - p) }
+  return inMs + Math.min(ms, len)   // play once: holds / clears at the end
+}
 
 export class Scheduler {
   private transport: Transport
@@ -65,6 +108,14 @@ export class Scheduler {
   // Which cue is currently showing on each Resolume layer (1-based index → cue id).
   // A clip end only clears the layer if that clip is still the one showing.
   private activeCue = new Map<number, string>()
+  private connectedAt = new Map<number, number>()   // layer → Date.now() of our last connect
+  // Clips follow the playhead: stopped = paused on the playhead's frame, Play = resume from it.
+  // pausedDir holds the play direction we replaced with '||' (clip id → layer, param, value).
+  private linkedPlaying = false
+  private pausedDir = new Map<number, { layer: number; paramId: number; value: string }>()
+  private linkPending = new Map<number, { cue: ClipCue; delayMs: number; check: boolean; connectMs?: number }>()
+  private driftCheckedAt = 0
+  private linkRunning = new Set<number>()
   // Last-wins REST queue: one request in flight per parameter, newest value waits
   private restInFlight = new Set<number>()
   private restPending = new Map<number, number | string | boolean>()
@@ -100,6 +151,31 @@ export class Scheduler {
     // Only lanes whose value at the playhead changed are sent (dedupe by lane); re-sending
     // everything on every edit would overwrite what the operator does in Resolume.
     this.updateAllAutomation(this.transport.now())
+    this.relinkEdited()
+  }
+
+  // An edit of the clip the playhead stands in (follow switched, media start, moved) takes
+  // effect at once while stopped: it is parked on the playhead again, or let go to run free.
+  private linkedSig = new Map<number, string>()
+  private relinkEdited() {
+    if (!this.show || this.transport.playing) return
+    const fps = this.show.frameRate, T = this.transport.now()
+    for (const track of this.show.tracks) {
+      if (track.type !== 'layer') continue
+      const lt = track as LayerTrack, layer = lt.resolumeLayerIndex
+      const clip = clipAt(lt, T, fps)
+      if (layer < 1 || !clip || this.activeCue.get(layer) !== clip.id) continue
+      const sig = linkSig(clip)
+      const prev = this.linkedSig.get(layer)
+      this.linkedSig.set(layer, sig)
+      if (prev === undefined || prev === sig) continue
+      if (follows(clip)) this.linkClip(layer, clip)
+      else {
+        // Runs free now: the direction we paused it with goes back
+        const p = this.pausedDir.get(clip.clipId)
+        if (p) { this.pausedDir.delete(clip.clipId); this.rest.setParamById(p.paramId, p.value) }
+      }
+    }
   }
 
   /** Tempo parameter from the latest composition poll (composition.tempocontroller.tempo). */
@@ -146,6 +222,13 @@ export class Scheduler {
   /** Resolved targets from the renderer's resolver (lane id → Resolume parameter). */
   setTargets(map: Record<string, LaneTarget>) {
     this.targets = new Map(Object.entries(map))
+    // Lanes no longer here (another timeline): what was seen of them is stale; when they come
+    // back their parameter may have changed meanwhile (reset, another timeline) without the
+    // operator touching it, so they start from a fresh baseline and not overridden
+    for (const id of [...this.lastSeen.keys()]) if (!this.targets.has(id)) this.lastSeen.delete(id)
+    let dropped = false
+    for (const id of [...this.overridden.keys()]) if (!this.targets.has(id)) { this.overridden.delete(id); dropped = true }
+    if (dropped) this.emitOverrides()
     this.ws.setParams(new Set([...this.targets.values()].map(t => t.paramId)))
     this.indexLanes()
     this.updateAllAutomation(this.transport.now())
@@ -219,11 +302,211 @@ export class Scheduler {
     }
   }
 
+  // Every clip the timeline connects goes through here: the layer's clip is ours from now on
+  // Returns true when the connect also brings the clip to the playhead (no linkClip needed):
+  // a clip starting inside its media (mediaStart), or any following clip while stopped, is
+  // paused, positioned and then connected, so Resolume never shows its first frame.
+  private connectLayer(layer: number, cue: ClipCue, releaseMs: number, atMs?: number): boolean {
+    this.restoreLayer(layer, cue.clipId)
+    const target = this.deckIndexOf(cue)
+    const shown = this.deckJobs === 0 && (!target || target === this.shownDeck || !this.decks.length)
+    const prepared = shown && atMs === undefined && (mediaStartOf(cue) > 0 || (!this.transport.playing && follows(cue)))
+    // The layer is this clip's before the connect job runs (it checks it)
+    this.linkedSig.set(layer, linkSig(cue))
+    this.activeCue.set(layer, cue.id)
+    this.connectedAt.set(layer, Date.now())
+    if (prepared) {
+      this.linkPending.set(layer, { cue, delayMs: 0, check: false, connectMs: releaseMs })
+      if (!this.linkRunning.has(layer)) void this.runLinks(layer)
+    } else this.connectCue(layer, cue, releaseMs, atMs)
+    return prepared
+  }
+
+  private clearLayer(layer: number) {
+    this.restoreLayer(layer)
+    this.osc.clearLayer(layer)
+    this.activeCue.delete(layer)
+  }
+
+  // Clips we paused on a layer get their play direction back when they leave it, so a clip
+  // the operator triggers later by hand doesn't sit frozen
+  private restoreLayer(layer: number, keepClipId?: number) {
+    for (const [clipId, p] of this.pausedDir) {
+      if (p.layer !== layer || clipId === keepClipId) continue
+      this.pausedDir.delete(clipId)
+      this.rest.setParamById(p.paramId, p.value)
+    }
+  }
+
+  /** All clips we paused play on (the app quits). Resolves when Resolume has answered. */
+  restoreAllClips(): Promise<unknown> {
+    const sent = [...this.pausedDir.values()].map(p => this.rest.setParamById(p.paramId, p.value))
+    this.pausedDir.clear()
+    return Promise.all(sent)
+  }
+
+  // Bring a connected clip's media to the playhead: position = time since the clip's start
+  // (Timeline transport; speed, in/out and play mode applied), paused while the transport is
+  // stopped. One job per layer, the newest request wins (scrubbing sends many). Clips set to
+  // run free (follow: false) are left alone.
+  private linkClip(layer: number, cue: ClipCue, delayMs = 0) {
+    this.linkedSig.set(layer, linkSig(cue))
+    if (!follows(cue)) return
+    if (this.linkPending.get(layer)?.connectMs !== undefined && this.linkPending.get(layer)!.cue.id === cue.id) return   // its connect positions it
+    this.linkPending.set(layer, { cue, delayMs, check: false })
+    if (!this.linkRunning.has(layer)) void this.runLinks(layer)
+  }
+
+  // Drift guard: read where a playing clip is and correct it only when it is more than
+  // DRIFT_FRAMES off (a small LTC jump, a stall). A link already queued wins.
+  private checkClip(layer: number, cue: ClipCue) {
+    if (!follows(cue) || this.linkPending.has(layer) || this.linkRunning.has(layer)) return
+    this.linkPending.set(layer, { cue, delayMs: 0, check: true })
+    void this.runLinks(layer)
+  }
+
+  private async runLinks(layer: number) {
+    this.linkRunning.add(layer)
+    try {
+      for (let job = this.linkPending.get(layer); job; job = this.linkPending.get(layer)) {
+        this.linkPending.delete(layer)
+        if (this.deckJobs > 0) await this.deckQueue      // cross-deck connect still running
+        if (job.delayMs > 0) await sleep(job.delayMs)    // Resolume restarts a clip on connect
+        if (this.linkPending.has(layer)) continue
+        await this.syncClip(layer, job.cue, job.check, job.connectMs)
+      }
+    } finally { this.linkRunning.delete(layer) }
+  }
+
+  // connectMs: connect the clip here (prepared connect, see connectLayer), release after ms
+  private async syncClip(layer: number, cue: ClipCue, check = false, connectMs?: number) {
+    if (!this.show || this.activeCue.get(layer) !== cue.id) return   // another clip took the layer
+    const t0 = this.transport.exactFrame()
+    const c = await this.rest.getJson(`/composition/clips/by-id/${cue.clipId}`)
+    const pos = c?.transport?.position, dirP = c?.transport?.controls?.playdirection
+    if (connectMs !== undefined && (!pos || !dirP)) { this.osc.connectClip(layer, cue.clipIndex, connectMs); return }
+    if (!pos || !dirP || this.activeCue.get(layer) !== cue.id) return
+    const fps = this.show.frameRate
+    const playing = this.transport.playing
+    if (connectMs !== undefined) { await this.connectPositioned(layer, cue, c, connectMs); return }
+    if (check && !playing) return
+    const dir = String(dirP.value)
+    const setDirection = async () => {
+      if (playing) {
+        const p = this.pausedDir.get(cue.clipId)
+        this.pausedDir.delete(cue.clipId)
+        if (p && dir === '||') await this.rest.setParamById(p.paramId, p.value)
+      } else if (dir !== '||') {   // a clip the operator paused stays theirs
+        this.pausedDir.set(cue.clipId, { layer, paramId: dirP.id, value: dir })
+        await this.rest.setParamById(dirP.id, '||')
+      }
+    }
+    if (!playing && !check) await setDirection()   // pause first, so the position set below holds
+    if (check) {
+      // Compare with where the media should have been when Resolume answered (the middle of
+      // the request); a loop wrapping between the two counts the short way round
+      const want = mediaMsAt(cue, c, (t0 + this.transport.exactFrame()) / 2, fps)
+      if (want === null || dir === '||') return
+      const len = Number(pos.out ?? pos.max ?? 0) - Number(pos.in ?? pos.min ?? 0)
+      let off = Math.abs(Number(pos.value) - want)
+      if (rv(c.transport.controls?.playmode, 'Loop') === 'Loop' && len > 0) off = Math.min(off, len - off)
+      if (off <= (DRIFT_FRAMES * 1000) / fps) return
+    }
+    const ms = mediaMsAt(cue, c, playing ? this.transport.exactFrame() : this.transport.now(), fps)
+    if (ms !== null) await this.rest.setParamById(pos.id, ms)
+    if (check) return
+    if (playing) await setDirection()   // resume once the media is on the playhead
+  }
+
+  // Prepared connect: positioned, then connected with the clip's "playmodeaway" set to Continue
+  // for the moment, so Resolume keeps the position instead of restarting the clip (measured:
+  // with Restart the reset lands on Resolume's next frame, sometimes after our position set).
+  // A clip that should hold on the playhead (stopped) is paused first. The clip's own setting
+  // is put back once Resolume has taken the connect.
+  private async connectPositioned(layer: number, cue: ClipCue, c: any, releaseMs: number) {
+    const fps = this.show!.frameRate
+    const pos = c.transport.position, dirP = c.transport.controls.playdirection
+    const awayP = c.transport.controls.playmodeaway
+    const dir = String(dirP.value)
+    const away = awayP ? String(awayP.value) : null
+    const hold = !this.transport.playing && follows(cue)
+    if (awayP && away !== 'Continue') await this.rest.setParamById(awayP.id, 'Continue')
+    if (hold && dir !== '||') await this.rest.setParamById(dirP.id, '||')
+    // A free-running clip starts from its own start, a following one from the playhead
+    const ms = mediaMsAt(cue, c, follows(cue) ? this.transport.exactFrame() : smpteToFrames(cue.time, fps), fps)
+    if (ms !== null) await this.rest.setParamById(pos.id, ms)
+    const restoreAway = () => { if (awayP && away && away !== 'Continue') setTimeout(() => this.rest.setParamById(awayP.id, away), AWAY_RESTORE_MS) }
+    if (this.activeCue.get(layer) !== cue.id) {   // another clip took the layer meanwhile
+      if (hold && dir !== '||') this.rest.setParamById(dirP.id, dir)
+      restoreAway()
+      return
+    }
+    this.osc.connectClip(layer, cue.clipIndex, releaseMs)
+    restoreAway()
+    if (hold) {
+      if (dir !== '||') this.pausedDir.set(cue.clipId, { layer, paramId: dirP.id, value: dir })
+      return
+    }
+    // Playing (or running free): a clip we had paused before gets its direction back
+    const p = this.pausedDir.get(cue.clipId)
+    this.pausedDir.delete(cue.clipId)
+    if (dir === '||' && p) await this.rest.setParamById(dirP.id, p.value)
+  }
+
+  // Drift guard over every following clip the playhead is in (playing only)
+  private checkClips(T: number) {
+    if (!this.show) return
+    const fps = this.show.frameRate
+    const mutedGroups = mutedGroupIds(this.show)
+    for (const track of this.show.tracks) {
+      if (track.type !== 'layer') continue
+      const lt = track as LayerTrack
+      const layer = lt.resolumeLayerIndex
+      if (layer < 1 || isMuted(lt, mutedGroups)) continue
+      const clip = clipAt(lt, T, fps)
+      if (clip && this.activeCue.get(layer) === clip.id) this.checkClip(layer, clip)
+    }
+  }
+
+  // Connected clips from a composition poll (shown deck): a layer the operator cleared or
+  // retriggered in Resolume is not ours any more, so the next seek connects our clip again
+  // instead of only moving its position. Polls started before our last connect are ignored.
+  noteClipStates(layers: { clips?: { id: number; connected?: unknown }[] }[], polledAt: number) {
+    if (!this.show || this.deckJobs > 0) return
+    const cues = new Map<string, ClipCue>()
+    for (const t of this.show.tracks) if (t.type === 'layer') for (const c of (t as LayerTrack).clips) cues.set(c.id, c)
+    for (const [layer, cueId] of this.activeCue) {
+      const cue = cues.get(cueId)
+      if (!cue || polledAt < (this.connectedAt.get(layer) ?? 0) + 200) continue
+      const deck = this.deckIndexOf(cue)
+      if (deck && deck !== this.shownDeck) continue
+      const clip = layers[layer - 1]?.clips?.find(c => c.id === cue.clipId)
+      const state = String(rv(clip?.connected as any, ''))
+      if (!state.startsWith('Connected')) { this.activeCue.delete(layer); this.restoreLayer(layer) }
+    }
+  }
+
   /** REC armed: operator changes in Resolume become keyframes instead of overrides. */
   setRecordArmed(armed: boolean) {
     this.recordArmed = armed
     if (!armed && this.recordTimer) { clearTimeout(this.recordTimer); this.recordTimer = null; this.recordPending.clear() }
   }
+
+  /** The show's state at the playhead now (clips, lanes), whether or not the frame changed. */
+  recallNow() {
+    const T = this.transport.now()
+    this.recallStateAt(T)
+    this.lastFrame = T
+    this.linkTransport(T, true)
+  }
+
+  /** A parameter was reset to its default: lanes on it send again as soon as they cover the playhead. */
+  forgetParam(paramId: number) {
+    for (const [laneId, t] of this.targets) if (t.paramId === paramId) { this.lastSent.delete(laneId); this.wasInside.delete(laneId); this.lastSeen.delete(laneId) }
+    this.resetAt.set(paramId, Date.now())
+  }
+  // Parameters the app reset to their default: the change that follows is ours, not the operator's
+  private resetAt = new Map<number, number>()
 
   /** Hand overridden lanes back to the timeline (all, or the given ids). */
   reenable(ids?: string[]) {
@@ -245,6 +528,7 @@ export class Scheduler {
 
   private isEcho(paramId: number, value: number | string | boolean, t: LaneTarget): boolean {
     const now = Date.now()
+    if (now - (this.resetAt.get(paramId) ?? 0) < ECHO_MS) return true
     return (this.recentSent.get(paramId) ?? []).some(e => now - e.at < ECHO_MS && sameValue(e.value, value, t))
   }
 
@@ -356,6 +640,10 @@ export class Scheduler {
   private wasPlaying = false
   private tick() {
     const T = this.transport.now()
+    if (this.transport.playing !== this.linkedPlaying) {
+      this.linkedPlaying = this.transport.playing
+      this.linkTransport(T)
+    }
     // Stopped = the next frame change starts playback (the first frames after Play may not move)
     if (T === this.lastFrame) { if (!this.transport.playing) this.wasPlaying = false; return }
     const starting = !this.wasPlaying
@@ -367,10 +655,48 @@ export class Scheduler {
       this.fireBetween(this.lastFrame, T)
       // Starting playback exactly on a bar line (Play at bar 1) counts as crossing it
       this.resyncAtBars(starting ? this.lastFrame - 0.5 : this.lastFrame, T)
+      // Small steps while stopped (scrubbing, nudging) move the paused clips along
+      if (!this.transport.playing) this.linkTransport(T, true)
+      // Playing: check the clips now and then, and at once after a jump too small to count
+      // as a seek (LTC skipping a few frames, a stalled tick)
+      else if (delta > 2 || Date.now() - this.driftCheckedAt > DRIFT_CHECK_MS) {
+        this.driftCheckedAt = Date.now()
+        this.checkClips(T)
+      }
     }
     this.updateAllAutomation(T)
     this.lastFrame = T
     this.tickCb?.(T)
+  }
+
+  // Play / stop (internal clock or LTC): clips at the playhead pause on its frame or resume
+  // from it. Play and moves while stopped also connect a clip the playhead stands in that
+  // isn't showing yet (a clip starting on the frame Play starts from is never crossed);
+  // Stop leaves a layer the operator cleared alone.
+  private linkTransport(T: number, connect = this.transport.playing) {
+    if (!this.show) return
+    const fps = this.show.frameRate
+    const playing = this.transport.playing
+    const mutedGroups = mutedGroupIds(this.show)
+    const linked = new Set<number>()
+    for (const track of this.show.tracks) {
+      if (track.type !== 'layer') continue
+      const lt = track as LayerTrack
+      const layer = lt.resolumeLayerIndex
+      if (layer < 1 || isMuted(lt, mutedGroups)) continue
+      const clip = clipAt(lt, T, fps)
+      if (!clip) continue
+      if (this.activeCue.get(layer) === clip.id) this.linkClip(layer, clip)
+      else if (connect) { if (!this.connectLayer(layer, clip, 50)) this.linkClip(layer, clip, LINK_AFTER_CONNECT_MS) }
+      else continue
+      if (follows(clip)) linked.add(clip.clipId)
+    }
+    if (!playing) return
+    for (const [clipId, p] of this.pausedDir) {
+      if (linked.has(clipId)) continue
+      this.pausedDir.delete(clipId)
+      this.rest.setParamById(p.paramId, p.value)
+    }
   }
 
   private fireBetween(lo: number, hi: number) {
@@ -389,15 +715,16 @@ export class Scheduler {
         const layer = lt.resolumeLayerIndex
         if (layer < 1 || isMuted(lt, mutedGroups)) continue  // gone from Resolume, or muted
         // Ends before starts, so a clip ending on the frame the next one starts
-        // does not clear the new clip.
+        // does not clear the new clip. A clip followed by another one on the layer (from its
+        // end up to TAKEOVER_FRAMES later) isn't cleared at all: the next one replaces it,
+        // so Resolume's layer transition blends A into B instead of A into an empty layer.
         for (const clip of lt.clips) {
           const durF = smpteToFrames(clip.duration, fps)
           if (durF <= 0) continue
           const endF = smpteToFrames(clip.time, fps) + durF
-          if (endF > lo && endF <= hi && this.activeCue.get(layer) === clip.id) {
-            this.osc.clearLayer(layer)
-            this.activeCue.delete(layer)
-          }
+          if (!(endF > lo && endF <= hi && this.activeCue.get(layer) === clip.id)) continue
+          const next = lt.clips.some(c => { const f = smpteToFrames(c.time, fps); return c !== clip && f > lo && f <= endF + TAKEOVER_FRAMES })
+          if (!next) this.clearLayer(layer)
         }
         // Cross-deck cues start their deck switch PREROLL_MS early so they fire on time
         const pre = Math.ceil((PREROLL_MS / 1000) * fps)
@@ -410,9 +737,22 @@ export class Scheduler {
             this.connectCue(layer, clip, clip.release ? 40 : 0, Date.now() + ((sf - hi) / fps) * 1000)
           }
           if (sf > lo && sf <= hi) {
-            if (this.prerolled.has(clip.id)) this.prerolled.delete(clip.id)
-            else this.connectCue(layer, clip, clip.release ? 40 : 0)
-            this.activeCue.set(layer, clip.id)
+            let prepared = false
+            const prev = lt.clips.find(c => c.id === this.activeCue.get(layer))
+            if (prev && continuesFrom(prev, clip, t => smpteToFrames(t, fps)) && this.transport.playing) {
+              // The same clip carrying on (an editor split): it keeps playing, no retrigger
+              this.activeCue.set(layer, clip.id)
+              continue
+            }
+            if (this.prerolled.delete(clip.id)) {
+              this.restoreLayer(layer, clip.clipId)
+              this.activeCue.set(layer, clip.id)
+              this.connectedAt.set(layer, Date.now())
+            } else prepared = this.connectLayer(layer, clip, clip.release ? 40 : 0)
+            // A small step while stopped, a clip we paused before, or one starting inside its
+            // media that couldn't be prepared (other deck): bring it to the playhead
+            if (!prepared && (!this.transport.playing || this.pausedDir.has(clip.clipId) || mediaStartOf(clip) > 0))
+              this.linkClip(layer, clip, LINK_AFTER_CONNECT_MS)
           }
         }
       }
@@ -517,26 +857,12 @@ export class Scheduler {
         const lt = track as LayerTrack
         const layer = lt.resolumeLayerIndex
         if (layer < 1 || isMuted(lt, mutedGroups)) continue  // gone from Resolume, or muted
-        const sorted = [...lt.clips]
-          .filter(c => smpteToFrames(c.time, fps) <= T)
-          .sort((a, b) => smpteToFrames(b.time, fps) - smpteToFrames(a.time, fps))
-        const last = sorted[0]
-        if (last) {
-          const sf = smpteToFrames(last.time, fps)
-          const dur = smpteToFrames(last.duration, fps)
-          if (dur === 0 || T < sf + dur) {
-            // Clip is active at T — trigger it (short release so button doesn't get stuck)
-            this.connectCue(layer, last, 50)
-            this.activeCue.set(layer, last.id)
-          } else {
-            // Clip duration has passed — clear the layer
-            this.osc.clearLayer(layer)
-            this.activeCue.delete(layer)
-          }
-        } else {
-          // No clip before T — clear
-          this.osc.clearLayer(layer)
-          this.activeCue.delete(layer)
+        const clip = clipAt(lt, T, fps)
+        if (!clip) this.clearLayer(layer)   // no clip at T, or its duration has passed
+        else if (this.activeCue.get(layer) === clip.id) this.linkClip(layer, clip)   // already showing: move it
+        else {
+          // Trigger it (short release so the button doesn't get stuck), then bring it to T
+          if (!this.connectLayer(layer, clip, 50)) this.linkClip(layer, clip, LINK_AFTER_CONNECT_MS)
         }
       }
     }

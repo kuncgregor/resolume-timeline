@@ -61,6 +61,16 @@ export class Transport {
     return this.startFrame + Math.round((elapsedMs / 1000) * this.fps)
   }
 
+  /** The playhead in fractional frames (clip positions are set from it, to the millisecond). */
+  exactFrame(): number {
+    if (this.ltcFrame !== null) {
+      const ahead = ((performance.now() - this.ltcAt) / 1000) * this.fps
+      return this.ltcFrame + Math.min(ahead, this.freewheelFrames)
+    }
+    if (!this.playing) return this.frame
+    return this.startFrame + ((performance.now() - this.startPerf) / 1000) * this.fps
+  }
+
   setFps(fps: number) {
     const currentFrame = this.now()
     this.fps = fps

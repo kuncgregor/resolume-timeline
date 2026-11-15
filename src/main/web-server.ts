@@ -44,8 +44,9 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
     const send = (channel: string, payload: unknown) => res.write(`event: ${channel}\ndata: ${JSON.stringify(payload)}\n\n`)
     send('resolume:status', { connected: host.resolumeConnected })
     const remove = host.addSink(send)
-    // Keeps idle connections (tablet Wi-Fi, proxies) from being dropped between events
-    const ping = setInterval(() => res.write(': ping\n\n'), 15000)
+    // Keeps idle connections (tablet Wi-Fi, proxies) open between events, and lets the page
+    // notice a link that died silently (a phone's Wi-Fi): a named event, comments never reach JS
+    const ping = setInterval(() => res.write('event: hb\ndata: 0\n\n'), HEARTBEAT_MS)
     req.on('close', () => { remove(); clearInterval(ping) })
     return true
   }
@@ -81,6 +82,8 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
   res.statusCode = 404; res.end()
   return true
 }
+
+const HEARTBEAT_MS = 3000   // web-shim marks the link down after LINK_TIMEOUT_MS without one
 
 const LOCAL_ONLY = new Set(['showfileDefaultPath', 'showfileWrite', 'showfileRename', 'showfileRead'])
 

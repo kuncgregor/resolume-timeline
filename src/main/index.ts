@@ -25,8 +25,8 @@ host.addSink((channel, payload) => {
 
 const ENGINE_CHANNELS: Record<string, string> = {
   'engine:play': 'play', 'engine:stop': 'stop', 'engine:locate': 'locate', 'engine:getState': 'getState',
-  'record:start': 'recordStart', 'record:stop': 'recordStop',
-  'show:loadDirect': 'loadShowDirect', 'show:getCurrent': 'getCurrentShow',
+  'record:start': 'recordStart', 'record:stop': 'recordStop', 'record:publish': 'arenaRecPublish',
+  'show:loadDirect': 'loadShowDirect', 'show:select': 'selectShow', 'show:getCurrent': 'getCurrentShow',
   'session:get': 'sessionGet', 'session:set': 'sessionSet',
   'showfile:write': 'showfileWrite', 'showfile:defaultPath': 'showfileDefaultPath', 'showfile:rename': 'showfileRename',
   'resolume:getComposition': 'getComposition', 'resolume:getThumbnail': 'getThumbnail',
@@ -35,7 +35,7 @@ const ENGINE_CHANNELS: Record<string, string> = {
   'resolume:connect': 'connectResolume',
   'resolume:triggerClip': 'triggerClip', 'resolume:triggerColumn': 'triggerColumn',
   'resolume:clearLayer': 'clearLayer', 'resolume:sendOsc': 'sendOsc', 'resolume:selectDeck': 'selectDeck',
-  'resolume:setParamById': 'setParamById', 'resolume:getParamById': 'getParamById',
+  'resolume:setParamById': 'setParamById', 'resolume:getParamById': 'getParamById', 'resolume:resetParam': 'resetParam', 'resolume:resetParams': 'resetParams',
   'engine:reenable': 'reenableAutomation', 'engine:setRecordArmed': 'setRecordArmed',
   'engine:setTargets': 'setTargets', 'cue:manualFire': 'fireCue',
 }
@@ -195,3 +195,12 @@ app.whenReady().then(() => {
 // One window: closing it quits (the engine has no UI left to show its state)
 app.on('window-all-closed', () => app.quit())
 app.on('will-quit', () => { webServer.stop(); host.dispose() })
+// A paused clip (transport stopped) would stay paused in Resolume: give it its play direction
+// back before the process exits
+let clipsReleased = false
+app.on('before-quit', e => {
+  if (clipsReleased) return
+  e.preventDefault()
+  clipsReleased = true
+  host.releaseClips().finally(() => app.quit())
+})

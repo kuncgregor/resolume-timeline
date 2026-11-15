@@ -96,6 +96,18 @@ export class ResolumeRest {
     } catch { return null }
   }
 
+  /** Parameter back to its Resolume default (POST /parameter/by-id/{id}/reset, Arena 7.24;
+   *  its animation settings are left alone). */
+  async resetParam(id: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/parameter/by-id/${id}/reset`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resetanimation: false }), signal: AbortSignal.timeout(2000),
+      })
+      return res.ok
+    } catch { return false }
+  }
+
   // Set any parameter by its Resolume internal ID. Real values: number for ranges, the exact
   // option string for choices, true/false for booleans (verified on Arena 7).
   async setParamById(id: number, value: number | string | boolean): Promise<boolean> {
