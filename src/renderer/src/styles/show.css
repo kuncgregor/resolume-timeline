@@ -332,6 +332,12 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-phone .sv-remain-big { font-size: calc(var(--s-remain) * 0.7); }
 .sv-phone .sv-strip { grid-template-columns: 1fr 1fr; grid-template-rows: var(--s-strip) calc(var(--s-strip) - 4px); grid-template-areas: "secs secs" "l r"; }
 .sv-phone .sv-secs { grid-area: secs; }
+/* A phone is too narrow for every section's name ("INT…", "C… 1"): only the current one is
+   named, in full, over the next ones (the band above says what comes next) */
+.sv-phone .sv-sec { padding-left: 3px; }
+.sv-phone .sv-sec:not(.cur) .sv-sec-name { display: none; }
+.sv-phone .sv-sec.cur { overflow: visible; z-index: 3; }
+.sv-phone .sv-sec.cur span { overflow: visible; text-overflow: clip; }
 .sv-phone .sv-jumps.left { grid-area: l; }
 .sv-phone .sv-jumps.right { grid-area: r; }
 .sv-phone .sv-jumps button { flex: 1; min-width: 0; }

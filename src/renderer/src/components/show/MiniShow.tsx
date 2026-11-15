@@ -131,7 +131,7 @@ export function MiniShow() {
       {show ? <Position show={show} /> : <div className="mini-pos"><div className="mini-bar">BREAK</div></div>}
       {show ? <SectionBar show={show} /> : <div className="mini-section"><div className="mini-sec-row"><span className="mini-sec-now">GO starts {entryName(next)}</span></div></div>}
       {show && <Remaining show={show} playing={playing} />}
-      {show && <Coming show={show} max={vertical ? 16 : 1} />}
+      {show && <Coming show={show} max={vertical ? 16 : 1} sections={vertical} />}
 
       {/* The rundown: back to the previous timeline beside GO to the next one */}
       <div className="mini-rundown">
@@ -239,13 +239,16 @@ function Remaining({ show, playing }: { show: Show; playing: boolean }) {
   )
 }
 
-function Coming({ show, max }: { show: Show; max: number }) {
+// `sections` false (the strip): the section bar beside it already counts down to the next
+// section, so the one slot here is the next other event
+function Coming({ show, max, sections }: { show: Show; max: number; sections: boolean }) {
   const frame = useFrameEvery(100)
   const model: ShowModel = showModelOf(show)
   const tempo: Tempo | null = tempoOf(show)
   const groups: { frame: number; items: ShowEvent[] }[] = []
   for (let i = eventAtOrAfter(model.events, frame + 1); i < model.events.length; i++) {
     const ev = model.events[i], g = groups[groups.length - 1]
+    if (!sections && ev.kind === 'section') continue
     if (g && g.frame === ev.frame) { g.items.push(ev); g.items.sort((a, b) => ORDER[a.kind] - ORDER[b.kind]) }
     else if (groups.length < max) groups.push({ frame: ev.frame, items: [ev] })
     else break
