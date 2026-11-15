@@ -6,7 +6,7 @@ import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
 import { EngineHost, appDataDir, showfilesDir, readShowfile } from './engine-host'
 import { SHOWFILE_EXT, showfileFileName } from '../shared/showfile'
 import { WebServer, lanAddresses } from './web-server'
-import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, type MiniOrientation, type MiniSize } from './mini-window'
+import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, miniAppQuitting, type MiniOrientation, type MiniSize } from './mini-window'
 import type { Show } from '../shared/show'
 
 // One engine per computer: a second launch only brings the running app to the front
@@ -184,7 +184,7 @@ function createWindow() {
   }
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' } })
   // The mini window lives with the main one (closing the main window quits the app)
-  win.on('closed', () => closeMini())
+  win.on('closed', () => { miniAppQuitting(); closeMini() })
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[RENDERER CRASH] reason:', details.reason, 'exitCode:', details.exitCode)
   })
@@ -222,6 +222,7 @@ app.on('will-quit', () => { webServer.stop(); host.dispose() })
 // back before the process exits
 let clipsReleased = false
 app.on('before-quit', e => {
+  miniAppQuitting()
   if (clipsReleased) return
   e.preventDefault()
   clipsReleased = true

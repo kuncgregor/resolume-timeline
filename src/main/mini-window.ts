@@ -27,6 +27,9 @@ const settings: MiniSettings = (() => {
 const save = () => { try { writeFileSync(FILE, JSON.stringify(settings, null, 2)) } catch { /* ignore */ } }
 
 let mini: BrowserWindow | null = null
+// Quitting closes the window too: it must still come back with the app next time
+let quitting = false
+export function miniAppQuitting() { quitting = true }
 let onChange: (state: ReturnType<typeof miniState>) => void = () => {}
 
 export const miniState = () => ({ open: !!mini, orientation: settings.orientation, size: settings.size })
@@ -78,7 +81,7 @@ export function openMini(rendererUrl: string | undefined, rendererFile: string) 
   }
   mini.on('moved', remember)
   mini.on('resized', remember)
-  mini.on('closed', () => { mini = null; settings.open = false; save(); onChange(miniState()) })
+  mini.on('closed', () => { mini = null; if (!quitting) { settings.open = false; save() } onChange(miniState()) })
   settings.open = true; save(); onChange(miniState())
 }
 
