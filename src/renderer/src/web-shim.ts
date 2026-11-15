@@ -19,44 +19,88 @@ if (!w.timeline) {
   const k = key ? `?k=${encodeURIComponent(key)}` : ''
   const clientId = `web-${Math.random().toString(36).slice(2, 10)}`
 
+  // A call that never answers (a half-open link) must fail like a network error, or the
+  // caller waits forever (App's session push would never run again). Whole-show and
+  // composition transfers get longer.
+  const RPC_TIMEOUT_MS = 4000, RPC_SLOW_MS = 20000
+  const SLOW = new Set(['getComposition', 'loadShowDirect', 'selectShow', 'getCurrentShow', 'showfileWrite', 'showfileRead', 'sessionGet', 'sessionSet', 'connectResolume'])
+  const timeoutSignal = (ms: number): AbortSignal => {
+    if (typeof (AbortSignal as any).timeout === 'function') return AbortSignal.timeout(ms)
+    const c = new AbortController()   // older Safari (iPadOS < 16)
+    setTimeout(() => c.abort(), ms)
+    return c.signal
+  }
   const rpc = async (method: string, ...args: unknown[]) => {
     const res = await fetch('/__tl/rpc', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TL-Key': key },
       body: JSON.stringify({ method, args }),
+      signal: timeoutSignal(SLOW.has(method) ? RPC_SLOW_MS : RPC_TIMEOUT_MS),
     })
     const body = await res.json()
     if (body.error) throw new Error(body.error)
     return body.result
   }
 
-  const events = new EventSource(`/__tl/events${k}`)
-  // EventSource reconnects by itself; events sent in the gap are lost, so the app re-reads
-  // the session after a reconnect (a tablet waking up)
-  let opened = false
+  // Engine events. EventSource reconnects by itself after an error, but not after a 401 or a
+  // bad response (it closes for good), and a half-open connection (Wi-Fi gone, an iPad waking
+  // up) never errors at all: it is only silence. So the page watches the server's heartbeat
+  // (every 3 s, web-server.ts) and makes a new EventSource when it stops, with the listeners
+  // kept in a registry and attached again. Events sent in the gap are lost, so the app
+  // re-reads the session after every reconnect (onReconnect).
+  const LINK_TIMEOUT_MS = 7000
+  const listeners = new Set<{ channel: string; h: (e: MessageEvent) => void }>()
   const reconnectCbs = new Set<() => void>()
   // Whether this page reaches the engine (a phone remote must show when its taps go nowhere)
-  // The server sends a heartbeat every 3 s (web-server.ts); a link that died without an error
-  // (Wi-Fi gone) only shows as silence
-  const LINK_TIMEOUT_MS = 7000
   const linkCbs = new Set<(up: boolean) => void>()
   let linkUp = true
-  let silence: ReturnType<typeof setTimeout> | undefined
-  const setLink = (up: boolean) => {
-    if (up !== linkUp) { linkUp = up; linkCbs.forEach(cb => cb(up)) }
-    clearTimeout(silence)
-    if (up) silence = setTimeout(() => setLink(false), LINK_TIMEOUT_MS)
+  const setLink = (up: boolean) => { if (up !== linkUp) { linkUp = up; linkCbs.forEach(cb => cb(up)) } }
+  let events: EventSource | null = null
+  let opened = false   // a stream opened before: the next open is a reconnect
+  let lastBeat = Date.now()
+  let watchdog: ReturnType<typeof setTimeout> | undefined
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let backoff = 500
+  // Replaces the stream after `delay` ms (the old one is closed at once)
+  const reopen = (delay: number) => {
+    clearTimeout(watchdog); clearTimeout(retry)
+    events?.close(); events = null
+    retry = setTimeout(connect, delay)
   }
-  events.addEventListener('open', () => {
-    if (opened) reconnectCbs.forEach(cb => cb())
-    opened = true
-    setLink(true)
+  const retryLater = () => { setLink(false); reopen(backoff); backoff = Math.min(5000, backoff * 2) }
+  // No open or heartbeat within the timeout: the stream is dead even if it says otherwise
+  const arm = () => { clearTimeout(watchdog); watchdog = setTimeout(retryLater, LINK_TIMEOUT_MS) }
+  const beat = () => { lastBeat = Date.now(); setLink(true); arm() }
+  function connect() {
+    retry = undefined
+    const es = new EventSource(`/__tl/events${k}`)
+    events = es
+    for (const l of listeners) es.addEventListener(l.channel, l.h)
+    es.addEventListener('open', () => {
+      if (es !== events) return
+      backoff = 500
+      if (opened) reconnectCbs.forEach(cb => cb())
+      opened = true
+      beat()
+    })
+    es.addEventListener('hb', () => { if (es === events) beat() })
+    es.addEventListener('error', () => {
+      if (es !== events) return
+      if (es.readyState === EventSource.CLOSED) retryLater()
+      else if (es.readyState !== EventSource.OPEN) setLink(false)   // reconnecting by itself
+    })
+    arm()
+  }
+  connect()
+  // Back on a network, or the tablet woke up (timers were frozen): don't wait for the watchdog
+  window.addEventListener('online', () => reopen(0))
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - lastBeat > 4000) reopen(0)
   })
-  events.addEventListener('hb', () => setLink(true))
-  events.addEventListener('error', () => { if (events.readyState !== EventSource.OPEN) setLink(false) })
   const on = (channel: string) => (cb: (payload: any) => void) => {
-    const h = (e: MessageEvent) => cb(JSON.parse(e.data))
-    events.addEventListener(channel, h)
-    return () => events.removeEventListener(channel, h)
+    const l = { channel, h: (e: MessageEvent) => cb(JSON.parse(e.data)) }
+    listeners.add(l)
+    events?.addEventListener(channel, l.h)
+    return () => { listeners.delete(l); events?.removeEventListener(channel, l.h) }
   }
 
   const pickFile = (accept: string) => new Promise<File | null>(resolve => {
@@ -166,8 +210,8 @@ if (!w.timeline) {
     fireCue: (cue: unknown, layer: number) => rpc('fireCue', cue, layer),
     fireClip: (cue: unknown, layer: number) => rpc('fireClip', cue, layer),
 
-    sendLtcFrame: (ltcAbsFrame: number) => { rpc('sendLtcFrame', ltcAbsFrame) },
-    sendLtcStop: () => { rpc('sendLtcStop') },
+    sendLtcFrame: (ltcAbsFrame: number) => { rpc('sendLtcFrame', ltcAbsFrame).catch(() => {}) },
+    sendLtcStop: () => { rpc('sendLtcStop').catch(() => {}) },
 
     onTick: on('engine:tick'),
     onResolumeStatus: on('resolume:status'),

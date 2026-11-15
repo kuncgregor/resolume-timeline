@@ -388,7 +388,9 @@ export default function App() {
   const autosaveRef = useRef({ rundown, activeId, showfile, showfileDirty, showMode })
   autosaveRef.current = { rundown, activeId, showfile, showfileDirty, showMode }
   const flushAutosave = useCallback(() => {
-    if (REMOTE) return
+    // Not before this window has the session: its empty start state saved now (a reload while
+    // starting) would win as the newer one next time and replace the real session
+    if (REMOTE || !sessionReadyRef.current) return
     setAutosaveFailed(!writeAutosave({ savedAt: Date.now(), ...autosaveRef.current }))
   }, [])
   // Debounced so dragging a keyframe does not serialize the show on every mouse move
@@ -411,6 +413,8 @@ export default function App() {
   const sessionRevRef = useRef<number | null>(null)
   const pushingRef = useRef(false)
   const [sessionReady, setSessionReady] = useState(false)
+  const sessionReadyRef = useRef(false)
+  sessionReadyRef.current = sessionReady
   const adoptSession = useCallback((d: any, rev: number | null) => {
     if (rev != null && sessionRevRef.current != null && rev <= sessionRevRef.current) return   // older reply
     if (rev != null) sessionRevRef.current = rev
@@ -462,9 +466,11 @@ export default function App() {
     let live = true, timer: ReturnType<typeof setTimeout> | undefined
     // A tablet must not push its empty start state over the real session: it only becomes
     // ready after reading it (retried until the app answers)
+    // The app window with its own autosave can start without the engine; one without (a first
+    // start, a fresh browser) waits for it like a tablet, or its empty state would replace it
     const first = () => fetchSession(true).then(
       () => { if (live) setSessionReady(true) },
-      () => { if (!live) return; if (REMOTE) timer = setTimeout(first, 2000); else setSessionReady(true) })
+      () => { if (!live) return; if (REMOTE || !_restored) timer = setTimeout(first, 2000); else setSessionReady(true) })
     first()
     const unsub = api.onSession(({ data, from, rev }: { data: any; from: string | null; rev: number }) => {
       if (from !== api.clientId) adoptSession(data, rev)
@@ -599,10 +605,15 @@ export default function App() {
 
   // Ticks only arrive while the frame changes, so the connection status needs its own
   // event, plus one query at startup in case that event fired before we subscribed
+  // A tablet back from a dropped link asks again: a Stop during the gap sent no tick (a stale
+  // "playing" would also skip the second tap STOP asks for in SHOW mode)
   useEffect(() => {
-    api.getState().then((s: EngineState | null) => { if (s) { frameStore.set(s.frame); setEngineState(s) } })
-    return api.onResolumeStatus(({ connected }: { connected: boolean }) =>
+    const read = () => api.getState().then((s: EngineState | null) => { if (s) { frameStore.set(s.frame); setEngineState(s) } }, () => {})
+    read()
+    const unsubRe = api.onReconnect(read)
+    const unsub = api.onResolumeStatus(({ connected }: { connected: boolean }) =>
       setEngineState(s => ({ ...s, resolumeConnected: connected })))
+    return () => { unsub?.(); unsubRe() }
   }, [])
 
   // ── Resolume composition updates ───────────────────────────────────────────
