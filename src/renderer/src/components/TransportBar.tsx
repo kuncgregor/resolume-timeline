@@ -125,7 +125,7 @@ export function TransportBar({
         <button className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed && !readOnly ? 'stop-armed' : ''}`}
           onClick={playing ? (readOnly ? undefined : onStop) : onPlay}
           title={playing ? (readOnly ? 'Playing — ■ stops (twice, SHOW mode)' : 'Playing — Space to stop') : 'Play (Space)'}>
-          {stopArmed && !readOnly ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">{readOnly ? 'PLAYING' : 'PLAY'}</span>}</>}
+          {stopArmed && !readOnly ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">PLAYING</span>}</>}
         </button>
         {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume
             (not in SHOW mode: nothing is edited there) */}
@@ -154,8 +154,8 @@ export function TransportBar({
             <span className="tc-badges">{clockChips}</span>
           </div>
           <div className="sb-sect">
-            {section && <span style={{ color: section.marker.color }}>{section.marker.name || 'marker'}</span>}
-            {nextSec && <span className="sb-sect-next">{section ? ' · ' : ''}◆ {nextSec.marker.name || 'marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
+            {section && <span style={{ color: section.marker.color }}>{section.marker.name || 'Marker'}</span>}
+            {nextSec && <span className="sb-sect-next">{section ? ' · ' : ''}◆ {nextSec.marker.name || 'Marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
             {!section && !nextSec && <span className="sb-sect-next">No sections — add markers to name the song parts</span>}
           </div>
         </div>
@@ -178,7 +178,7 @@ export function TransportBar({
           <span className="fps-badge" title="Project frame rate">{fps}</span>
           {barPos && <span className={`bar-pos mono ${playing ? 'running' : ''}`} title="Musical position at the playhead (bar.beat.sixteenth)">{barPos}</span>}
           {section && <span className="chip section" style={{ color: section.marker.color, boxShadow: `inset 0 0 0 1px ${section.marker.color}` }}
-            title="Song section at the playhead (from the markers)">◆ {section.marker.name || 'marker'}</span>}
+            title="Song section at the playhead (from the markers)">◆ {section.marker.name || 'Marker'}</span>}
           {clockChips}
         </div>
       </div>

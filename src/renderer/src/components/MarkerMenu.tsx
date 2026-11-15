@@ -11,7 +11,7 @@ import { TOUCH } from '../touch'
 export const MARKER_COLORS = ['#ff5c5c', '#f2a33a', '#d9a441', '#6fd6a8', '#4fc1c9', '#7fb8ff', '#b48cff', '#ff8fc8', '#9a9a9a'] as const
 export const DEFAULT_MARKER_COLOR = '#f2a33a'
 
-// The usual song parts, each with the colour it gets when the marker still has the default one
+// The usual song parts, each with the colour it brings (unless a colour of your own was picked)
 const PARTS: [string, string][] = [
   ['INTRO', '#9a9a9a'], ['VERSE', '#7fb8ff'], ['PRE', '#4fc1c9'], ['CHORUS', '#ff5c5c'],
   ['BRIDGE', '#f2a33a'], ['BREAK', '#b48cff'], ['DROP', '#6fd6a8'], ['OUTRO', '#9a9a9a'],
@@ -19,24 +19,29 @@ const PARTS: [string, string][] = [
 
 interface Props {
   marker: Marker
-  others: Marker[]                 // the other markers (numbering: VERSE → VERSE 2)
+  all: Marker[]                    // every marker of the timeline (a song part renumbers its kind)
   timeLabel: string                // where it is ("17.1 · 00:00:32:00")
   style: React.CSSProperties       // position
   onChange: (patch: Partial<Marker>) => void
+  onSetAll: (markers: Marker[]) => void
   onMoveToPlayhead: () => void
   onDelete: () => void
   onClose: () => void
 }
 
-export function MarkerMenu({ marker, others, timeLabel, style, onChange, onMoveToPlayhead, onDelete, onClose }: Props) {
+export function MarkerMenu({ marker, all, timeLabel, style, onChange, onSetAll, onMoveToPlayhead, onDelete, onClose }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   // A keyboard is there to type the name at once; a tablet would pop its keyboard over the menu
   useEffect(() => { if (!TOUCH) inputRef.current?.select() }, [])
 
   const part = (name: string, color: string) => {
-    // A second VERSE is "VERSE 2" (the first stays as it is)
-    const same = others.filter(m => m.name === name || m.name.startsWith(`${name} `)).length
-    onChange({ name: same ? `${name} ${same + 1}` : name, ...(marker.color === DEFAULT_MARKER_COLOR ? { color } : {}) })
+    // Every marker of that kind is numbered in time order: VERSE 1, VERSE 2… (one alone is just
+    // VERSE). The part's colour comes along unless a colour of your own was picked.
+    const kind = new RegExp(`^${name}( \\d+)?$`)
+    const group = all.filter(m => m.id === marker.id || kind.test(m.name)).sort((a, b) => a.time.localeCompare(b.time))
+    const names = new Map(group.map((m, i) => [m.id, group.length > 1 ? `${name} ${i + 1}` : name]))
+    const recolor = marker.color === DEFAULT_MARKER_COLOR || PARTS.some(([, c]) => c === marker.color)
+    onSetAll(all.map(m => !names.has(m.id) ? m : { ...m, name: names.get(m.id)!, ...(m.id === marker.id && recolor ? { color } : {}) }))
   }
 
   return (

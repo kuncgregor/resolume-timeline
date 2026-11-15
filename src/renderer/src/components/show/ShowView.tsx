@@ -97,7 +97,8 @@ export function ShowView(p: Props) {
   const [peek, setPeek] = useState<'coming' | 'rundown' | null>(null)
   useEffect(() => setPeek(null), [p.playing])
   const side = huge ? 'coming' : peek ?? (p.playing || isBreak ? 'coming' : 'rundown')
-  const events = layout === 'phone' ? 3 : layout === 'portrait' ? 4 : big ? 10 : 7
+  // As many as fit: rows that don't fit whole are hidden by the list itself
+  const events = big ? 12 : 9
 
   // Phones scroll and zoom the page on drags and double taps: not on this one
   useEffect(() => {
@@ -249,8 +250,8 @@ function Head({ entry, next, idx, count, fps, tempo, offsetFrames, endFrame, mod
             {tempo && <span className="sv-tc mono">{tc}</span>}
           </div>
           <div className="sv-sect">
-            {cur && <span style={{ color: cur.marker.color }}>{cur.marker.name || 'marker'}</span>}
-            {nextSec && <span className="sv-sect-next">{cur ? ' · ' : ''}◆ {nextSec.marker.name || 'marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
+            {cur && <span style={{ color: cur.marker.color }}>{cur.marker.name || 'Marker'}</span>}
+            {nextSec && <span className="sv-sect-next">{cur ? ' · ' : ''}◆ {nextSec.marker.name || 'Marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
           </div>
         </div>
       )}
@@ -327,8 +328,13 @@ export function SectionStrip({ fps, endFrame, model, tempo, locked, disabled, on
   return (
     <section className={`sv-strip ${locked ? 'locked' : ''} ${drag != null ? 'dragging' : ''}`}>
       <div className="sv-jumps left">
-        <button disabled={noJump} onClick={() => jump(() => 0)} aria-label="To the start">⏮</button>
-        <button disabled={noJump} onClick={() => jump(f => step(f, -1))}>−{stepLabel}</button>
+        {locked
+          // SHOW mode while playing: the jumps and the strip are locked, said where the jumps are
+          ? <div className="sv-lockcell" title="SHOW mode: the playhead moves only with the clock and GO">LOCKED</div>
+          : <>
+            <button disabled={noJump} onClick={() => jump(() => 0)} aria-label="To the start">⏮</button>
+            <button disabled={noJump} onClick={() => jump(f => step(f, -1))}>−{stepLabel}</button>
+          </>}
       </div>
       <div className="sv-secs" ref={barRef}
         onPointerDown={e => {
@@ -354,14 +360,13 @@ export function SectionStrip({ fps, endFrame, model, tempo, locked, disabled, on
           return (
             <div key={s.marker.id} className={`sv-sec${cur ? ' cur' : ''}`}
               style={{ left: pct(s.start), width: pct(end - s.start), borderLeftColor: s.marker.color, ['--sec' as any]: s.marker.color }}>
-              <span>{s.marker.name || 'marker'}</span>
+              <SectionName name={s.marker.name || 'Marker'} />
             </div>
           )
         })}
         {endFrame > 0 && endFrame < span && <div className="sv-secs-end" style={{ left: pct(endFrame) }} />}
         <div className="sv-secs-head" style={{ left: pct(shown) }} />
-        {drag != null && <div className="sv-secs-target mono">{caught ? `◆ ${caught.marker.name || 'marker'} ` : ''}{clockText(drag, fps)}</div>}
-        {locked && <div className="sv-secs-lock">LOCKED · SHOW MODE</div>}
+        {drag != null && <div className="sv-secs-target mono">{caught ? `◆ ${caught.marker.name || 'Marker'} ` : ''}{clockText(drag, fps)}</div>}
       </div>
       <div className="sv-jumps right">
         <button disabled={noJump} onClick={() => jump(f => step(f, 1))}>+{stepLabel}</button>
@@ -504,12 +509,18 @@ export function Coming({ model, tempo, fps, laneStatus, max, fixedFrame }: {
   )
 }
 
+/** A section name with its number kept whole: "CHORU… 2" still tells two choruses apart. */
+function SectionName({ name }: { name: string }) {
+  const m = /^(.*?)(\s+\d+)$/.exec(name)
+  return <span className="sv-sec-name"><span>{m ? m[1] : name}</span>{m && <b>{m[2]}</b>}</span>
+}
+
 // The layer tag in its own column, so a text that wraps keeps its indent
 // Within one moment: the section, then what moves, then the clips
 const ORDER: Record<ShowEvent['kind'], number> = { section: 0, move: 1, steps: 1, clip: 2, clear: 3 }
 
 function eventText(ev: ShowEvent, laneStatus: LaneStatusMap): ReactNode {
-  if (ev.kind === 'section') return <span className="sv-it-text">◆ {ev.marker.name || 'marker'}</span>
+  if (ev.kind === 'section') return <span className="sv-it-text" style={{ color: ev.marker.color }}>◆ {ev.marker.name || 'Marker'}</span>
   const ly = <span className="sv-ly mono">{ev.layer.tag}</span>
   const text = ev.kind === 'clip'
     ? ev.from ? <>{ev.from === ev.name ? '↻ ' : `${ev.from} → `}<b>{ev.name}</b></> : <>▶ <b>{ev.name}</b></>
@@ -550,7 +561,7 @@ function Controls(p: Props & { prev: RundownEntry | null; next: RundownEntry | n
     <section className="sv-ctl">
       <button className={`sv-btn prev ${prevArmed ? 'armed' : ''}`} disabled={!p.prev || p.off} onClick={() => { buzz(); p.onGo(-1) }}
         aria-label={p.prev ? `Previous: ${entryName(p.prev)}` : 'No previous timeline'}>
-        <span className="sv-ic">◀</span>{prevArmed && <span className="sv-lb">AGAIN</span>}
+        <span className="sv-ic">◀</span><span className="sv-lb">{prevArmed ? 'AGAIN' : 'BACK'}</span>
       </button>
       <button className={`sv-btn stop ${p.stopArmed ? 'armed' : ''}`} disabled={p.off} onClick={() => { buzz(); p.onStop() }}>
         <span className="sv-ic">■</span><span className="sv-lb">{p.stopArmed ? 'AGAIN TO STOP' : 'STOP'}</span>

@@ -556,6 +556,17 @@ export default function App() {
   }, [])
   const handleScrollYTo = useCallback((y: number) => setScrollY(Math.max(0, y)), [])
   const autoScrollRef = useRef(true)
+  // Back from SHOW to SETUP: the editor's timeline shows where the playhead is now (it wasn't on
+  // screen during the show, the view would still be where editing stopped)
+  const wasShowRef = useRef(showMode)
+  useEffect(() => {
+    const was = wasShowRef.current
+    wasShowRef.current = showMode
+    if (!was || showMode) return
+    autoScrollRef.current = true
+    const f = frameStore.get(), vf = (window.innerWidth - 200 - (showBrowserRef.current ? 260 : 0)) / pxPerFrame
+    setScrollFrame(prev => f >= prev && f <= prev + vf * 0.75 ? prev : Math.max(0, f - Math.floor(vf * 0.25)))
+  }, [showMode])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Engine tick ────────────────────────────────────────────────────────────
 
@@ -2381,7 +2392,8 @@ export default function App() {
               onSelectCue={selectCue}
               onDropClip={handleDropClip} placing={placing} onPlaced={() => setPlacing(null)} onUndo={undo} onScaleRows={handleScaleRows}
               onUpdateCue={handleUpdateCue}
-              onEditTracks={handleEditTracks} historyTick={historyTick} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
+              onEditTracks={handleEditTracks} historyTick={historyTick}
+              canUndo={!!historyRef.current.get(activeId)?.past.length} canRedo={!!historyRef.current.get(activeId)?.future.length} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}

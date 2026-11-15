@@ -127,8 +127,9 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
       ctx.fillStyle = c.color ?? layer.color ?? T.control
       ctx.fillRect(x0, cy, x1 - x0 - 1, ch)
       if (frame >= c.start && frame < c.end) { ctx.strokeStyle = T.live; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, cy + 1, x1 - x0 - 3, ch - 2) }
-      // The clip on air names itself right of the playhead: not split by it, not under the dimmed past
-      const tx = frame >= c.start && frame < c.end ? Math.max(x0, xNow + 2) : x0
+      // Names only right of the playhead: the clip on air there, not split by it; a clip already
+      // over shows no stub of its name in the dimmed past ("NEW…")
+      const tx = Math.max(x0, xNow + 2)
       if (x1 - tx > 30) {
         ctx.save(); ctx.beginPath(); ctx.rect(tx, cy, x1 - tx - 4, ch); ctx.clip()
         ctx.fillStyle = T.textHi; ctx.font = `600 ${ch >= 22 ? 13 : 11}px ${T.fontUi}`
@@ -209,7 +210,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
   ctx.font = `800 11px ${T.fontUi}`
   for (const sc of secs) {
     const xs = Math.round(x(sc.start))
-    const label = `◆ ${sc.marker.name || 'marker'}`, lw = ctx.measureText(label).width
+    const label = `◆ ${sc.marker.name || 'Marker'}`, lw = ctx.measureText(label).width
     const lx = xs + lw + 10 > W ? xs - lw - 11 : xs + 1   // near the right edge: left of the line
     ctx.fillStyle = T.gutter; ctx.fillRect(lx, 0, lw + 10, 16)
     ctx.fillStyle = sc.marker.color; ctx.fillText(label, lx + 4, 9)

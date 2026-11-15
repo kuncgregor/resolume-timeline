@@ -330,6 +330,8 @@ interface Props {
   placing: DragClipData[] | null        // touch: clips picked in the browser, dropped by a tap on their layer
   onPlaced: () => void                  // placed or cancelled
   onUndo: (redo: boolean) => void       // touch toolbar
+  canUndo: boolean                      // …with nothing to undo / redo its buttons are off
+  canRedo: boolean
   onScaleRows: (factor: number) => void // touch toolbar: every layer row / lane taller or shorter
   onUpdateCue: (trackIdx: number, cueIdx: number, updates: Partial<ClipCue>) => void
   // An edit of the tracks (selection edits: move, copy, paste, delete, split…), applied by App
@@ -367,7 +369,7 @@ export function TimelineCanvas({
   tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, lockEnvelopes, playing, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollYTo, onScrollFrame, onSeek, onZoom, onSelectCue,
-  onDropClip, placing, onPlaced, onUndo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
+  onDropClip, placing, onPlaced, onUndo, canUndo, canRedo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes,
   onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat, onSetMarkers,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
@@ -385,7 +387,7 @@ export function TimelineCanvas({
   const [ctxInputVal, setCtxInputVal] = useState('')
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
   // frame: where a marker goes (snapped); raw: the frame clicked (bar 1 is set exactly there)
-  const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number; raw: number } | null>(null)
+  const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number; raw: number; section?: string } | null>(null)
   // The Bar 1 menu closes on any click outside it (headers, transport, panels) and on Escape
   useEffect(() => {
     if (!rulerMenu) return
@@ -528,7 +530,8 @@ export function TimelineCanvas({
   /** The marker whose diamond is under x (within 7 px), the nearest one. */
   const markerAt = (x: number): Marker | null => {
     let best: Marker | null = null, bestD = 8
-    for (const m of markers) { const d = Math.abs(frameToX(smpteToFrames(m.time, fps)) - x); if (d < bestD) { best = m; bestD = d } }
+    // On a tie the later one wins: it is the one drawn on top
+    for (const m of markers) { const d = Math.abs(frameToX(smpteToFrames(m.time, fps)) - x); if (d <= bestD) { best = m; bestD = d } }
     return best
   }
   /** The marker whose section (its band in the strip, up to the next marker) is under x. */
@@ -540,6 +543,10 @@ export function TimelineCanvas({
   }
   const updateMarker = (id: string, patch: Partial<Marker>) => onSetMarkers(markers.map(m => m.id === id ? { ...m, ...patch } : m))
   const addMarker = (f: number, x: number, y: number) => {
+    // A marker already there: edit it (two on one frame would hide each other)
+    const time = framesToSmpte(Math.max(0, Math.round(f)), fps)
+    const there = markers.find(m => m.time === time)
+    if (there) { setRulerMenu(null); setMarkerMenu({ x, y, id: there.id }); return }
     const id = `m${Date.now().toString(36)}`
     onSetMarkers([...markers, { id, time: framesToSmpte(Math.max(0, Math.round(f)), fps), name: '', color: DEFAULT_MARKER_COLOR }])
     setRulerMenu(null); setMarkerMenu({ x, y, id })
@@ -1441,8 +1448,13 @@ export function TimelineCanvas({
 
     if (y < TRACKS_TOP) {
       setMarkerMenu(null)
-      const mk = !readOnly && inMarkerStrip(y) ? markerAt(x) : null
-      if (mk) { markerDragRef.current = { id: mk.id, moved: false }; return }
+      if (inMarkerStrip(y)) {
+        // The marker strip: a diamond is dragged (a click on it jumps there); the rest of the strip
+        // doesn't seek, so double-clicking a section to edit its marker leaves the playhead alone
+        const mk = readOnly ? null : markerAt(x)
+        if (mk) markerDragRef.current = { id: mk.id, moved: false }
+        return
+      }
       isDraggingPlayhead.current = true; onSeek(xToFrame(x)); return
     }
 
@@ -1918,7 +1930,7 @@ export function TimelineCanvas({
   const fingersRef = useRef(new Map<number, { x: number; y: number }>())
   // Zoom and scroll as the gesture has set them: a touch screen sends both fingers' moves within
   // one frame, before React re-renders with the new props
-  const pressRef = useRef<{ id: number; x: number; y: number; moved: boolean; long: boolean; timer: number | null; pan?: { x: number; y: number }; scrollOnly?: boolean } | null>(null)
+  const pressRef = useRef<{ id: number; x: number; y: number; moved: boolean; long: boolean; timer: number | null; pan?: { x: number; y: number }; scrollOnly?: boolean; deferred?: boolean } | null>(null)
   const viewRef = useRef({ ppf: pxPerFrame, scroll: scrollFrame, y: scrollY })
   if (fingersRef.current.size < 2 && !pressRef.current?.pan) viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame, y: scrollY }
   // Touch: the key tapped last (the toolbar's Del deletes it)
@@ -1986,7 +1998,10 @@ export function TimelineCanvas({
     if (fingersRef.current.size > 2) return
     // Scroll tool: one finger below the ruler only pans; the ruler / audio lane still scrub
     const scrollOnly = (readOnly || touchTool === 'scroll') && localXY(e).y >= TRACKS_TOP
-    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, long: false, timer: null as number | null, scrollOnly }
+    // The ruler acts on lift (a tap seeks) or on the first move (scrub, marker drag), not at once:
+    // a long press there opens its menu without moving the playhead
+    const deferred = localXY(e).y < RULER_H
+    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, long: false, timer: null as number | null, scrollOnly, deferred }
     pressRef.current = press
     if (placing) return   // the tap drops the clips (on lift)
     press.timer = window.setTimeout(() => {
@@ -1996,7 +2011,7 @@ export function TimelineCanvas({
       abortDrag()
       handleContextMenu(fakeMouse(press.x, press.y))
     }, LONG_PRESS_MS)
-    if (!scrollOnly) handleMouseDown(e)
+    if (!scrollOnly && !deferred) handleMouseDown(e)
   }
 
   const touchMove = (ev: PointerEvent) => {
@@ -2013,9 +2028,10 @@ export function TimelineCanvas({
     if (!p.moved && Math.hypot(ev.clientX - p.x, ev.clientY - p.y) >= DRAG_START_PX) {
       p.moved = true
       if (p.timer) { clearTimeout(p.timer); p.timer = null }
+      if (p.deferred) handleMouseDown(fakeMouse(p.x, p.y))   // the ruler drag starts where the finger went down
       // One finger on the empty background drags the view (a tablet has no wheel); the time
       // selection it would start with a mouse is dropped
-      if (p.scrollOnly || selDragRef.current || !isDragging()) { selDragRef.current = null; p.pan = { x: ev.clientX, y: ev.clientY }; draw() }
+      if (!p.deferred && (p.scrollOnly || selDragRef.current || !isDragging())) { selDragRef.current = null; p.pan = { x: ev.clientX, y: ev.clientY }; draw() }
     }
     if (p.pan) {
       const view = viewRef.current
@@ -2063,7 +2079,7 @@ export function TimelineCanvas({
     if (placing) { if (!p.moved) placeAt(ev); return }
     if (p.pan) { lastTapRef.current = null; return }
     // Scroll tool: a tap does what a click does (select a clip, set the insert marker / playhead)
-    if (p.scrollOnly) handleMouseDown(fakeMouse(ev.clientX, ev.clientY))
+    if (p.scrollOnly || (p.deferred && !p.moved)) handleMouseDown(fakeMouse(ev.clientX, ev.clientY))
     dragHandlersRef.current.up()
     if (p.moved) { lastTapRef.current = null; return }
     const last = lastTapRef.current, t = performance.now()
@@ -2142,7 +2158,7 @@ export function TimelineCanvas({
       const mk = markerAt(x)
       if (mk) { setMarkerMenu({ x, y, id: mk.id }); setRulerMenu(null); return }
       setMarkerMenu(null)
-      setRulerMenu({ x, y, frame: snapDrag(x / pxPerFrame + scrollFrame, false).f, raw: xToFrame(x) })
+      setRulerMenu({ x, y, frame: snapDrag(x / pxPerFrame + scrollFrame, false).f, raw: xToFrame(x), section: sectionMarkerAt(x)?.id })
       return
     }
     const kfHit = hitTestKeyframe(x, y, getLayout(), tracks, fps, frameToX, laneStatus)
@@ -2487,12 +2503,15 @@ export function TimelineCanvas({
                 title="One finger edits: move and trim clips, drag keys, select time">Edit</button>
             </div>
             <span className="touch-sep" />
-            <button className="btn" title="Undo (⌘Z)" onClick={() => onUndo(false)}>Undo</button>
-            <button className="btn" title="Redo (⌘⇧Z)" onClick={() => onUndo(true)}>Redo</button>
+            <button className="btn" title="Undo (⌘Z)" disabled={!canUndo} onClick={() => onUndo(false)}>Undo</button>
+            <button className="btn" title="Redo (⌘⇧Z)" disabled={!canRedo} onClick={() => onUndo(true)}>Redo</button>
             <span className="touch-sep" />
-            <button className="btn" title="Split at the insert marker (tap a clip first; ⌘E)" onClick={() => keyStateRef.current.splitSel()}>Split</button>
-            <button className="btn" title="Duplicate the selection (⌘D)" onClick={() => keyStateRef.current.duplicateSel()}>Dup</button>
-            <button className="btn" title="Copy (⌘C)" onClick={() => keyStateRef.current.copySel()}>Copy</button>
+            {/* Off with nothing to act on: a tap that does nothing reads as broken */}
+            <button className="btn" title="Split at the insert marker (tap a clip first; ⌘E)" disabled={!insertMk && !timeSel && !clipSel.length}
+              onClick={() => keyStateRef.current.splitSel()}>Split</button>
+            <button className="btn" title="Duplicate the selection (⌘D)" disabled={!timeSel && !clipSel.length}
+              onClick={() => keyStateRef.current.duplicateSel()}>Dup</button>
+            <button className="btn" title="Copy (⌘C)" disabled={!timeSel && !clipSel.length} onClick={() => keyStateRef.current.copySel()}>Copy</button>
             <button className="btn" title="Paste at the insert marker (⌘V)" onClick={() => keyStateRef.current.pasteSel()}>Paste</button>
             <button className="btn danger-text" title="Delete the tapped key, or the selection (⌫)" onClick={() => {
               const k = tappedKfRef.current
@@ -2635,6 +2654,11 @@ export function TimelineCanvas({
         return (
           <div className="ctx-menu" style={clampPos(rulerMenu.x, rulerMenu.y, 240, tempo ? 270 : 110)} onMouseDown={e => e.nativeEvent.stopImmediatePropagation()}>
             <div className="ctx-title">Marker</div>
+            {(() => {
+              const sec = markers.find(m => m.id === rulerMenu.section)
+              return sec && <button className="ctx-btn" onClick={() => { setRulerMenu(null); setMarkerMenu({ x: rulerMenu.x, y: rulerMenu.y, id: sec.id }) }}>
+                Edit {sec.name || 'Marker'}…</button>
+            })()}
             <button className="ctx-btn" onClick={() => addMarker(rulerMenu.frame, rulerMenu.x, rulerMenu.y)}>Add marker here <span className="ctx-dim mono">{at(rulerMenu.frame)}</span></button>
             <button className="ctx-btn" onClick={() => addMarker(frameRef.current, rulerMenu.x, rulerMenu.y)}>Add marker at playhead</button>
             {tempo && (() => {
@@ -2646,7 +2670,7 @@ export function TimelineCanvas({
             <div className="ctx-divider" />
             <div className="ctx-title">Bar 1</div>
             <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
-            <button className="ctx-btn" onClick={() => set(rulerMenu.raw)}>Set bar 1 here ({framesToSmpte(rulerMenu.raw, fps)})</button>
+            <button className="ctx-btn" title="The exact frame clicked (not snapped)" onClick={() => set(rulerMenu.raw)}>Set bar 1 here <span className="ctx-dim mono">{framesToSmpte(rulerMenu.raw, fps)}</span></button>
             <button className="ctx-btn" onClick={() => set(frameRef.current)}>Set bar 1 at playhead</button>
             <div className="ctx-row">
               <label>Nudge</label>
@@ -2671,7 +2695,7 @@ export function TimelineCanvas({
         if (!mk) return null
         const f = smpteToFrames(mk.time, fps)
         return (
-          <MarkerMenu marker={mk} others={markers.filter(m => m.id !== mk.id)}
+          <MarkerMenu marker={mk} all={markers} onSetAll={onSetMarkers}
             timeLabel={tempo ? `${formatBarBeat(frameToBarBeat(f, tempo), 2)} · ${mk.time}` : mk.time}
             style={clampPos(markerMenu.x, markerMenu.y, 260, 330)}
             onChange={patch => updateMarker(mk.id, patch)}
@@ -3074,15 +3098,19 @@ function drawMarkerStrip(
   })
   ctx.font = `700 11px ${T.fontUi}`
   mks.forEach((mk, i) => {
-    if (mk.x < -200 || mk.x > W + 6) return
-    const c = mk.color || T.loop
-    diamond(ctx, mk.x + 0.5, my, 4)
-    ctx.fillStyle = c; ctx.fill()
-    ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
-    const maxW = (i + 1 < mks.length ? mks[i + 1].x - 6 : W) - (mk.x + 7)
-    if (mk.name && maxW > 10) {
-      ctx.fillStyle = T.textHi
-      ctx.fillText(fitText(ctx, mk.name, maxW), mk.x + 7, my + 0.5)
+    const x1 = i + 1 < mks.length ? mks[i + 1].x : W
+    if (x1 < 0 || mk.x > W + 6) return
+    if (mk.x >= -6) {
+      diamond(ctx, mk.x + 0.5, my, 4)
+      ctx.fillStyle = mk.color || T.loop; ctx.fill()
+      ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
+    }
+    // The name stays at the left edge while its section is on screen and its marker isn't
+    const lx = Math.max(mk.x + 7, 4)
+    const maxW = (i + 1 < mks.length ? x1 - 6 : W) - lx
+    if (maxW > 10) {
+      ctx.fillStyle = mk.name ? T.textHi : T.textFaint
+      ctx.fillText(fitText(ctx, mk.name || 'Marker', maxW), lx, my + 0.5)
     }
   })
 }

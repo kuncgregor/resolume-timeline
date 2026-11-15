@@ -276,6 +276,11 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
             </div>
           )
         })}
+        {/* A search that finds nothing says so (an empty list looked like a failed load) */}
+        {!loading && !error && composition && q && !(composition.layers ?? []).some(l => l && (l.clips ?? [])
+          .some((clip, ci) => clip && !isEmptySlot(clip) && rv(clip.name, `Slot ${ci + 1}`).toLowerCase().includes(q))) && (
+          <div className="browser-msg">No clips match “{query.trim()}”</div>
+        )}
       </div>
       {TOUCH && picked && (() => {
         // Touch has no drag & drop into the timeline: the picked clips are placed by a tap there

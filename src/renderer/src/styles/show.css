@@ -28,6 +28,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   --s-text: var(--fs-label); --s-clip: var(--fs-body); --s-cd: var(--fs-cue-live); --s-cd1: var(--fs-title); --s-cdw: 100px;
   --s-ic: 22px; --s-lb: var(--fs-ui); --s-go: var(--fs-cue-live); --s-prev: 112px; --s-jump: 52px;
   --s-left: 230px; --s-right: 340px; --s-side-p: 260px;
+  --s-small: var(--fs-meta); --s-secname: var(--fs-ui);
 }
 .sv.size-compact, .show-main.size-compact {
   --s-band: 34px; --s-strip: 36px; --s-ctl: 56px; --s-tabs: 28px; --s-row: 30px;
@@ -35,6 +36,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   --s-text: var(--fs-ui); --s-clip: var(--fs-label); --s-cd: var(--fs-label); --s-cd1: var(--fs-cue-live); --s-cdw: 84px;
   --s-ic: 17px; --s-lb: var(--fs-meta); --s-go: var(--fs-label); --s-prev: 88px; --s-jump: 44px;
   --s-left: 200px; --s-right: 300px; --s-side-p: 220px;
+  --s-small: var(--fs-micro); --s-secname: var(--fs-meta);
 }
 .sv.size-large, .show-main.size-large {
   --s-band: 44px; --s-strip: 52px; --s-ctl: 104px; --s-tabs: 36px; --s-row: 42px;
@@ -42,9 +44,11 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   --s-text: var(--fs-body); --s-clip: var(--fs-cue-live); --s-cd: var(--fs-title); --s-cd1: 24px; --s-cdw: 116px;
   --s-ic: 30px; --s-lb: var(--fs-body); --s-go: var(--fs-title); --s-prev: 150px; --s-jump: 64px;
   --s-left: 240px; --s-right: 360px; --s-side-p: 300px;
+  --s-small: var(--fs-ui); --s-secname: var(--fs-body);
 }
 /* A computer (≥ 1400 px): the clock and song a step bigger, the columns wider */
-.sv.big:not(.size-compact) { --s-song: 32px; --s-bar: 32px; --s-remain: 60px; }
+.sv.big.size-normal { --s-song: 30px; --s-bar: 30px; --s-remain: 56px; }
+.sv.big.size-large { --s-song: 36px; --s-bar: 36px; --s-remain: 72px; }
 
 /* ── Layouts ─────────────────────────────────────────────────────────── */
 
@@ -81,17 +85,18 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-rundown-col { grid-area: rd; }
 .sv-ctl { grid-area: ctl; }
 
+/* As tall as the COMING / RUNDOWN tabs beside them: the column heads line up */
 .sv-colhead {
-  flex-shrink: 0; height: 28px; display: flex; align-items: center; padding: 0 var(--sp-3);
+  flex-shrink: 0; height: var(--s-tabs); display: flex; align-items: center; padding: 0 var(--sp-3);
   background: var(--bg-header); color: var(--text-faint);
-  font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.12em;
+  font-size: var(--s-small); font-weight: 800; letter-spacing: 0.12em;
 }
 
 /* ── Band: status, alarms, REC, SETUP ────────────────────────────────── */
 
 .sv-band {
   display: flex; align-items: center; gap: var(--sp-3); min-height: var(--s-band); padding: 0 var(--sp-2) 0 var(--sp-3);
-  background: var(--bg-header); font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.08em; overflow: hidden;
+  background: var(--bg-header); font-size: var(--s-small); font-weight: 800; letter-spacing: 0.08em; overflow: hidden;
 }
 .sv-dot { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); white-space: nowrap; }
 .sv-dot::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
@@ -173,11 +178,14 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-secs-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--live-fill) 30%, transparent); }
 .sv-sec {
   position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding-left: var(--sp-2);
-  border-left: 2px solid var(--loop); color: var(--text-dim); font-size: var(--fs-ui); font-weight: 700; letter-spacing: 0.06em;
+  border-left: 2px solid var(--loop); color: var(--text-dim); font-size: var(--s-secname); font-weight: 700; letter-spacing: 0.03em;
   white-space: nowrap; overflow: hidden; pointer-events: none;
 }
 /* The name over the playhead line, with a dark halo: "CHORUS 1" stays readable when the line crosses it */
 .sv-sec span { position: relative; z-index: 2; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 3px var(--bg-well), 0 0 6px var(--bg-well); }
+.sv-sec-name { display: flex; min-width: 0; }
+.sv-sec-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sv-sec-name > b { flex-shrink: 0; font-weight: inherit; white-space: pre; }
 .sv-sec.cur { background: color-mix(in srgb, var(--sec, var(--loop)) 16%, transparent); color: var(--text-hi); }
 .sv-secs-end { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text-faint); pointer-events: none; }
 .sv-secs-head { position: absolute; z-index: 1; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--live); pointer-events: none; }
@@ -185,10 +193,10 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   position: absolute; right: var(--sp-2); top: 50%; transform: translateY(-50%); padding: 2px var(--sp-2);
   background: var(--select); color: var(--text-on-live); font-size: var(--fs-label); font-weight: 700; pointer-events: none;
 }
-/* Small, in the bottom corner, clear of the section names */
-.sv-secs-lock {
-  position: absolute; right: 0; bottom: 0; z-index: 3; padding: 1px 6px; pointer-events: none;
-  background: var(--bg-well); color: var(--text-faint); font-size: var(--fs-micro); font-weight: 800; letter-spacing: 0.1em;
+/* SHOW mode while playing: the jumps' place says the strip is locked */
+.sv-lockcell {
+  min-width: calc(var(--s-jump) * 2 + 1px); display: flex; align-items: center; justify-content: center;
+  background: var(--bg-track); color: var(--text-faint); font-size: var(--s-small); font-weight: 800; letter-spacing: 0.1em;
 }
 .sv-strip.break { display: flex; align-items: center; padding: 0 var(--sp-4); background: var(--bg-lane); }
 .sv-break-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: var(--fs-body); }
@@ -202,7 +210,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4); background: var(--bg-lane); box-shadow: inset 4px 0 0 var(--c);
 }
 .sv-cell.empty { color: var(--text-faint); font-size: var(--fs-label); box-shadow: none; }
-.sv-cell-name { font-size: var(--fs-label); font-weight: 800; letter-spacing: 0.06em; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-cell-name { font-size: var(--s-text); font-weight: 800; letter-spacing: 0.06em; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-cell-name .mono { color: var(--text-dim); }
 .sv-cell-clip { font-size: var(--s-clip); font-weight: 700; color: var(--live); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-layers.preview .sv-cell-clip { color: var(--next); }
@@ -212,7 +220,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-mv-bar { height: 8px; background: var(--bg-well); }
 .sv-mv-bar > i { display: block; height: 100%; background: var(--live); }
 .sv-mv-val { grid-column: 1 / -1; font-size: var(--fs-label); font-weight: 700; color: var(--live); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sv-cell-quiet { font-size: var(--fs-label); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-cell-quiet { font-size: var(--s-text); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Radar ───────────────────────────────────────────────────────────── */
 
@@ -284,7 +292,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-btn:disabled { background: var(--bg-track); color: var(--text-faint); }
 .sv-ic { font-size: var(--s-ic); line-height: 1; }
 .sv-lb { white-space: nowrap; }
-.sv-sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label); font-weight: 500; letter-spacing: 0; color: var(--text-dim); }
+.sv-sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--s-text); font-weight: 500; letter-spacing: 0; color: var(--text-dim); }
 .sv-btn.stop { color: var(--text-dim); }
 .sv-btn.stop.armed, .sv-btn.prev.armed, .sv-btn.go.armed { background: var(--danger-fill); color: var(--text-hi); }
 .sv-btn.play.on { background: var(--live); color: var(--text-on-live); }
@@ -292,7 +300,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-btn .sv-rec-dot { color: var(--danger); margin-right: 6px; }
 .sv-btn.go { background: var(--bg-header); box-shadow: inset 0 0 0 2px var(--next); color: var(--next); }
 .sv-btn.go .sv-lb { font-size: var(--s-go); }
-.sv-btn.go:disabled { box-shadow: none; }
+.sv-btn.go:disabled { box-shadow: none; background: var(--bg-track); color: var(--text-faint); }
 .sv-btn.go.armed { box-shadow: none; }
 .sv-btn.go.armed .sv-sub { color: var(--text-hi); }
 
