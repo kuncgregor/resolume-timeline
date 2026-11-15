@@ -2,8 +2,8 @@ import { Client } from 'node-osc'
 
 export class OscClient {
   private client: Client | null = null
-  private host: string
-  private port: number
+  host: string
+  port: number
   private lastConnectedClip = new Map<number, number>()
 
   constructor(host = '127.0.0.1', port = 7000) {
@@ -18,6 +18,8 @@ export class OscClient {
       try { this.client.close() } catch {}
     }
     this.client = new Client(this.host, this.port)
+    // node-osc adds no error listener to its UDP socket: an error event would be uncaught
+    ;(this.client as any)._sock?.on?.('error', (e: Error) => console.error('[OSC] socket error:', e.message))
   }
 
   send(address: string, ...args: (number | string)[]) {

@@ -103,6 +103,8 @@ export class Scheduler {
   private shownDeck = 0
   private deckJobs = 0
   private deckQueue: Promise<void> = Promise.resolve()
+  // Bumped by stop, jumps and a new timeline: a queued cross-deck connect checks it is still wanted
+  private epoch = 0
   private prerolled = new Set<string>()
   private eventCb: ((channel: string, payload: unknown) => void) | null = null
   private tickHandle: NodeJS.Timeout | null = null
@@ -290,6 +292,7 @@ export class Scheduler {
       return
     }
     this.deckJobs++
+    const epoch = this.epoch
     this.deckQueue = this.deckQueue.then(async () => {
       const want = target || this.homeDeck
       if (want && want !== this.shownDeck) {
@@ -299,6 +302,8 @@ export class Scheduler {
         }
       }
       if (atMs !== undefined) { const d = atMs - Date.now(); if (d > 0) await sleep(d) }
+      // Stop, a jump or another timeline while it waited (deck load, preroll): not on air now
+      if (epoch !== this.epoch) return
       await this.rest.connectClip(layer, cue.clipIndex)
     }).catch(() => {}).then(async () => {
       if (--this.deckJobs > 0) return
@@ -566,7 +571,7 @@ export class Scheduler {
   start() {
     if (this.tickHandle) return
     this.tickHandle = setInterval(() => this.tick(), 8)
-    this.watchHandle = setInterval(() => { this.watchManualChanges() }, 250)
+    this.watchHandle = setInterval(() => { this.watchManualChanges().catch(e => console.error('[scheduler] watch error', e)) }, 250)
     this.ws.start()
   }
 
@@ -669,10 +674,20 @@ export class Scheduler {
     this.autoAt = performance.now()
     this.updateAllAutomation(this.transport.exactFrame())
   }
+  // An error in one tick must not stop the show: logged (now and then), and the playhead taken
+  // as reached, so the same frame doesn't throw again every 8 ms
+  private tickErrors = 0
   private tick() {
+    try { this.tickFrame() } catch (e) {
+      if (this.tickErrors++ % 500 === 0) console.error('[scheduler] tick error', e)
+      this.lastFrame = this.transport.now()
+    }
+  }
+  private tickFrame() {
     const T = this.transport.now()
     if (this.transport.playing !== this.linkedPlaying) {
       this.linkedPlaying = this.transport.playing
+      if (!this.transport.playing) this.epoch++   // stopped: queued cross-deck connects are off
       this.linkTransport(T)
     }
     // Stopped = the next frame change starts playback (the first frames after Play may not move)
@@ -883,6 +898,7 @@ export class Scheduler {
 
   private recallStateAt(T: number) {
     if (!this.show) return
+    this.epoch++   // a jump: what was queued for the old position is not wanted any more
     this.resyncedSinceStart = false   // a jump: the next bar line resyncs Arena's beat
     this.prerolled.clear()
     const fps = this.show.frameRate

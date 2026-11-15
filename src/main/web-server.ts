@@ -12,7 +12,8 @@ import type { EngineHost } from './engine-host'
 
 const readBody = (req: IncomingMessage) => new Promise<string>((resolve, reject) => {
   let body = ''
-  req.on('data', c => { body += c })
+  // A session with many timelines is a few MB; anything far bigger is not one of ours
+  req.on('data', c => { body += c; if (body.length > 64 * 1024 * 1024) { req.destroy(); reject(new Error('body too large')) } })
   req.on('end', () => resolve(body))
   req.on('error', reject)
 })
@@ -41,7 +42,13 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
 
   if (url.pathname === '/__tl/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
-    const send = (channel: string, payload: unknown) => res.write(`event: ${channel}\ndata: ${JSON.stringify(payload)}\n\n`)
+    // A tablet whose Wi-Fi died keeps its socket until TCP gives up (minutes): everything sent
+    // meanwhile would pile up here. Past a few MB it is dropped (its page reconnects anew).
+    req.socket.setKeepAlive(true, 5000)
+    const send = (channel: string, payload: unknown) => {
+      if (res.writableLength > MAX_BUFFERED) { res.destroy(); return }
+      res.write(`event: ${channel}\ndata: ${jsonOnce(payload)}\n\n`)
+    }
     send('resolume:status', { connected: host.resolumeConnected })
     const remove = host.addSink(send)
     // Keeps idle connections (tablet Wi-Fi, proxies) open between events, and lets the page
@@ -67,7 +74,7 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
     try {
       const { method, args } = JSON.parse(await readBody(req))
       // Files on this computer: only the app window, never a browser on the network
-      const fn = key !== undefined && LOCAL_ONLY.has(method) ? undefined : host.methods[method]
+      const fn = key !== undefined && LOCAL_ONLY.has(method) ? undefined : Object.hasOwn(host.methods, method) ? host.methods[method] : undefined
       res.setHeader('Content-Type', 'application/json')
       if (!fn) { res.statusCode = 404; res.end(JSON.stringify({ error: `unknown method ${method}` })); return true }
       const result = await fn(...(args ?? []))
@@ -83,6 +90,17 @@ export async function handleTl(host: EngineHost, req: IncomingMessage, res: Serv
   return true
 }
 
+const MAX_BUFFERED = 4 * 1024 * 1024
+// One event goes to every tablet: serialized once (a composition update is ~1 MB of JSON)
+let lastPayload: unknown = undefined, lastJson = ''
+function jsonOnce(payload: unknown) {
+  if (payload !== lastPayload || lastJson === '') {
+    lastPayload = payload; lastJson = JSON.stringify(payload) ?? 'null'
+    // Only within one emit to all sinks: an object sent again later may have changed
+    queueMicrotask(() => { lastPayload = undefined; lastJson = '' })
+  }
+  return lastJson
+}
 const HEARTBEAT_MS = 3000   // web-shim marks the link down after LINK_TIMEOUT_MS without one
 
 const LOCAL_ONLY = new Set(['showfileDefaultPath', 'showfileWrite', 'showfileRename', 'showfileRead'])

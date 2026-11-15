@@ -7,6 +7,8 @@ import WebSocket from 'ws'
 
 type Value = number | string | boolean
 const RECONNECT_MS = 3000
+const PING_MS = 5000          // a half-open socket (Resolume on another machine) is noticed
+const MAX_BUFFERED = 64 * 1024 // Resolume busy (loading a composition): only the latest values wait
 
 export class ResolumeWs {
   private ws: WebSocket | null = null
@@ -16,6 +18,8 @@ export class ResolumeWs {
   private retry: NodeJS.Timeout | null = null
   private stopped = true
   private updateCb: ((id: number, value: Value, initial: boolean) => void) | null = null
+  private pending = new Map<number, Value>()   // values held back while the socket is backed up
+  private pinger: NodeJS.Timeout | null = null
 
   constructor(private endpoint: () => { host: string; port: number }) {}
 
@@ -33,8 +37,10 @@ export class ResolumeWs {
   stop() {
     this.stopped = true
     if (this.retry) { clearTimeout(this.retry); this.retry = null }
+    if (this.pinger) { clearInterval(this.pinger); this.pinger = null }
     this.ws?.close()
     this.ws = null
+    this.pending.clear()
     this.live.clear()
   }
 
@@ -71,8 +77,19 @@ export class ResolumeWs {
    *  sends up to 60 values a second per lane). False when the socket isn't open: use REST. */
   set(id: number, value: Value): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false
+    this.flush()
+    // Backed up: a burst of stale values would play out late; the newest one waits instead
+    if (this.ws.bufferedAmount > MAX_BUFFERED) { this.pending.set(id, value); return true }
+    this.pending.delete(id)
     this.ws.send(JSON.stringify({ action: 'set', parameter: `/parameter/by-id/${id}`, value }))
     return true
+  }
+
+  private flush() {
+    const ws = this.ws
+    if (!this.pending.size || ws?.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_BUFFERED) return
+    for (const [id, value] of this.pending) ws.send(JSON.stringify({ action: 'set', parameter: `/parameter/by-id/${id}`, value }))
+    this.pending.clear()
   }
 
   private send(action: 'subscribe' | 'unsubscribe', id: number) {
@@ -85,19 +102,33 @@ export class ResolumeWs {
     this.url = this.endpointUrl()
     let ws: WebSocket
     try {
-      ws = new WebSocket(this.url)
+      ws = new WebSocket(this.url, { handshakeTimeout: 3000 })
     } catch {
       // Invalid host (typo in settings): the constructor throws; keep polling and try later
       this.scheduleRetry()
       return
     }
     this.ws = ws
-    ws.on('open', () => { for (const id of this.wanted) this.send('subscribe', id) })
+    let alive = true
+    ws.on('pong', () => { alive = true })
+    ws.on('open', () => {
+      for (const id of this.wanted) this.send('subscribe', id)
+      if (this.pinger) clearInterval(this.pinger)
+      this.pinger = setInterval(() => {
+        if (this.ws !== ws) return
+        if (!alive) { ws.terminate(); return }   // 'close' follows: polling, then a new socket
+        alive = false
+        try { ws.ping() } catch { /* closing */ }
+        this.flush()
+      }, PING_MS)
+    })
     ws.on('message', (data: WebSocket.RawData) => this.handle(data.toString()))
     ws.on('error', () => { /* 'close' follows and schedules the retry */ })
     ws.on('close', () => {
       if (this.ws !== ws) return   // replaced by reconnect()
       this.ws = null
+      if (this.pinger) { clearInterval(this.pinger); this.pinger = null }
+      this.pending.clear()
       this.live.clear()   // back to polling until we are subscribed again
       this.scheduleRetry()
     })

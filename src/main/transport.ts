@@ -9,6 +9,10 @@ export class Transport {
   private ltcFrame: number | null = null
   private ltcAt = 0          // performance.now() when ltcFrame arrived
   freewheelFrames = 5        // keep running this many frames past the last LTC frame
+  // LTC time never runs back a frame or two: an LTC frame that arrives late (the decoder runs on
+  // the renderer's main thread) would else read as a jump back and recall everything mid-show
+  private ltcShown = -Infinity
+  private ltcShownExact = -Infinity
 
   constructor(fps: number) {
     this.fps = fps
@@ -27,12 +31,15 @@ export class Transport {
   }
 
   locate(frame: number) {
-    this.frame = frame
+    if (!Number.isFinite(frame)) return
+    this.frame = Math.max(0, Math.min(frame, 1e8))   // 1e8 frames = 46 days at 25 fps
     if (this.playing) this.play(frame)
   }
 
   // Called by LTC decoder every incoming frame
   setLtcFrame(frame: number) {
+    if (!Number.isFinite(frame)) return
+    if (this.ltcFrame === null) { this.ltcShown = -Infinity; this.ltcShownExact = -Infinity }
     this.ltcFrame = frame
     this.ltcAt = performance.now()
     this.playing = true
@@ -48,13 +55,24 @@ export class Transport {
     this.ltcFrame = null
   }
 
+  /** When the last LTC frame came in (performance.now()); null without LTC. */
+  get ltcArrivedAt() { return this.ltcFrame !== null ? this.ltcAt : null }
+
+  // A small step back (within the freewheel) holds; a real jump back is taken
+  private monotonic(v: number, exact: boolean) {
+    const shown = exact ? this.ltcShownExact : this.ltcShown
+    if (v < shown && shown - v <= this.freewheelFrames + 1) return shown
+    if (exact) this.ltcShownExact = v; else this.ltcShown = v
+    return v
+  }
+
   get isLtcActive() { return this.ltcFrame !== null }
 
   now(): number {
     if (this.ltcFrame !== null) {
       // Freewheel: bridge short dropouts, then hold until LTC returns or is cleared
       const ahead = Math.floor(((performance.now() - this.ltcAt) / 1000) * this.fps)
-      return this.ltcFrame + Math.min(ahead, this.freewheelFrames)
+      return this.monotonic(this.ltcFrame + Math.min(ahead, this.freewheelFrames), false)
     }
     if (!this.playing) return this.frame
     const elapsedMs = performance.now() - this.startPerf
@@ -65,7 +83,7 @@ export class Transport {
   exactFrame(): number {
     if (this.ltcFrame !== null) {
       const ahead = ((performance.now() - this.ltcAt) / 1000) * this.fps
-      return this.ltcFrame + Math.min(ahead, this.freewheelFrames)
+      return this.monotonic(this.ltcFrame + Math.min(ahead, this.freewheelFrames), true)
     }
     if (!this.playing) return this.frame
     return this.startFrame + ((performance.now() - this.startPerf) / 1000) * this.fps

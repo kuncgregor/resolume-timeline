@@ -57,7 +57,7 @@ export class ResolumeRest {
     ]
     for (const url of urls) {
       try {
-        const res = await fetch(url)
+        const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
         if (!res.ok) continue
         const ct = res.headers.get('content-type') ?? 'image/jpeg'
         const buf = await res.arrayBuffer()
@@ -81,7 +81,7 @@ export class ResolumeRest {
       const res = await fetch(`${this.base}${path}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
+        body: JSON.stringify({ value }), signal: AbortSignal.timeout(1500),
       })
       return res.ok
     } catch { return false }
@@ -116,16 +116,26 @@ export class ResolumeRest {
       const res = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
+        // A hung Resolume would else hold the request for minutes (and what waits on it)
+        body: JSON.stringify({ value }), signal: AbortSignal.timeout(1500),
       })
       if (!res.ok) {
         const body = await res.text().catch(() => '')
-        console.warn(`[REST] PUT ${url} → ${res.status}: ${body.slice(0, 80)}`)
+        this.warn(`[REST] PUT ${url} → ${res.status}: ${body.slice(0, 80)}`)
       }
       return res.ok
     } catch (e) {
-      console.warn('[REST] setParamById error:', e)
+      this.warn(`[REST] setParamById error: ${(e as Error)?.message ?? e}`)
       return false
     }
+  }
+
+  // Failures come at the automation's rate while Resolume is away: one line every few seconds
+  private warnedAt = 0
+  private warn(msg: string) {
+    const now = Date.now()
+    if (now - this.warnedAt < 5000) return
+    this.warnedAt = now
+    console.warn(msg)
   }
 }

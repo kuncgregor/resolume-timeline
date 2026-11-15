@@ -8,6 +8,14 @@ import { SHOWFILE_EXT, showfileFileName } from '../shared/showfile'
 import { WebServer, lanAddresses } from './web-server'
 import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, miniAppQuitting, type MiniOrientation, type MiniSize, type MiniEdge } from './mini-window'
 import type { Show } from '../shared/show'
+import { isValidShow } from '../shared/concert'
+
+// Nothing may stop the engine during a show: an error is logged, never a modal box (Electron's
+// default for an uncaught error) that would also block the main process
+let errorsLogged = 0
+const logError = (kind: string) => (e: unknown) => { if (errorsLogged++ < 200) console.error(`[${kind}]`, e) }
+process.on('uncaughtException', logError('uncaughtException'))
+process.on('unhandledRejection', logError('unhandledRejection'))
 
 // One engine per computer: a second launch only brings the running app to the front
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0) }
@@ -59,8 +67,10 @@ const SHOW_FILTER = [{ name: 'Show JSON', extensions: ['json'] }]
 ipcMain.handle('show:load', async () => {
   const { filePaths } = await dialog.showOpenDialog({ title: 'Open timeline', filters: SHOW_FILTER, properties: ['openFile'] })
   if (!filePaths[0]) return null
-  try { return host.loadShow(JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show) }
-  catch (e) { console.error('show:load', e); return null }
+  try {
+    const show = JSON.parse(readFileSync(filePaths[0], 'utf-8'))
+    return isValidShow(show) ? host.loadShow(show) : null
+  } catch (e) { console.error('show:load', e); return null }
 })
 
 ipcMain.handle('show:save', async (_e, show: Show) => {
@@ -69,15 +79,17 @@ ipcMain.handle('show:save', async (_e, show: Show) => {
   })
   if (!filePath) return null
   writeFileSync(filePath, JSON.stringify(show, null, 2))
-  host.loadShow(show)
   return filePath
 })
 
 ipcMain.handle('show:open', async () => {
   const { filePaths } = await dialog.showOpenDialog({ title: 'Open timeline', filters: SHOW_FILTER, properties: ['openFile'] })
   if (!filePaths[0]) return null
-  try { return { show: JSON.parse(readFileSync(filePaths[0], 'utf-8')) as Show, filePath: filePaths[0] } }
-  catch { return null }
+  // Only a timeline the app can run (a showfile or any other JSON would crash the editor)
+  try {
+    const show = JSON.parse(readFileSync(filePaths[0], 'utf-8'))
+    return isValidShow(show) ? { show, filePath: filePaths[0] } : null
+  } catch { return null }
 })
 
 // Showfile: open (also an old .concert.json, converted) and choose where to save it
@@ -213,17 +225,27 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' } })
   // The mini window lives with the main one (closing the main window quits the app)
   win.on('closed', () => { miniAppQuitting(); closeMini() })
+  // The window runs the LTC decoder, the audio track and GO: a crashed one comes back at once
+  // (the engine keeps playing meanwhile; the session brings the window back where it was)
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[RENDERER CRASH] reason:', details.reason, 'exitCode:', details.exitCode)
+    if (details.reason !== 'clean-exit' && win && !win.isDestroyed()) setTimeout(() => win?.webContents.reload(), 500)
   })
-  // Show safety: closing the window quits the app, so ask while the timeline runs
+  // Show safety: closing the window quits the app, so ask while the timeline runs. Not a
+  // synchronous box: it would block the engine's tick (cues missed) until someone answers.
+  let closeOk = false, asking = false
   win.on('close', e => {
-    if (!host.transport.playing || !win) return
-    const choice = dialog.showMessageBoxSync(win, {
+    if (closeOk || !host.transport.playing || !win) return
+    e.preventDefault()
+    if (asking) return
+    asking = true
+    dialog.showMessageBox(win, {
       type: 'warning', buttons: ['Keep running', 'Quit'], defaultId: 0, cancelId: 0,
       message: 'The timeline is playing.', detail: 'Quitting stops the timeline and everything it sends to Resolume.',
-    })
-    if (choice === 0) e.preventDefault()
+    }).then(({ response }) => {
+      asking = false
+      if (response === 1) { closeOk = true; win?.close() }
+    }, () => { asking = false })
   })
 }
 

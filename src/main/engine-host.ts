@@ -12,7 +12,7 @@ import { OscClient } from './osc-client'
 import { ResolumeRest } from './resolume-rest'
 import { Scheduler, type LaneTarget } from './scheduler'
 import { rv } from '../shared/resolume'
-import { isValidRundown } from '../shared/concert'
+import { isValidRundown, isValidShow } from '../shared/concert'
 import { SHOWFILE_EXT, SHOWFILE_FORMAT, isShowfile, showfileFileName } from '../shared/showfile'
 import type { Show, CueEvent } from '../shared/show'
 
@@ -80,6 +80,7 @@ export class EngineHost {
 
   private sinks = new Set<Sink>()
   private pingTimer: NodeJS.Timeout
+  private ltcWatch: NodeJS.Timeout
   private session: Session | null = null
   // Revision of the session: a UI pushes the revision its change is based on, so a tablet
   // that missed changes (asleep, reconnecting) can't overwrite them with an older state.
@@ -103,6 +104,14 @@ export class EngineHost {
     this.scheduler.start()
     this.osc.connect()
     this.pingTimer = setInterval(() => this.checkResolume(), 2000)  // also feeds the live state strip
+    // LTC comes from the app window's decoder. A window that hung or crashed sends no more frames
+    // and no stop: the transport would hold "playing" on the last frame for ever
+    this.ltcWatch = setInterval(() => {
+      const at = this.transport.ltcArrivedAt
+      if (at === null || performance.now() - at < ((this.transport.freewheelFrames + 25) / this.transport.fps) * 1000) return
+      console.warn('[engine] LTC frames stopped arriving: transport stopped')
+      this.methods.sendLtcStop()
+    }, 250)
     this.checkResolume()
   }
 
@@ -123,16 +132,25 @@ export class EngineHost {
     }
   }
 
+  // One poll at a time (a slow Resolume would else stack them, and an older answer could land
+  // after a newer one), one download each: the composition is also the "is it there" check
+  private polling = false
   private async checkResolume() {
-    const ok = await this.rest.ping()
-    if (ok !== this.resolumeConnected) {
-      this.resolumeConnected = ok
-      this.emit('resolume:status', { connected: ok })
-    }
-    if (!ok) return
-    const polledAt = Date.now()
-    const comp = await this.rest.getComposition()
-    if (!comp) return
+    if (this.polling) return
+    this.polling = true
+    try {
+      const polledAt = Date.now()
+      const comp = await this.rest.getComposition()
+      const ok = !!comp
+      if (ok !== this.resolumeConnected) {
+        this.resolumeConnected = ok
+        this.emit('resolume:status', { connected: ok })
+      }
+      if (comp) this.applyComposition(comp, polledAt)
+    } finally { this.polling = false }
+  }
+
+  private applyComposition(comp: NonNullable<Awaited<ReturnType<ResolumeRest['getComposition']>>>, polledAt: number) {
     this.emit('resolume:compositionUpdate', comp)
     this.scheduler.noteClipStates((comp as any).layers ?? [], polledAt)
     this.scheduler.setDecks((comp.decks ?? []).map(d => ({ id: d.id, name: rv(d.name, ''), selected: !!rv(d.selected, false) })))
@@ -141,8 +159,11 @@ export class EngineHost {
   }
 
   loadShow(show: Show) {
+    // A malformed timeline would throw in the tick, every tick: the engine keeps the last good one
+    if (!isValidShow(show)) { console.warn('[engine] invalid timeline refused'); return this.currentShow }
     this.currentShow = show
-    this.osc.connect(show.resolume.host, show.resolume.oscPort)
+    // Every edit loads the show again: the OSC socket is only renewed when the address changes
+    if (show.resolume.host !== this.osc.host || show.resolume.oscPort !== this.osc.port) this.osc.connect(show.resolume.host, show.resolume.oscPort)
     this.rest.setBase(show.resolume.host, show.resolume.restPort)
     this.scheduler.loadShow(show)
     return show
@@ -198,6 +219,7 @@ export class EngineHost {
     // Another timeline selected: loaded, stopped and at its start in one step, so the locate
     // recalls the new timeline's state (not the old one's), also when the playhead was at 0
     selectShow: (show: Show, from?: string) => {
+      if (!isValidShow(show)) return null   // refused: the running timeline goes on as it was
       this.transport.stop()
       this.loadShow(show)
       this.transport.locate(0)
@@ -259,7 +281,11 @@ export class EngineHost {
     // Several at once (a timeline switch): all requests in flight together
     resetParams: async (ids: number[]) => {
       for (const id of ids) this.scheduler.forgetParam(id)
-      return (await Promise.all(ids.map(id => this.rest.resetParam(id)))).every(Boolean)
+      // A few at a time: they land together with the new timeline's first cues
+      let ok = true, next = 0
+      const worker = async () => { while (next < ids.length) { if (!(await this.rest.resetParam(ids[next++]))) ok = false } }
+      await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker))
+      return ok
     },
     setTargets: (map: Record<string, LaneTarget>) => { this.scheduler.setTargets(map); return null },
     reenableAutomation: (ids?: string[]) => { this.scheduler.reenable(ids); return null },
@@ -281,11 +307,12 @@ export class EngineHost {
     // LTC timecode from the renderer's audio decoder
     sendLtcFrame: (ltcAbsFrame: number) => {
       const show = this.currentShow
-      if (!show) return null
+      if (!show || typeof ltcAbsFrame !== 'number') return null   // NaN arrives as null over JSON
       const src = show.clock.source
       if (src !== 'ltc' && src !== 'ltc-a' && src !== 'ltc-b') return null
       const offsetFrame = smpteToFrames(show.clock.offset || '00:00:00:00', this.transport.fps)
-      this.transport.setLtcFrame(Math.max(0, ltcAbsFrame - offsetFrame))
+      // A malformed offset gives NaN: the transport ignores it (it would break the tick)
+      this.transport.setLtcFrame(Math.max(0, ltcAbsFrame - (Number.isFinite(offsetFrame) ? offsetFrame : 0)))
       return null
     },
     sendLtcStop: () => {
@@ -302,6 +329,7 @@ export class EngineHost {
 
   dispose() {
     clearInterval(this.pingTimer)
+    clearInterval(this.ltcWatch)
     this.flushSession()
     void this.scheduler.restoreAllClips()   // usually done by releaseClips() already
     this.scheduler.stop()

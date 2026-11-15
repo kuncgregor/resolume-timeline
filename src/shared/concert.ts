@@ -45,9 +45,33 @@ export interface LoadedConcert {
   shows: Record<string, Show>   // keyed by entry id
 }
 
-/** A rundown read from storage or another UI can be used: entries with ids, shows with tracks. */
+// Times the engine and the UI parse without checks (a missing one would throw mid-render or
+// in the engine's tick, on every device that gets the session)
+const SMPTE = /^\d{1,3}:\d{1,2}:\d{1,2}:\d{1,3}$/
+const isTime = (t: unknown) => typeof t === 'string' && SMPTE.test(t)
+const isKeys = (k: unknown) => Array.isArray(k) && k.every((kf: any) => kf && isTime(kf.time) && Number.isFinite(kf.value))
+const isLanes = (a: unknown) => Array.isArray(a) && a.every((l: any) => l && typeof l.id === 'string' && isKeys(l.keyframes))
+const isClips = (c: unknown) => Array.isArray(c) && c.every((x: any) => x && isTime(x.time) && isTime(x.duration))
+const isCues = (c: unknown) => Array.isArray(c) && c.every((x: any) => x && isTime(x.time))
+// Each kind of track with the arrays the engine walks without checks
+const isTrack = (t: any) => !!t && typeof t.id === 'string' && (
+  t.type === 'layer' ? isClips(t.clips) && isLanes(t.automations)
+  : t.type === 'group' ? isLanes(t.automations)
+  : t.type === 'trigger' ? isCues(t.events)
+  : t.type === 'automation' ? isKeys(t.keyframes)
+  : false)
+
+/** A timeline the engine and the UI can run: tracks, clips, cues, lanes and keys with valid times. */
+export function isValidShow(s: any): s is Show {
+  return !!s && typeof s === 'object' && Number.isFinite(s.frameRate) && s.frameRate >= 1 && s.frameRate <= 120 &&
+    !!s.clock && typeof s.clock === 'object' && !!s.resolume && typeof s.resolume.host === 'string' &&
+    Number.isFinite(s.resolume.oscPort) && Number.isFinite(s.resolume.restPort) &&
+    (s.markers === undefined || (Array.isArray(s.markers) && s.markers.every((m: any) => m && isTime(m.time)))) &&
+    Array.isArray(s.tracks) && s.tracks.every(isTrack)
+}
+
+/** A rundown read from storage or another UI can be used: entries with ids, valid shows. */
 export function isValidRundown(rundown: unknown): rundown is RundownEntry[] {
   return Array.isArray(rundown) && rundown.length > 0 && rundown.every((e: any) =>
-    e && typeof e.id === 'string' &&
-    (e.type === 'break' || (e.type === 'show' && e.show && Array.isArray(e.show.tracks) && e.show.clock && e.show.resolume)))
+    e && typeof e.id === 'string' && (e.type === 'break' || (e.type === 'show' && isValidShow(e.show))))
 }
