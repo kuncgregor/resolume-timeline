@@ -49,7 +49,8 @@ export function Radar({ model, tempo, fps, bars, secs, labels, fixedFrame, title
     const tick = () => {
       raf = requestAnimationFrame(tick)
       const v = view.current
-      const f = v.fixedFrame ?? frameStore.get()
+      // Between engine frames the radar glides (smooth): it moves at the display's rate
+      const f = v.fixedFrame ?? frameStore.smooth()
       if (!v.dirty && f === lastF) return
       v.dirty = false; lastF = f
       const ctx = canvas.getContext('2d')

@@ -5,13 +5,26 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 
 let current = 0
 const listeners = new Set<() => void>()
+// For smooth motion between frames: when the last frame came and how fast frames advance
+let setAt = 0, rate = 0   // rate: frames per ms (0 = not advancing steadily)
 
 export const frameStore = {
   get: (): number => current,
   set(frame: number) {
     if (frame === current) return
-    current = frame
+    const now = performance.now(), d = frame - current, dt = now - setAt
+    // Playing: one or two frames forward in under 200 ms. Anything else (a locate, a scrub,
+    // backwards) stops the extrapolation
+    rate = d > 0 && d <= 2 && dt > 0 && dt < 200 ? (rate ? rate * 0.7 + (d / dt) * 0.3 : d / dt) : 0
+    current = frame; setAt = now
     listeners.forEach(l => l())
+  },
+  /** The playhead between frames (what a 60–120 Hz display shows while frames come at 25–30 Hz):
+   *  the last frame moved on by the time since it came, at most a frame and a half ahead, and
+   *  only while frames keep coming (stopped, it is the frame). */
+  smooth(now = performance.now()): number {
+    const dt = now - setAt
+    return rate > 0 && dt < 120 ? current + Math.min(1.5, dt * rate) : current
   },
   subscribe(listener: () => void): () => void {
     listeners.add(listener)
