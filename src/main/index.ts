@@ -6,6 +6,7 @@ import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
 import { EngineHost, appDataDir, showfilesDir, readShowfile } from './engine-host'
 import { SHOWFILE_EXT, showfileFileName } from '../shared/showfile'
 import { WebServer, lanAddresses } from './web-server'
+import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, type MiniOrientation, type MiniSize } from './mini-window'
 import type { Show } from '../shared/show'
 
 // One engine per computer: a second launch only brings the running app to the front
@@ -16,8 +17,11 @@ const host = new EngineHost()
 let win: BrowserWindow | null = null
 
 host.addSink((channel, payload) => {
-  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
-    try { win.webContents.send(channel, payload) } catch {}
+  // The main window and the mini show window both show the engine
+  for (const w of [win, miniWindow()]) {
+    if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) {
+      try { w.webContents.send(channel, payload) } catch {}
+    }
   }
 })
 
@@ -25,7 +29,8 @@ host.addSink((channel, payload) => {
 
 const ENGINE_CHANNELS: Record<string, string> = {
   'engine:play': 'play', 'engine:stop': 'stop', 'engine:locate': 'locate', 'engine:getState': 'getState',
-  'record:start': 'recordStart', 'record:stop': 'recordStop', 'record:publish': 'arenaRecPublish', 'clock:publish': 'clockPublish',
+  'record:start': 'recordStart', 'record:stop': 'recordStop', 'record:publish': 'arenaRecPublish', 'clock:publish': 'clockPublish', 'clock:get': 'clockGet',
+  'remote:command': 'remoteCommand',
   'show:loadDirect': 'loadShowDirect', 'show:select': 'selectShow', 'show:getCurrent': 'getCurrentShow',
   'session:get': 'sessionGet', 'session:set': 'sessionSet',
   'showfile:write': 'showfileWrite', 'showfile:defaultPath': 'showfileDefaultPath', 'showfile:rename': 'showfileRename',
@@ -137,6 +142,17 @@ async function applyRemote() {
   if (!remote.enabled) { webServer.stop(); remoteError = null }
 }
 
+// ── Mini show window (one laptop, no tablet: floats over Resolume) ──────────────
+
+const rendererFile = () => join(__dirname, '../renderer/index.html')
+ipcMain.handle('mini:get', () => miniState())
+ipcMain.handle('mini:toggle', () => {
+  if (miniWindow()) closeMini(); else openMini(process.env['ELECTRON_RENDERER_URL'], rendererFile())
+  return miniState()
+})
+ipcMain.handle('mini:layout', (_e, orientation: MiniOrientation, size: MiniSize | null) => { setMiniLayout(orientation, size); return miniState() })
+onMiniChange(state => { if (win && !win.isDestroyed()) win.webContents.send('mini:state', state) })
+
 ipcMain.handle('remote:get', () => remoteInfo())
 ipcMain.handle('remote:set', async (_e, enabled: boolean) => {
   remote.enabled = enabled
@@ -167,6 +183,8 @@ function createWindow() {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' } })
+  // The mini window lives with the main one (closing the main window quits the app)
+  win.on('closed', () => closeMini())
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[RENDERER CRASH] reason:', details.reason, 'exitCode:', details.exitCode)
   })
@@ -192,6 +210,8 @@ app.whenReady().then(() => {
   powerSaveBlocker.start('prevent-app-suspension')
   createWindow()
   applyRemote()
+  // The mini window comes back if it was open when the app quit
+  if (miniWasOpen()) openMini(process.env['ELECTRON_RENDERER_URL'], rendererFile())
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })
 

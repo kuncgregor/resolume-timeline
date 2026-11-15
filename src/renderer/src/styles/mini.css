@@ -1,0 +1,142 @@
+/* Mini show window (components/show/MiniShow.tsx): a strip or a column floating over Resolume.
+   Every size inside follows the strip's height or the column's width (container units, capped by the
+   other side so it always fits), so dragging the
+   window's edge (or S / M / L) scales it all; never below a readable floor. */
+
+html.mini-window, html.mini-window body { background: var(--bg-gutter); overflow: hidden; }
+html.mini-window body { -webkit-user-select: none; user-select: none; }
+
+.mini {
+  position: fixed; inset: 0; display: flex; gap: 1px; overflow: hidden;
+  container-type: size; background: var(--bg-gutter); color: var(--text); font-family: var(--font-ui);
+}
+.mini.show-mode { padding: 2px; }   /* the frame lies in this padding, over nothing */
+.mini.show-mode::after { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 2px var(--live); z-index: 3; }
+.mini-wait { align-items: center; justify-content: center; color: var(--text-faint); font-size: var(--fs-label); background: var(--bg-monitor); }
+.mini .mono { font-family: var(--font-tc); font-variant-numeric: tabular-nums; }
+.mini button { border: none; cursor: pointer; font-family: var(--font-ui); -webkit-app-region: no-drag; }
+.mini button:disabled { cursor: default; }
+
+.mini-grip { flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--bg-header); -webkit-app-region: drag; cursor: grab; }
+.mini-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
+.mini-dot.bad { background: transparent; box-shadow: inset 0 0 0 1.5px var(--danger); }
+.mini-show { padding: 1px 5px; background: var(--live); color: var(--text-on-live); font-size: var(--fs-micro); font-weight: 800; letter-spacing: 0.08em; }
+
+.mini-transport { flex-shrink: 0; display: flex; gap: 1px; }
+.mini-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-control); color: var(--text-hi); font-weight: 800; }
+.mini-btn:active { background: var(--bg-hover); }
+.mini-btn:disabled { background: var(--bg-track); color: var(--text-faint); }
+.mini-btn.stop { color: var(--text-dim); }
+.mini-btn.play.on { background: var(--live); color: var(--text-on-live); }
+.mini-btn.armed { background: var(--danger-fill); color: var(--text-hi); letter-spacing: 0.06em; }
+.mini-btn.go { background: var(--bg-header); box-shadow: inset 0 0 0 2px var(--next); color: var(--next); min-width: 0; }
+.mini-btn.go:disabled { box-shadow: none; background: var(--bg-track); color: var(--text-faint); }
+.mini-btn.go.armed { box-shadow: none; }
+.mini-go-lb { font-weight: 800; letter-spacing: 0.1em; }
+.mini-go-sub { max-width: 100%; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-dim); }
+.mini-btn.go.armed .mini-go-sub { color: var(--text-hi); }
+
+.mini-songs, .mini-pos, .mini-remain, .mini-coming { min-width: 0; background: var(--bg-monitor); display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.mini-song, .mini-next, .mini-sect, .mini-it { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-song b { color: var(--text-hi); }
+.mini-next { color: var(--text-dim); }
+.mini-tag { display: inline-block; margin-right: 0.4em; padding: 0 0.35em; font-size: max(9px, 0.62em); font-weight: 800; letter-spacing: 0.08em; vertical-align: 0.15em; background: var(--bg-control); color: var(--text-dim); }
+.mini-tag.live { background: var(--live-deep); color: var(--live); }
+.mini-tag.next { background: transparent; box-shadow: inset 0 0 0 1px var(--next); color: var(--next); }
+.mini-bar { font-weight: 800; color: var(--text-hi); white-space: nowrap; }
+.mini-bar small { margin-left: 0.5em; font-size: max(9px, 0.45em); font-weight: 400; color: var(--text-dim); }
+.mini-sect { font-weight: 700; color: var(--text-dim); }
+.mini-sect .dim { color: var(--text-dim); font-weight: 600; }
+.mini-remain { align-items: flex-end; }
+.mini-remain-big { font-weight: 800; line-height: 1; letter-spacing: -0.02em; color: var(--text-hi); }
+.mini-remain-big.warn { color: var(--loop); }
+.mini-remain-big.danger { color: var(--danger); }
+.mini-remain-big.idle { color: var(--text-faint); }
+.mini-prog { width: 100%; height: 4px; margin-top: 0.3em; background: var(--bg-well); }
+.mini-prog > i { display: block; height: 100%; background: var(--live-fill); }
+.mini-coming { background: var(--bg-lane); }
+.mini-ev { flex: 1 1 0; min-height: 0; display: flex; align-items: center; gap: 0.6em; padding: 0 0.6em; background: var(--bg-lane); overflow: hidden; box-shadow: inset 0 -1px 0 var(--bg-gutter); }
+.mini-ev.empty { color: var(--text-faint); }
+.mini-ev.imminent { background: var(--next); }
+.mini-ev.imminent, .mini-ev.imminent .mini-cd, .mini-ev.imminent b, .mini-ev.imminent .sv-ly, .mini-ev.imminent .sv-it-text,
+.mini-ev.imminent .mini-it i { color: var(--text-on-live) !important; }
+.mini-cd { flex-shrink: 0; font-weight: 800; color: var(--next); white-space: nowrap; }
+.mini-it { min-width: 0; }
+.mini-it .sv-it-text { display: inline; }   /* the "+2" stays on its line */
+.mini-it b { color: var(--text-hi); }
+.mini-it i { font-style: normal; color: var(--text-faint); }
+.mini-it .sv-ly { display: inline; margin-right: 0.35em; font-size: 0.8em; font-weight: 800; color: var(--text-dim); }
+
+/* ── Strip (wider than tall): everything from the height ── */
+/* One unit from the height: S / M / L and dragging the edge really change the size. What doesn't fit
+   beside it at that size goes, judged by the strip's shape (width ÷ height): first NOW / NEXT (GO
+   names the next one), then the next event. Only a strip too short for even the rest caps the size
+   by its width. */
+.mini-h { flex-direction: row; --u: min(1cqh, 0.104cqw); }
+.mini-h .mini-grip { width: 16px; flex-direction: column; }
+.mini-h .mini-show { display: none; }   /* the mint frame says SHOW */
+.mini-h .mini-btn { width: max(40px, calc(78 * var(--u))); font-size: max(14px, calc(30 * var(--u))); }
+.mini-h .mini-btn.armed { font-size: max(10px, calc(15 * var(--u))); }
+.mini-h .mini-songs { flex: 1 1 auto; padding: 0 max(8px, calc(12 * var(--u))); font-size: max(12px, calc(20 * var(--u))); gap: 0.2em; }
+.mini-h .mini-next { font-size: 0.75em; }
+.mini-h .mini-pos { flex: 1 1 auto; padding: 0 max(8px, calc(12 * var(--u))); gap: 0.15em; }
+.mini-h .mini-bar { font-size: max(14px, calc(30 * var(--u))); }
+.mini-h .mini-sect { font-size: max(11px, calc(16 * var(--u))); }
+.mini-h .mini-remain { flex: 0 0 auto; min-width: calc(150 * var(--u));   /* "END" doesn't shift the strip */ padding: 0 max(8px, calc(12 * var(--u))); }
+.mini-h .mini-remain-big { font-size: max(16px, calc(40 * var(--u))); }
+.mini-h .mini-coming { flex: 1 1 auto; font-size: max(11px, calc(17 * var(--u))); }
+.mini-h .mini-cd { font-size: 1.15em; }
+.mini-h .mini-btn.go { width: max(90px, calc(170 * var(--u))); }
+.mini-h .mini-go-lb { font-size: max(14px, calc(26 * var(--u))); }
+.mini-h .mini-go-sub { font-size: max(10px, calc(13 * var(--u))); }
+@container (max-aspect-ratio: 132 / 10) { .mini-h .mini-songs { display: none; } }
+@container (max-aspect-ratio: 108 / 10) { .mini-h .mini-coming { display: none; } }
+@container (max-width: 760px) and (max-height: 72px) { .mini-h .mini-cur { display: none; } }
+
+/* ── Column (taller than wide): everything from the width ── */
+/* One unit from the width, capped by the height (a wide column must still fit its height) */
+.mini-v { flex-direction: column; --v: min(1cqw, 0.54cqh); }
+.mini-v .mini-grip { height: 24px; justify-content: flex-start; padding: 0 8px; }
+.mini-v .mini-songs { flex: 0 0 auto; padding: calc(6 * var(--v)) calc(6 * var(--v)); font-size: max(12px, calc(8 * var(--v))); gap: 0.2em; }
+.mini-v .mini-next { font-size: 0.8em; }
+.mini-v .mini-song { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.mini-v .mini-pos { flex: 0 0 auto; padding: calc(5 * var(--v)) calc(6 * var(--v)); gap: 0.2em; }
+.mini-v .mini-bar { font-size: max(15px, calc(12 * var(--v))); }
+.mini-v .mini-sect { font-size: max(11px, calc(6.5 * var(--v))); white-space: normal; }
+.mini-v .mini-remain { flex: 0 0 auto; padding: calc(4 * var(--v)) calc(6 * var(--v)); }
+.mini-v .mini-remain-big { font-size: max(18px, calc(17 * var(--v))); }
+.mini-v .mini-coming { flex: 1 1 0; font-size: max(11px, calc(6.5 * var(--v))); }
+.mini-v .mini-ev { flex: 0 0 auto; width: 100%; padding: calc(3 * var(--v)) calc(5 * var(--v)); flex-wrap: wrap; gap: 0.15em 0.6em; }
+/* From the top; rows that don't fit whole wrap into a second column, out of sight */
+.mini-v .mini-coming { justify-content: flex-start; flex-wrap: wrap; align-content: flex-start; }
+.mini-v .mini-bar small { display: block; margin: 0.15em 0 0; font-size: 0.42em; }
+.mini-v .mini-cd { font-size: 1.2em; }
+.mini-v .mini-it { white-space: normal; }
+.mini-v .mini-transport { height: max(40px, calc(24 * var(--v))); }
+.mini-v .mini-transport .mini-btn { flex: 1; font-size: max(14px, calc(10 * var(--v))); }
+.mini-v .mini-transport .mini-btn.armed { font-size: max(10px, calc(5 * var(--v))); }
+.mini-v .mini-btn.go { flex-shrink: 0; height: max(48px, calc(28 * var(--v))); }
+.mini-v .mini-go-lb { font-size: max(16px, calc(11 * var(--v))); }
+.mini-v .mini-go-sub { font-size: max(10px, calc(5.5 * var(--v))); }
+/* The column's order: grip, songs, position, time, coming, transport, GO */
+.mini-v .mini-grip { order: 0; } .mini-v .mini-songs { order: 1; } .mini-v .mini-pos { order: 2; }
+.mini-v .mini-remain { order: 3; } .mini-v .mini-coming { order: 4; } .mini-v .mini-transport { order: 5; }
+.mini-v .mini-btn.go { order: 6; }
+
+/* ── ⋯ menu: an overlay over the whole window (a strip has no room for a dropdown) ── */
+.mini-menu-anchor { flex-shrink: 0; display: flex; }
+.mini-more { width: 28px; background: var(--bg-header); color: var(--text-dim); font-size: 14px; }
+.mini-v .mini-menu-anchor { position: absolute; top: 0; right: 0; height: 26px; z-index: 1; }
+.mini-v .mini-grip { height: 26px; }
+.mini-menu {
+  position: fixed; inset: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 4px 12px; flex-wrap: nowrap; overflow-x: auto;
+  background: var(--bg-menu); font-size: var(--fs-ui); -webkit-app-region: no-drag;
+}
+.mini-v .mini-menu { flex-direction: column; align-items: stretch; justify-content: center; overflow: auto; }
+.mini-menu .seg-btn { height: 28px; min-width: 34px; }
+@container (max-width: 860px) { .mini-h .mini-menu-note { display: none; } }
+.mini-menu-row { display: flex; align-items: center; gap: 1px; }
+.mini-menu-row > span { margin-right: 8px; color: var(--text-dim); }
+.mini-menu-note { color: var(--text-dim); font-size: var(--fs-meta); white-space: nowrap; }
+.mini-menu-close.done { background: var(--live-deep); color: var(--live); }
+.mini-menu-close { flex-shrink: 0; white-space: nowrap; height: 28px; padding: 0 10px; background: var(--bg-control); color: var(--text-hi); font-size: var(--fs-ui); font-weight: 700; }

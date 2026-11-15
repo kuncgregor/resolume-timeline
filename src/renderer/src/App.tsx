@@ -1178,12 +1178,18 @@ export default function App() {
     return api.onRemoteCmd?.(({ cmd }: { cmd: string }) => {
       if (cmd === 'arenaRec') toggleArenaRecRef.current()
       else if (cmd === 'play' && !engineRef.current.playing) playRef.current()
+      // The mini show window (it asked for the second tap itself, SHOW-mode rules included)
+      else if (cmd === 'stop') stopNowRef.current()
+      else if (cmd === 'go') goRef.current(1)
+      else if (cmd === 'back') goRef.current(-1)
     })
   }, [setArenaRec])
 
   const handleStop = useCallback(() => {
     api.stop(); autoScrollRef.current = true; audioEngineRef.current.stop()
   }, [])
+  const stopNowRef = useRef(handleStop)   // a stop already confirmed (the mini window's second tap)
+  stopNowRef.current = handleStop
 
   // SHOW mode while playing: stopping takes a second press within STOP_CONFIRM_MS (a stray
   // Space must not stop a running show) and the playhead can't be moved by clicks

@@ -13,6 +13,14 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
   const size = useShowSize()
   const phone = usePhone()
   const rootRef = useRef<HTMLDivElement>(null)
+  // The mini show window (the app only: a browser can't float a window over Resolume)
+  const api = (window as any).timeline
+  const [miniOpen, setMiniOpen] = useState(false)
+  useEffect(() => {
+    if (!api?.miniGet) return
+    api.miniGet().then((st: { open: boolean }) => setMiniOpen(st.open), () => {})
+    return api.onMiniState?.((st: { open: boolean }) => setMiniOpen(st.open))
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -52,6 +60,13 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
           </div>
           <div className="view-menu-note">Used in SHOW mode{showMode ? '' : ' — switch to SHOW to see it'}</div>
           </>}
+          {api?.miniToggle && (
+            <div className="view-menu-row" title="A small strip (or column) that floats over Resolume: NOW / NEXT, bar and section, time to end, what comes next, BACK · STOP · PLAY · GO. For one laptop without a tablet.">
+              <span>Mini window</span>
+              <button className={`seg-btn${miniOpen ? ' on' : ''}`} onClick={() => api.miniToggle().then((st: { open: boolean }) => setMiniOpen(st.open))}>
+                {miniOpen ? 'Open · close it' : 'Open'}</button>
+            </div>
+          )}
           {/* The show view's type, bars and buttons (changes at once, no reload) */}
           <div className="view-menu-row" title="Size of the show view: Compact fits more, Large reads from further away">
             <span>Show size</span>

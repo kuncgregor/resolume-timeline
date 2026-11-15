@@ -2,6 +2,7 @@ import './web-shim'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { MiniShow } from './components/show/MiniShow'
 import { ErrorBoundary } from './ErrorBoundary'
 import './styles/tokens.css'
 import './styles/chrome.css'
@@ -9,6 +10,7 @@ import './styles/canvas.css'
 import './styles/panels.css'
 import './styles/show.css'
 import './styles/touch.css'
+import './styles/mini.css'
 import { applyTouchMode } from './touch'
 
 applyTouchMode()
@@ -23,7 +25,8 @@ window.onunhandledrejection = (e) => {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      {/* The mini show window (a second window of the app) shows only that */}
+      {new URLSearchParams(location.search).get('mini') === '1' ? <MiniShow /> : <App />}
     </ErrorBoundary>
   </React.StrictMode>
 )

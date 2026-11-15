@@ -517,9 +517,9 @@ function SectionName({ name }: { name: string }) {
 
 // The layer tag in its own column, so a text that wraps keeps its indent
 // Within one moment: the section, then what moves, then the clips
-const ORDER: Record<ShowEvent['kind'], number> = { section: 0, move: 1, steps: 1, clip: 2, clear: 3 }
+export const ORDER: Record<ShowEvent['kind'], number> = { section: 0, move: 1, steps: 1, clip: 2, clear: 3 }
 
-function eventText(ev: ShowEvent, laneStatus: LaneStatusMap): ReactNode {
+export function eventText(ev: ShowEvent, laneStatus: LaneStatusMap): ReactNode {
   if (ev.kind === 'section') return <span className="sv-it-text" style={{ color: ev.marker.color }}>◆ {ev.marker.name || 'Marker'}</span>
   const ly = <span className="sv-ly mono">{ev.layer.tag}</span>
   const text = ev.kind === 'clip'
