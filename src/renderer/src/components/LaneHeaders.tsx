@@ -55,6 +55,7 @@ interface Props {
   laneClipboard: string | null
   onCopyLane: (trackIdx: number, autoIdx: number) => void
   onPasteLane: (trackIdx: number) => void
+  pasteLaneUnavailable: (trackIdx: number) => string | null   // why the copied lane can't go here
   onPasteCurve: (trackIdx: number, autoIdx: number) => void
   onSetTransition: (paramId: number, seconds: number) => void   // Resolume layer transition time
 }
@@ -212,7 +213,7 @@ export function LaneHeaders({
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
   onLoadAudio, onUpdateAudio, rulerMode, hasTempo, onSetRulerMode,
-  laneClipboard, onCopyLane, onPasteLane, onPasteCurve, onSetTransition,
+  laneClipboard, onCopyLane, onPasteLane, pasteLaneUnavailable, onPasteCurve, onSetTransition,
 }: Props) {
   const [resizing, setResizing] = useState<ResizeState | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
@@ -816,8 +817,8 @@ export function LaneHeaders({
                 </button>
               </>
             ) : (
-              <button className="dropdown-item" disabled={!laneClipboard || locked} onClick={run(() => onPasteLane(menu.ti))}
-                title={laneClipboard ? `The same parameter on ${t?.name ?? 'this layer'}, at the same times` : 'Copy a lane first: right-click its header › Copy lane'}>
+              <button className="dropdown-item" disabled={!!pasteLaneUnavailable(menu.ti)} onClick={run(() => onPasteLane(menu.ti))}
+                title={pasteLaneUnavailable(menu.ti) ?? `The same parameter on ${t?.name ?? 'this layer'}, at the same times`}>
                 {laneClipboard ? `Paste lane: ${laneClipboard}` : 'Paste lane (copy a lane first)'}
               </button>
             )}

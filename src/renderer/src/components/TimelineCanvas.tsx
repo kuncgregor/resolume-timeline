@@ -368,6 +368,7 @@ interface Props {
   canPasteClipAutomation: boolean
   laneClipboard: string | null       // label of the lane copied (lane header right-click), if any
   onPasteLaneOnCue: (trackIdx: number, cueIdx: number) => void
+  pasteLaneUnavailable: (trackIdx: number, cueIdx: number) => string | null   // why the copied lane can't go onto that clip
   onResizeAutoLane: (autoId: string, height: number) => void
   selectedTrackIdx: number | null
   selectedCueIdx: number | null
@@ -381,7 +382,7 @@ export function TimelineCanvas({
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollYTo, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, placing, onPlaced, onUndo, canUndo, canRedo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes,
-  onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat, onSetMarkers,
+  onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, pasteLaneUnavailable, onSetDownbeat, onSetMarkers,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
@@ -2853,8 +2854,8 @@ export function TimelineCanvas({
                 title={canPasteClipAutomation ? 'Paste the copied lanes onto this clip, from its start' : 'Copy a clip\'s automation first'}
                 onClick={() => { onPasteClipAutomation(ti, ci); close() }}
               >Paste clip automation</button>
-              <button className="ctx-btn" disabled={!editable || !laneClipboard}
-                title={laneClipboard ? `Paste the copied lane onto this clip, from its start` : 'Copy a lane first: right-click its header › Copy lane'}
+              <button className="ctx-btn" disabled={!editable || !!pasteLaneUnavailable(ti, ci)}
+                title={pasteLaneUnavailable(ti, ci) ?? 'Paste the copied lane onto this clip, from its start'}
                 onClick={() => { onPasteLaneOnCue(ti, ci); close() }}
               >{laneClipboard ? `Paste lane: ${laneClipboard}` : 'Paste lane'}</button>
             </>

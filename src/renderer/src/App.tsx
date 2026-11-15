@@ -1775,6 +1775,8 @@ export default function App() {
     const layer = composition?.layers?.find(l => l?.id === lt.resolumeLayerId) as any
     return (layer?.clips ?? []).find((c: any) => c?.id === cue.clipId) ?? knownClip(cue.clipId)
   }, [composition])
+  const clipJsonOfRef = useRef(clipJsonOf)
+  clipJsonOfRef.current = clipJsonOf
 
   const clipOpacityInfo = useCallback((trackIdx: number, cueIdx: number): ParamInfo | null => {
     const lt = showRef.current.tracks[trackIdx] as LayerTrack | undefined
@@ -1959,6 +1961,29 @@ export default function App() {
     setLaneClipboard(lane.ref?.label ?? lane.name)
   }, [])
 
+  const handlePasteLaneOnCue = useCallback((ti: number, ci: number) => handlePasteLaneRef.current(ti, ci), [])
+  /** Why the copied lane can't go there (null = it can): the menus show it, disabled. */
+  const pasteLaneUnavailable = useCallback((trackIdx: number, cueIdx?: number): string | null => {
+    const ref = laneClipboardRef.current?.lane.ref
+    if (!ref) return laneClipboardRef.current ? 'The copied lane has no Resolume parameter' : 'Copy a lane first: right-click its header › Copy lane'
+    const t = showRef.current.tracks[trackIdx] as LayerTrack | GroupTrack | undefined
+    if (!t || (t.type !== 'layer' && t.type !== 'group')) return 'Not a layer'
+    if (t.locked) return 'The layer is locked'
+    const isGroup = t.type === 'group'
+    if ((ref.scope === 'group') !== isGroup) return isGroup ? 'Layer and clip parameters go onto layers' : 'Group parameters go onto groups'
+    const cue = cueIdx != null && !isGroup ? (t as LayerTrack).clips[cueIdx] : undefined
+    if (ref.scope === 'clip' && !cue) return 'A clip parameter goes onto a clip: right-click a clip › Paste lane'
+    const comp = compositionRef.current
+    let json: any = null
+    if (ref.scope === 'clip' && cue) json = clipJsonOfRef.current(t as LayerTrack, cue)
+    else if (isGroup) json = comp?.layergroups?.[(t as GroupTrack).resolumeGroupIndex - 1]
+    else json = comp?.layers?.find(l => l?.id === (t as LayerTrack).resolumeLayerId)
+    if (json && !resolveRef(json, ref.scope === 'clip' && cue ? { ...ref, clipId: cue.clipId } : ref))
+      return `${ref.label} is not on ${cue ? `clip "${cue.clipName}"` : `"${t.name}"`}`
+    return null
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePasteLaneRef = useRef<(ti: number, ci?: number) => void>(() => {})
   const handlePasteLane = useCallback((trackIdx: number, cueIdx?: number) => {
     const cb = laneClipboardRef.current
     if (showModeRef.current || !cb) return
@@ -2019,6 +2044,7 @@ export default function App() {
       return { ...prev, tracks }
     })
   }, [clipJsonOf, composition, setShow])
+  handlePasteLaneRef.current = handlePasteLane
 
   // The copied lane's curve onto another lane (any parameter), at the same times
   const handlePasteCurve = useCallback((trackIdx: number, autoIdx: number) => {
@@ -2524,7 +2550,7 @@ export default function App() {
               onSetRulerMode={m => syncShow(prev => ({ ...prev, rulerMode: m }))}
               onSetTransition={(paramId, seconds) => { api.setParamById(paramId, seconds) }}
               laneClipboard={laneClipboard} onCopyLane={handleCopyLane}
-              onPasteLane={ti => handlePasteLane(ti)} onPasteCurve={handlePasteCurve}
+              onPasteLane={ti => handlePasteLane(ti)} pasteLaneUnavailable={pasteLaneUnavailable} onPasteCurve={handlePasteCurve}
             />
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode} snap={snap}
@@ -2555,7 +2581,7 @@ export default function App() {
               onCopyClipAutomation={handleCopyClipAutomation}
               onPasteClipAutomation={handlePasteClipAutomation}
               canPasteClipAutomation={canPasteClipAutomation}
-              laneClipboard={laneClipboard} onPasteLaneOnCue={(ti, ci) => handlePasteLane(ti, ci)}
+              laneClipboard={laneClipboard} onPasteLaneOnCue={handlePasteLaneOnCue} pasteLaneUnavailable={pasteLaneUnavailable}
               onResizeAutoLane={handleResizeAutoLane}
               selectedTrackIdx={selectedTrackIdx} selectedCueIdx={selectedCueIdx}
             />
