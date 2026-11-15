@@ -29,7 +29,8 @@ import { ShowView } from './components/show/ShowView'
 import { ShowMain } from './components/show/ShowMain'
 import { useShowViewActive, clearForcedView } from './components/show/view'
 import { useKeepAwake } from './wakeLock'
-import { frameStore } from './frameStore'
+import { frameStore, ltcTcStore } from './frameStore'
+import { PanelBoundary } from './ErrorBoundary'
 import { frameKeyframes } from '../../shared/automation'
 import { PPF_MIN, PPF_MAX, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_LANE_H, MIN_AUTO_H } from './layout'
 import { TOUCH } from './touch'
@@ -305,7 +306,6 @@ export default function App() {
   // LTC decoder — global singleton
   const ltcDecoderRef = useRef(new LTCDecoder())
   const [ltcActive, setLtcActive] = useState(false)
-  const [ltcRawTC, setLtcRawTC] = useState('--:--:--:--')
   // LTC arrives but belongs to no / another timeline (before this one's start TC, or at or
   // after the next LTC timeline's start TC): the active timeline doesn't run
   const [ltcOutside, setLtcOutside] = useState(false)
@@ -678,8 +678,8 @@ export default function App() {
     ltcSelected: isLtcSource(show.clock.source),
     ltcActive,
     ltcNotHere: ltcOutside && isLtcSource(show.clock.source)
-      ? `incoming ${ltcRawTC} is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null,
-  }), [show.clock.source, show.clock.offset, ltcActive, ltcOutside, ltcRawTC, followTc])
+      ? `incoming LTC is outside this timeline (starts at ${show.clock.offset || '00:00:00:00'})${followTc ? '' : ' — Follow TC is off'}` : null,
+  }), [show.clock.source, show.clock.offset, ltcActive, ltcOutside, followTc])
   const [remoteClock, setRemoteClock] = useState<ClockStatus | null>(null)
   useEffect(() => { if (!REMOTE) api.clockPublish?.(localClock) }, [localClock])
   useEffect(() => {
@@ -707,7 +707,10 @@ export default function App() {
     return out
   }, [show.tracks, overrides])
 
-  const decks = useMemo(() => decksOf(composition), [composition])
+  // The same array while the decks stay the same: a new one every composition poll (2 s)
+  // repainted the whole timeline
+  const decksKey = JSON.stringify(decksOf(composition))
+  const decks = useMemo(() => JSON.parse(decksKey) as ReturnType<typeof decksOf>, [decksKey])
   const selectedDeck = decks.find(d => d.selected)
 
   // ── Showfile: name, save, autosave ─────────────────────────────────────────
@@ -845,7 +848,21 @@ export default function App() {
     }
   }, [show, composition, setShow, clipCacheTick])
 
-  useEffect(() => { if (!REMOTE) api.loadShowDirect(show) }, [show])
+  // The engine gets the timeline after every edit. A drag or a REC pass edits 60 times a second,
+  // and each load is a full copy over IPC that the engine re-parses: at most every 50 ms (the
+  // first edit at once, the last one always)
+  const engineShowRef = useRef(show)
+  engineShowRef.current = show
+  const engineLoadRef = useRef<{ at: number; timer?: ReturnType<typeof setTimeout> }>({ at: 0 })
+  useEffect(() => {
+    if (REMOTE) return
+    const l = engineLoadRef.current
+    if (l.timer) return
+    const wait = 50 - (performance.now() - l.at)
+    const load = () => { l.timer = undefined; l.at = performance.now(); api.loadShowDirect(engineShowRef.current) }
+    if (wait <= 0) load(); else l.timer = setTimeout(load, wait)
+  }, [show])
+  useEffect(() => () => clearTimeout(engineLoadRef.current.timer), [])
 
   // Parameters go back to their Resolume default when the timeline lets go of them:
   // - an edit takes one out of automation at the playhead (its lane removed, or its keyframes
@@ -994,7 +1011,7 @@ export default function App() {
     let followedTo: string | null = null, followedAt = 0
     decoder.onFrame = (_abs, hh, mm, ss, ff) => {
       const pad = (n: number) => String(n).padStart(2, '0')
-      setLtcRawTC(`${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`)
+      ltcTcStore.set(`${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`)
       setLtcActive(true)
       const f = fpsRef.current
       const ltcFps = f > 30 ? f / 2 : f
@@ -1285,6 +1302,8 @@ export default function App() {
     // timecode arrives (never on the internal clock from the old timeline's position).
     // The engine loads it and locates in one step: a plain locate would still recall the old one.
     const entry = rundownRef.current.find(e => e.id === id)
+    // An edit of the old timeline still waiting to go to the engine would load it back
+    clearTimeout(engineLoadRef.current.timer); engineLoadRef.current.timer = undefined
     api.selectShow(entry?.type === 'show' ? (entry as ShowEntry).show : EMPTY_SHOW)
     audioEngineRef.current.stop()
     setActiveId(id)
@@ -1791,7 +1810,7 @@ export default function App() {
       if (!target) return prev
       for (const p of plan) {
         const frames = p.keys.map(k => k.frame)
-        const ranges: [number, number][] = frames.length ? [[Math.min(...frames), Math.max(...frames)]] : []
+        const ranges: [number, number][] = frames.length ? [[frames.reduce((a, b) => Math.min(a, b)), frames.reduce((a, b) => Math.max(a, b))]] : []
         const fresh = (): AutomationSubTrack => ({
           ...p.lane, ...p.fields, id: `auto-${Date.now()}-${uid++}`, keyframes: [],
           clipId: target.id, layerBound: undefined, visible: undefined, paramId: undefined,
@@ -1856,7 +1875,7 @@ export default function App() {
     const shift = cue ? smpteToFrames(cue.time, fr) - (cb.start ?? Math.min(...cb.keys.map(k => k.frame))) : 0
     const keys = cb.keys.map(k => ({ ...k, frame: k.frame + shift })).filter(k => k.frame >= 0)
     const frames = keys.map(k => k.frame)
-    const ranges: [number, number][] = frames.length ? [[Math.min(...frames), Math.max(...frames)]] : []
+    const ranges: [number, number][] = frames.length ? [[frames.reduce((a, b) => Math.min(a, b)), frames.reduce((a, b) => Math.max(a, b))]] : []
     const fresh = (): AutomationSubTrack => ({
       ...cb.lane, ...fields, id: `auto-${Date.now()}-${uid++}`, keyframes: [], visible: undefined, paramId: undefined,
       ...(cue ? { clipId: cue.id, layerBound: undefined } : { clipId: undefined, layerBound: true }),
@@ -2201,6 +2220,7 @@ export default function App() {
   const alarms = alarmsOf(health)
 
   if (phoneRemote) return (
+    <PanelBoundary name="Show view" resetKey={activeId}>
     <ShowView
       awake={awake} show={show} laneStatus={laneStatus}
       rundown={rundown} activeId={activeId}
@@ -2235,6 +2255,7 @@ export default function App() {
         toggleArenaRec()
       }}
     />
+    </PanelBoundary>
   )
 
   return (
@@ -2295,7 +2316,6 @@ export default function App() {
         endFrame={endFrame}
         ltcActive={ltcActive}
         ltcOutside={ltcOutside}
-        ltcRawTC={ltcRawTC}
         followTc={followTc}
         onToggleFollowTc={() => setFollowTc(f => !f)}
         anyLtcTimeline={ltcShouldRun}
@@ -2333,9 +2353,11 @@ export default function App() {
 
       {/* SHOW mode (Desktop style): the show view's minimal picture instead of the lanes */}
       {showMode ? (
+        <PanelBoundary name="Show picture" resetKey={activeId}>
         <ShowMain show={show} next={rundown[rundown.findIndex(e => e.id === activeId) + 1] ?? null}
           isBreak={activeIsBreak} playing={engineState.playing} endFrame={endFrame} laneStatus={laneStatus}
           onSeek={handleSeek} onLocate={handleLocate} />
+        </PanelBoundary>
       ) : (
       <div className="main-area">
         {activeIsBreak ? (
@@ -2348,6 +2370,7 @@ export default function App() {
             )}
           </div>
         ) : (
+          <PanelBoundary name="Timeline" resetKey={activeId}>
           <div className="timeline-column">
           {/* Touch: the edit toolbar's row (TimelineCanvas renders the buttons into it) */}
           {TOUCH && <div className="touch-edit-row" id="touch-edit-slot" />}
@@ -2428,9 +2451,11 @@ export default function App() {
             />
           </div>
           </div>
+          </PanelBoundary>
         )}
 
         {showBrowser && !activeIsBreak && (
+          <PanelBoundary name="Clip browser" resetKey={activeId}>
           <ClipBrowser
             tracks={show.tracks}
             liveComposition={composition}
@@ -2439,12 +2464,14 @@ export default function App() {
             onDragEnd={() => setDraggingClip(null)}
             onPlace={setPlacing}
           />
+          </PanelBoundary>
         )}
       </div>
       )}
 
       {/* The inspector edits: not in SHOW mode (the show picture gets its height) */}
       {!activeIsBreak && !showMode && (
+        <PanelBoundary name="Inspector" resetKey={activeId}>
         <BottomPanel
           track={selectedTrack} cue={selectedCue} readOnly={showMode}
           group={selectedTrackRaw?.type === 'group' ? selectedTrackRaw as GroupTrack : null}
@@ -2456,6 +2483,7 @@ export default function App() {
           onSelectCue={selectCue}
           onClose={clearSelection}
         />
+        </PanelBoundary>
       )}
 
       {showSettings && (

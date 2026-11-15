@@ -32,6 +32,19 @@ export const frameStore = {
   },
 }
 
+// The last incoming LTC timecode ("01:00:12:04"): it changes at frame rate, so it stays out of
+// App state too; only the clock chip shows it
+let ltcTc = '--:--:--:--'
+const ltcListeners = new Set<() => void>()
+export const ltcTcStore = {
+  get: (): string => ltcTc,
+  set(tc: string) { if (tc !== ltcTc) { ltcTc = tc; ltcListeners.forEach(l => l()) } },
+  subscribe(listener: () => void): () => void { ltcListeners.add(listener); return () => { ltcListeners.delete(listener) } },
+}
+export function useLtcTc(): string {
+  return useSyncExternalStore(ltcTcStore.subscribe, ltcTcStore.get)
+}
+
 /** The playhead frame; the component re-renders when it changes. */
 export function useFrame(): number {
   return useSyncExternalStore(frameStore.subscribe, frameStore.get)

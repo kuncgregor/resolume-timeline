@@ -1,9 +1,9 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { useFrame } from '../frameStore'
+import { frameStore } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind, Marker } from '../../../shared/show'
 import { MarkerMenu, DEFAULT_MARKER_COLOR } from './MarkerMenu'
-import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
+import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, lowerBound, sampleLane } from '../../../shared/automation'
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
   extractTime, deleteTime, extractCues, deleteCues, pasteMaterial, splitAt, moveKeys, keysIn, isEmptyMaterial, pruneAddedKeys,
@@ -234,7 +234,16 @@ const sameKf = (a: KfHit | null | undefined, b: KfHit | null | undefined) =>
   !!a && !!b && a.trackIdx === b.trackIdx && a.autoIdx === b.autoIdx && a.kfIdx === b.kfIdx
 const kfRef = (h: KfHit): KfHit => ({ trackIdx: h.trackIdx, autoIdx: h.autoIdx, kfIdx: h.kfIdx })
 const laneKey = (h: { trackIdx: number; autoIdx: number }) => `${h.trackIdx}:${h.autoIdx}`
-const selHas = (sel: KfHit[], h: KfHit) => sel.some(s => sameKf(s, h))
+const kfKey = (h: KfHit) => `${h.trackIdx}:${h.autoIdx}:${h.kfIdx}`
+// Membership per selection array (never changed once built): drawing 10k selected keys
+// scanned the whole selection for each of them
+const selSets = new WeakMap<KfHit[], Set<string>>()
+const selHas = (sel: KfHit[], h: KfHit) => {
+  if (sel.length < 16) return sel.some(s => sameKf(s, h))
+  let set = selSets.get(sel)
+  if (!set) { set = new Set(sel.map(kfKey)); selSets.set(sel, set) }
+  return set.has(kfKey(h))
+}
 
 function findLane(tracks: Track[], laneId: string): { trackIdx: number; autoIdx: number; auto: AutomationSubTrack } | null {
   for (let ti = 0; ti < tracks.length; ti++) {
@@ -375,8 +384,6 @@ export function TimelineCanvas({
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
-  // Only the overlay follows the playhead (see drawOverlay)
-  const frame = useFrame()
   const bars = rulerModeProp === 'bars' && tempo ? tempo : null   // musical ruler + grid in effect
   // Snap to grid: null when off. 'auto' follows the zoom, so it is recomputed every render.
   const gridSnap = gridSnapOf(snap, tempo, rulerModeProp, pxPerFrame, fps)
@@ -410,8 +417,6 @@ export function TimelineCanvas({
   const markerDragRef = useRef<{ id: string; moved: boolean } | null>(null)
   const [fadeSeconds, setFadeSeconds] = useState(1)   // clip menu fade length, kept for the session
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
-  const frameRef = useRef(frame)
-  frameRef.current = frame
 
   // ── Selection, as in Live's Arrangement View ──
   // A time selection (a span of time over rows), or selected clips (clicked), and the insert
@@ -567,7 +572,7 @@ export function TimelineCanvas({
     }
     if (gridSnap) {
       best = snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo); bestD = Math.abs(best - rawF); guide = best
-      for (const c of [...markers.map(m => smpteToFrames(m.time, fps)), Math.round(frameRef.current)]) consider(c, c)
+      for (const c of [...markers.map(m => smpteToFrames(m.time, fps)), Math.round(frameStore.get())]) consider(c, c)
     }
     if (clips) for (const e of clipEdges(clips.skip)) {
       consider(e, e)
@@ -1203,6 +1208,7 @@ export function TimelineCanvas({
     ctx.clearRect(0, 0, W, H)
 
     const layout = buildLayout(tracks, clipH, autoH, scrollY)
+    const frame = frameStore.get()
     const lx = frameToX(frame)
     // Playhead line first: what sits on it (a key just added at the playhead, the lanes' value
     // dots) is drawn over it, not hidden under it
@@ -1253,7 +1259,10 @@ export function TimelineCanvas({
         ctx.save()
         ctx.beginPath(); ctx.rect(0, lane.y, W, lane.h - 1); ctx.clip()
         // A key on the playhead's frame: its glyph again, over the playhead line
-        const onKey = fks.find(k => Math.abs(k.frame - frame) < 0.5)
+        // (binary search: a scan of every key of every lane on every frame was the cost)
+        let j = lowerBound(fks, frame - 0.5)
+        while (j < fks.length && fks[j].frame <= frame - 0.5) j++
+        const onKey = j < fks.length && fks[j].frame < frame + 0.5 ? fks[j] : undefined
         if (onKey) {
           ctx.beginPath(); ctx.arc(lx, kfToY(lane)(onKey.value), KF_R + 1, 0, Math.PI * 2)
           ctx.fillStyle = laneColor(auto, lt, T.text); ctx.fill()
@@ -1284,10 +1293,13 @@ export function TimelineCanvas({
         ctx.fillStyle = T.textHi; ctx.fillRect(ix - 1, top, 3, vr.y + vr.h - 1 - top)
       }
     }
-  }, [tracks, fps, frame, pxPerFrame, scrollFrame, autoLaneHeights, layerRowHeights, scrollY, laneStatus, overrides, clipSel, insertMk, timeSel])
+  }, [tracks, fps, pxPerFrame, scrollFrame, autoLaneHeights, layerRowHeights, scrollY, laneStatus, overrides, clipSel, insertMk, timeSel])
   const drawOverlayRef = useRef(drawOverlay)
   drawOverlayRef.current = drawOverlay
   useEffect(() => { drawOverlay() }, [drawOverlay])
+  // The playhead repaints the overlay directly: as a React render it re-ran this whole
+  // component 25–60 times a second
+  useEffect(() => frameStore.subscribe(() => drawOverlayRef.current()), [])
   // The insert marker blinks like a text cursor
   const blinkRef = useRef(true)
   useEffect(() => {
@@ -1640,7 +1652,7 @@ export function TimelineCanvas({
       let tf = Math.round(rawKf)
       let snapF: number | null = null
       if (!free && lock !== 'y') {
-        const cands = [...kd.snapTargets, Math.round(frameRef.current)]
+        const cands = [...kd.snapTargets, Math.round(frameStore.get())]
         let best = SNAP_PX / pxPerFrame
         if (gridSnap) {
           snapF = snapToGrid(rawKf, gridSnap.stepF, gridSnap.tempo)
@@ -1895,10 +1907,24 @@ export function TimelineCanvas({
     if (canvasRef.current) canvasRef.current.style.cursor = 'default'
   }, [onUpdateCue, onAddKeyframe, onDeleteKeyframe, onUpdateKeyframe, onEditTracks, onSeek, fps, tracks, tracksProp, draw, playing, readOnly, lockEnvelopes, getLayout, markers])
 
+  /** Drops the drag in progress without committing it: a second finger turned it into a pan /
+   *  pinch, the pointer or the window was lost, the canvas unmounts. What already follows the
+   *  pointer live (playhead, a marker, a lane's height) stays where it got to. */
+  const resetDrag = () => {
+    isDraggingPlayhead.current = false; markerDragRef.current = null
+    autoResizeRef.current = null; kfDragRef.current = null; bendDragRef.current = null
+    selDragRef.current = null; matDragRef.current = null; resizeClipRef.current = null
+    ghostClipRef.current = null; ghostDurRef.current = null; snapGuideRef.current = null
+  }
+  const abortDrag = () => { resetDrag(); draw() }
+
   // While a drag is active, follow the mouse on the window so leaving the canvas
   // neither drops nor freezes the drag.
-  const dragHandlersRef = useRef({ move: handleMouseMove, up: handleMouseUp })
-  dragHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
+  const dragHandlersRef = useRef({ move: handleMouseMove, up: handleMouseUp, abort: abortDrag })
+  dragHandlersRef.current = { move: handleMouseMove, up: handleMouseUp, abort: abortDrag }
+  // Removes the window listeners of the mouse drag in progress (kept for unmount: SHOW mode
+  // switching on mid-drag must not let the release commit through the gone canvas)
+  const endWinDragRef = useRef<(() => void) | null>(null)
   const isDragging = () => !!(isDraggingPlayhead.current || markerDragRef.current || autoResizeRef.current || kfDragRef.current ||
     bendDragRef.current || selDragRef.current || matDragRef.current || resizeClipRef.current)
 
@@ -1910,14 +1936,27 @@ export function TimelineCanvas({
     if (e.pointerType === 'touch') { touchRef.current.down(e); return }
     handleMouseDown(e)
     if (!isDragging()) return
+    endWinDragRef.current?.()
     const move = (ev: PointerEvent) => dragHandlersRef.current.move(ev)
-    const up = () => {
+    const up = () => { end(); dragHandlersRef.current.up() }
+    // The pointer taken by the system, or the window losing focus mid-drag (⌘Tab, a dialog):
+    // dropped as a touch cancel is, since the release that would commit it never came
+    const cancel = () => {
+      end(); dragHandlersRef.current.abort()
+      if (canvasRef.current) canvasRef.current.style.cursor = 'default'
+    }
+    const end = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
-      dragHandlersRef.current.up()
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('blur', cancel)
+      endWinDragRef.current = null
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
+    endWinDragRef.current = end
   }, [handleMouseDown])
 
   // ── Touch ──────────────────────────────────────────────────────────────────
@@ -1938,7 +1977,7 @@ export function TimelineCanvas({
   const pinchRef = useRef<{ cx: number; cy: number; dist: number } | null>(null)
 
   // How far the lanes can scroll: their full height against the space under the ruler
-  // The canvas re-renders every frame (the overlay): the content height only when rows change,
+  // The content height only when rows change (renders come with every hover and drag),
   // the view height from the resize observer (reading clientHeight here forced a reflow)
   const contentH = useMemo(() => {
     const lay = buildLayout(tracks, clipH, autoH, 0).filter(l => !l.hidden)
@@ -1955,15 +1994,6 @@ export function TimelineCanvas({
   })
   const setTouchTool = (t: 'scroll' | 'edit') => { setTouchToolState(t); try { localStorage.setItem(TOUCH_TOOL_KEY, t) } catch { /* ignore */ } }
   const lastTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
-
-  /** Drops whatever one finger started (a second finger turned it into a pan / pinch). */
-  const abortDrag = () => {
-    isDraggingPlayhead.current = false; markerDragRef.current = null
-    autoResizeRef.current = null; kfDragRef.current = null; bendDragRef.current = null
-    selDragRef.current = null; matDragRef.current = null; resizeClipRef.current = null
-    ghostClipRef.current = null; ghostDurRef.current = null; snapGuideRef.current = null
-    draw()
-  }
 
   const fingers = () => {
     const [a, b] = [...fingersRef.current.values()]
@@ -2106,6 +2136,16 @@ export function TimelineCanvas({
   touchRef.current = { down: touchDown, move: touchMove, up: touchUp, pinch: pinchMove }
   const touchMoveWin = useRef((ev: PointerEvent) => touchRef.current.move(ev)).current
   const touchUpWin = useRef((ev: PointerEvent) => touchRef.current.up(ev)).current
+  // Unmounted mid-drag (SHOW mode, a view switch): no listener outlives the canvas, nothing commits
+  useEffect(() => () => {
+    endWinDragRef.current?.()
+    window.removeEventListener('pointermove', touchMoveWin)
+    window.removeEventListener('pointerup', touchUpWin)
+    window.removeEventListener('pointercancel', touchUpWin)
+    const t = pressRef.current?.timer
+    if (t != null) clearTimeout(t)
+    resetDrag()
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Double click ───────────────────────────────────────────────────────────
   // Lane background: a breakpoint (Live). Option + double-click on a segment: straight again.
@@ -2222,7 +2262,7 @@ export function TimelineCanvas({
     const mat = clipboard
     if (!mat || readOnly || isEmptyMaterial(mat)) return false
     const ts = timeSelRef.current, im = insertRef.current
-    const at = ts ? ts.a : im ? im.f : Math.max(0, Math.round(frameRef.current))
+    const at = ts ? ts.a : im ? im.f : Math.max(0, Math.round(frameStore.get()))
     // One lane of material goes onto the lane picked, whatever parameter it drives: the
     // same curve there (values converted to that lane's kind)
     const pick = ts?.rows.find(r => r.laneId)?.laneId ?? im?.row.laneId ?? focusLaneRef.current
@@ -2660,7 +2700,7 @@ export function TimelineCanvas({
                 Edit {sec.name || 'Marker'}…</button>
             })()}
             <button className="ctx-btn" onClick={() => addMarker(rulerMenu.frame, rulerMenu.x, rulerMenu.y)}>Add marker here <span className="ctx-dim mono">{at(rulerMenu.frame)}</span></button>
-            <button className="ctx-btn" onClick={() => addMarker(frameRef.current, rulerMenu.x, rulerMenu.y)}>Add marker at playhead</button>
+            <button className="ctx-btn" onClick={() => addMarker(frameStore.get(), rulerMenu.x, rulerMenu.y)}>Add marker at playhead</button>
             {tempo && (() => {
         const beatF = (fps * 60) / tempo.bpm
         const set = (f: number) => { onSetDownbeat(Math.max(0, Math.round(f))); setRulerMenu(null) }
@@ -2671,7 +2711,7 @@ export function TimelineCanvas({
             <div className="ctx-title">Bar 1</div>
             <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
             <button className="ctx-btn" title="The exact frame clicked (not snapped)" onClick={() => set(rulerMenu.raw)}>Set bar 1 here <span className="ctx-dim mono">{framesToSmpte(rulerMenu.raw, fps)}</span></button>
-            <button className="ctx-btn" onClick={() => set(frameRef.current)}>Set bar 1 at playhead</button>
+            <button className="ctx-btn" onClick={() => set(frameStore.get())}>Set bar 1 at playhead</button>
             <div className="ctx-row">
               <label>Nudge</label>
               <div className="ctx-seg">
@@ -2699,7 +2739,7 @@ export function TimelineCanvas({
             timeLabel={tempo ? `${formatBarBeat(frameToBarBeat(f, tempo), 2)} · ${mk.time}` : mk.time}
             style={clampPos(markerMenu.x, markerMenu.y, 260, 330)}
             onChange={patch => updateMarker(mk.id, patch)}
-            onMoveToPlayhead={() => updateMarker(mk.id, { time: framesToSmpte(Math.round(frameRef.current), fps) })}
+            onMoveToPlayhead={() => updateMarker(mk.id, { time: framesToSmpte(Math.round(frameStore.get()), fps) })}
             onDelete={() => { onSetMarkers(markers.filter(m => m.id !== mk.id)); setMarkerMenu(null) }}
             onClose={() => setMarkerMenu(null)} />
         )

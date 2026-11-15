@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { showModelOf, sectionAt, countdown, clockText } from '../showModel'
-import { useFrame } from '../frameStore'
+import { useFrame, useLtcTc } from '../frameStore'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
 import {
@@ -18,7 +18,6 @@ interface Props {
   endFrame: number          // last frame with content (clips / audio); 0 = empty show
   ltcActive: boolean
   ltcOutside: boolean         // LTC arrives but is outside this timeline's TC range
-  ltcRawTC: string            // last incoming timecode
   followTc: boolean
   onToggleFollowTc: () => void
   anyLtcTimeline: boolean     // some timeline follows LTC (Follow TC makes sense)
@@ -56,7 +55,7 @@ const WARN_S = 30
 const DANGER_S = 10
 
 export function TransportBar({
-  engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, ltcRawTC, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord, arenaRec, onToggleArenaRec,
+  engineState, show, offsetFrames, endFrame, ltcActive, ltcOutside, followTc, onToggleFollowTc, anyLtcTimeline, recordArmed, onToggleRecord, arenaRec, onToggleArenaRec,
   overrideCount, onReenable, readOnly, onPlay, onStop, stopArmed, onLocate, onToggleBrowser, browserOpen, onSetBpm, arenaBpm, onToggleLinkTempo, onPushTempo,
   snap, snapAuto, onSetSnap, lockEnvelopes, onToggleLockEnvelopes,
 }: Props) {
@@ -76,6 +75,7 @@ export function TransportBar({
   // The end warning colours only matter while it runs toward the end
   const remainClass = endFrame === 0 ? 'idle' : !playing ? '' : remainingS <= DANGER_S ? 'danger' : remainingS <= WARN_S ? 'warn' : ''
 
+  const ltcRawTC = useLtcTc()   // last incoming timecode (only this bar re-renders with it)
   const clockChips = (
     <>
           {isLtc ? (

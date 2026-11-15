@@ -133,20 +133,32 @@ const api = (window as any).timeline
 
 // Clip thumbnails for clip-scope lane headers, shared across renders. Misses are retried
 // after a while (a clip in a deck Resolume isn't showing has no thumbnail until it is shown).
+// Capped (base64 images, a long session sees many clips): a Map keeps insertion order, so
+// re-inserting on use and dropping the first entry is a simple LRU.
+const THUMB_CACHE_MAX = 200
 const thumbCache = new Map<string, string>()
 const thumbMiss = new Map<string, number>()
+const thumbGet = (key: string) => {
+  const t = thumbCache.get(key)
+  if (t !== undefined) { thumbCache.delete(key); thumbCache.set(key, t) }
+  return t
+}
+const thumbPut = (key: string, t: string) => {
+  thumbCache.delete(key); thumbCache.set(key, t)
+  while (thumbCache.size > THUMB_CACHE_MAX) thumbCache.delete(thumbCache.keys().next().value!)
+}
 function useClipThumb(layerId: number | undefined, clipId: number | undefined): string | null {
   const key = layerId != null && clipId != null ? `${layerId}-${clipId}` : ''
-  const [thumb, setThumb] = useState<string | null>(() => (key && thumbCache.get(key)) || null)
+  const [thumb, setThumb] = useState<string | null>(() => (key && thumbGet(key)) || null)
   useEffect(() => {
     if (!key) { setThumb(null); return }
-    const hit = thumbCache.get(key)
+    const hit = thumbGet(key)
     if (hit) { setThumb(hit); return }
     setThumb(null)
     if (Date.now() - (thumbMiss.get(key) ?? 0) < 15000 || !api?.getThumbnail) return
     let alive = true
     api.getThumbnail(layerId, clipId).then((t: string | null) => {
-      if (t) { thumbCache.set(key, t); if (alive) setThumb(t) } else thumbMiss.set(key, Date.now())
+      if (t) { thumbPut(key, t); if (alive) setThumb(t) } else thumbMiss.set(key, Date.now())
     }).catch(() => thumbMiss.set(key, Date.now()))
     return () => { alive = false }
   }, [key, layerId, clipId])

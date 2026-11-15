@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useFrame } from '../frameStore'
+import { useFrameEvery } from '../frameStore'
 import type { LayerTrack, GroupTrack, ClipCue, AutomationSubTrack } from '../../../shared/show'
 import { listParams, sameRef, formatValue, normalize, type ParamInfo } from '../../../shared/paramTree'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
@@ -8,6 +8,7 @@ import { trackTag, shade } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
 import { knownClip } from '../resolver'
 import { mediaStartOf, trimModeFields } from '../../../shared/cues'
+import { frameKeyframes, lowerBound } from '../../../shared/automation'
 import { TOUCH } from '../touch'
 
 const api = (window as any).timeline
@@ -93,7 +94,9 @@ export function BottomPanel({
   const [live, setLive] = useState<Record<number, Real>>({})
   useEffect(() => {
     if (!track || !cue || tab === 'cue') return
-    let stopped = false
+    // Chained, not an interval: on slow Wi-Fi overlapping polls fill the browser's 6
+    // connections per host and GO / STOP wait behind them
+    let stopped = false, timer: ReturnType<typeof setTimeout> | undefined
     const poll = async () => {
       const raw = tab === 'layer'
         ? await api.getLayerRaw(track.resolumeLayerIndex)
@@ -105,8 +108,9 @@ export function BottomPanel({
       const setList = tab === 'layer' ? setLayerParams : setClipParams
       setList(prev => prev.map(p => p.id).join() === list.map(p => p.id).join() ? prev : list)
     }
-    const t = setInterval(poll, 300)
-    return () => { stopped = true; clearInterval(t) }
+    const next = () => { if (!stopped) timer = setTimeout(() => { poll().catch(() => {}).finally(next) }, 300) }
+    next()
+    return () => { stopped = true; clearTimeout(timer) }
   }, [tab, track?.resolumeLayerIndex, cue?.clipIndex, cue?.clipId])
 
   const handle = (
@@ -133,7 +137,7 @@ export function BottomPanel({
   const [groupLive, setGroupLive] = useState<Record<number, Real>>({})
   useEffect(() => {
     if (!group || group.resolumeGroupIndex < 1) { setGroupParams([]); return }
-    let stopped = false
+    let stopped = false, timer: ReturnType<typeof setTimeout> | undefined
     const poll = async () => {
       const raw = await api.getGroupRaw(group.resolumeGroupIndex)
       if (stopped || !raw) return
@@ -141,9 +145,10 @@ export function BottomPanel({
       setGroupLive(Object.fromEntries(list.map(p => [p.id, p.value as Real])))
       setGroupParams(prev => prev.map(p => p.id).join() === list.map(p => p.id).join() ? prev : list)
     }
-    poll()
-    const t = setInterval(poll, 300)
-    return () => { stopped = true; clearInterval(t) }
+    // Chained like the layer / clip poll
+    const next = () => { if (!stopped) timer = setTimeout(() => { poll().catch(() => {}).finally(next) }, 300) }
+    poll().catch(() => {}).finally(next)
+    return () => { stopped = true; clearTimeout(timer) }
   }, [group?.resolumeGroupIndex])
 
   if (group && trackIdx != null) {
@@ -386,7 +391,6 @@ function ParamList({ scope, tag, params, live, loading, lanes, fps, readOnly, on
   onEdit: (p: ParamInfo, real: Real) => void
   onSeek: (frame: number) => void
 }) {
-  const frame = useFrame()
   // While a fader is held, its value comes from the hand, not from polling
   const [held, setHeld] = useState<Record<number, Real>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -419,10 +423,6 @@ function ParamList({ scope, tag, params, live, loading, lanes, fps, readOnly, on
             {open && <div className="bp-param-grid">{ps.map(p => {
               const val = p.id in held ? held[p.id] : p.id in live ? live[p.id] : p.value
               const lane = lanes.find(l => sameRef(l.ref, p.ref))
-              const keyFrames = lane ? lane.keyframes.map(k => smpteToFrames(k.time, fps)).sort((a, b) => a - b) : []
-              const onKey = keyFrames.includes(frame)
-              const prevKey = [...keyFrames].reverse().find(f => f < frame)
-              const nextKey = keyFrames.find(f => f > frame)
               const shown = formatValue(p.kind, normalize(p, val), p, p.kind === 'choice' ? String(val) : undefined, p.suffix)
               let control: React.ReactNode
               if (p.kind === 'range') {
@@ -458,22 +458,8 @@ function ParamList({ scope, tag, params, live, loading, lanes, fps, readOnly, on
                   </span>
                   <span className="bp-val mono bp-num" title={shown}>{shown}</span>
                   {control}
-                  <span className="bp-keynav">
-                    {lane && (
-                      <button className="btn ghost bp-icon" disabled={prevKey === undefined}
-                        onClick={() => prevKey !== undefined && onSeek(prevKey)} title="Previous keyframe">◀</button>
-                    )}
-                    <button className={`btn ghost bp-icon bp-auto ${lane ? 'on' : ''} ${onKey ? 'key' : ''}`}
-                      disabled={readOnly}
-                      onClick={() => onToggleKey(p, val as Real)}
-                      title={!lane ? 'Animate: create a lane and a keyframe at the playhead'
-                        : onKey ? 'Remove the keyframe at the playhead' : 'Add a keyframe at the playhead'}
-                    >{onKey ? '◆' : '◇'}</button>
-                    {lane && (
-                      <button className="btn ghost bp-icon" disabled={nextKey === undefined}
-                        onClick={() => nextKey !== undefined && onSeek(nextKey)} title="Next keyframe">▶</button>
-                    )}
-                  </span>
+                  <KeyNav lane={lane} fps={fps} readOnly={readOnly}
+                    onToggle={() => onToggleKey(p, val as Real)} onSeek={onSeek} />
                 </div>
               )
             })}</div>}
@@ -481,5 +467,40 @@ function ParamList({ scope, tag, params, live, loading, lanes, fps, readOnly, on
         )
       })}
     </div>
+  )
+}
+
+// The keyframe buttons of a parameter: the only part that follows the playhead, so the
+// list itself doesn't re-render at frame rate (10× a second is enough for buttons)
+function KeyNav({ lane, fps, readOnly, onToggle, onSeek }: {
+  lane: AutomationSubTrack | undefined; fps: number; readOnly: boolean
+  onToggle: () => void
+  onSeek: (frame: number) => void
+}) {
+  const frame = useFrameEvery(100)
+  const kfs = lane ? frameKeyframes(lane.keyframes, fps, t => smpteToFrames(t, fps)) : []
+  const i = lowerBound(kfs, frame)
+  let j = i
+  while (j < kfs.length && kfs[j].frame <= frame) j++
+  const onKey = j > i
+  const prevKey = i > 0 ? kfs[i - 1].frame : undefined
+  const nextKey = j < kfs.length ? kfs[j].frame : undefined
+  return (
+    <span className="bp-keynav">
+      {lane && (
+        <button className="btn ghost bp-icon" disabled={prevKey === undefined}
+          onClick={() => prevKey !== undefined && onSeek(prevKey)} title="Previous keyframe">◀</button>
+      )}
+      <button className={`btn ghost bp-icon bp-auto ${lane ? 'on' : ''} ${onKey ? 'key' : ''}`}
+        disabled={readOnly}
+        onClick={onToggle}
+        title={!lane ? 'Animate: create a lane and a keyframe at the playhead'
+          : onKey ? 'Remove the keyframe at the playhead' : 'Add a keyframe at the playhead'}
+      >{onKey ? '◆' : '◇'}</button>
+      {lane && (
+        <button className="btn ghost bp-icon" disabled={nextKey === undefined}
+          onClick={() => nextKey !== undefined && onSeek(nextKey)} title="Next keyframe">▶</button>
+      )}
+    </span>
   )
 }

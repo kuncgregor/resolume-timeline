@@ -40,3 +40,34 @@ export class ErrorBoundary extends Component<Props, State> {
     return this.props.children
   }
 }
+
+// One panel that fails to draw must not take the app with it: App keeps the LTC decoder, the
+// audio track, GO / STOP and the mini window's commands running. The panel shows the error in
+// its place, and comes back on Retry or when another timeline is loaded.
+interface PanelProps { name: string; resetKey?: unknown; children: ReactNode }
+
+export class PanelBoundary extends Component<PanelProps, State & { key?: unknown }> {
+  state: State & { key?: unknown } = { error: null, key: this.props.resetKey }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { error }
+  }
+
+  static getDerivedStateFromProps(p: PanelProps, s: State & { key?: unknown }) {
+    return p.resetKey !== s.key ? { error: null, key: p.resetKey } : null
+  }
+
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error(`[PanelBoundary ${this.props.name}]`, error, info.componentStack)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="panel-error" role="alert">
+        <span>{this.props.name} hit an error: {this.state.error.message}. The show keeps running.</span>
+        <button className="btn" onClick={() => this.setState({ error: null })}>Retry</button>
+      </div>
+    )
+  }
+}
