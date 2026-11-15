@@ -39,7 +39,7 @@
   background: var(--bg-well); color: var(--text-hi); border: 1px solid var(--focus-ring); outline: none;
 }
 /* Showfile save state next to its name: "Saved 21:04 · auto", "● Unsaved" */
-.save-state { margin-left: 6px; font-size: var(--fs-meta); color: var(--text-faint); white-space: nowrap; }
+.save-state { margin-left: 6px; min-width: 104px; font-size: var(--fs-meta); color: var(--text-faint); white-space: nowrap; }   /* "Saved 14:57 · auto" doesn't push the menus */
 .save-state.dirty { color: var(--select); }
 .save-state.danger { color: var(--danger); font-weight: 700; }
 .save-state .dirty-dot { margin-right: 3px; }
@@ -83,7 +83,7 @@
 .rundown-scroll {
   flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 1px;
   overflow-x: auto; overflow-y: hidden; background: var(--bg-well);
-  scrollbar-width: thin;
+  scrollbar-width: thin; scrollbar-color: var(--bg-splitter) var(--bg-well);
 }
 .rundown-scroll::-webkit-scrollbar { height: 4px; }
 
@@ -103,14 +103,14 @@
 
 .rd-stripe { height: 4px; flex-shrink: 0; }
 .rd-body { flex: 1; min-height: 0; padding: 4px 8px 5px; display: flex; flex-direction: column; justify-content: space-between; }
-.rd-head { display: flex; align-items: center; gap: 6px; height: 16px; }
+.rd-head { display: flex; align-items: center; gap: 6px; height: 16px; flex-shrink: 0; }
 .rd-head .chip { height: 16px; font-size: 10px; padding: 0 5px; }
 .rd-num { font-size: var(--fs-meta); color: var(--text-dim); }
 .rd-name {
-  font-size: var(--fs-label); font-weight: 700; color: var(--text-hi);
+  flex-shrink: 0; font-size: var(--fs-label); font-weight: 700; color: var(--text-hi);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.rd-meta { font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rd-meta { flex-shrink: 0; font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .rd-controls { position: absolute; top: 6px; right: 4px; display: none; gap: 1px; }
 .rd-block:hover .rd-controls, .rd-controls.confirming { display: flex; }
@@ -466,9 +466,9 @@
 }
 .auto-osc.editable { cursor: pointer; }
 .auto-osc.editable:hover { background: var(--bg-hover); }
-.auto-line { display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px; }
+.auto-line { display: flex; align-items: center; gap: 3px; min-width: 0; height: 20px; }
 .auto-value {
-  flex: 0 1 auto; min-width: 0; font-size: var(--fs-meta); color: var(--text);
+  flex: 0 1 auto; min-width: 34px; font-size: var(--fs-meta); color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .auto-value.outside { color: var(--text-faint); }
@@ -476,7 +476,7 @@
 .auto-enable { flex-shrink: 0; cursor: pointer; }
 .auto-enable:disabled { cursor: default; }
 .auto-line .lane-tool { margin-right: 0; }
-.auto-line .lane-tool:last-child { margin-right: 6px; }
+.auto-line .lane-tool:last-child { margin-right: 2px; }
 .lane-tool:disabled { color: var(--text-faint); cursor: default; background: transparent; }
 .auto-snap { font-size: var(--fs-ui); }
 .auto-snap:hover:not(:disabled) { color: var(--live); }
@@ -629,6 +629,17 @@
 /* Hide a lane / show hidden lanes */
 .auto-hide { display: inline-flex; align-items: center; justify-content: center; }
 .auto-row:not(:hover) .auto-hide { opacity: 0.35; }
+.transition-chip {
+  align-self: center; height: 18px; padding: 0 4px; border: none; background: transparent;
+  color: var(--text-faint); font-size: var(--fs-meta); font-family: var(--font-tc); white-space: nowrap; cursor: pointer;
+}
+.transition-chip.on { color: var(--text-dim); }
+.transition-chip:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-hi); }
+.transition-chip:disabled { cursor: default; }
+.transition-pop { min-width: 180px; }
+.transition-pop-title { padding: 4px 14px 6px; color: var(--text-faint); font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.transition-pop-custom { display: flex; align-items: center; gap: 6px; padding: 2px 14px 4px; color: var(--text-dim); font-size: var(--fs-ui); }
+.transition-pop-custom input { width: 64px; height: 22px; padding: 0 4px; background: var(--bg-well); color: var(--text-hi); border: none; box-shadow: inset 0 0 0 1px var(--border-field); font-family: var(--font-tc); }
 .lane-toggle.hidden-chip { width: auto; padding: 0 4px; display: inline-flex; align-items: center; gap: 2px; color: var(--text-dim); font-size: var(--fs-meta); }
 .lane-toggle.hidden-chip:hover { color: var(--text-hi); }
 
@@ -716,3 +727,10 @@
 /* Right-click menu of a layer / group / lane header */
 .dropdown.header-menu { position: fixed; min-width: 240px; max-width: 360px; }
 .dropdown.header-menu .dropdown-item { overflow: hidden; text-overflow: ellipsis; }
+
+.btn.clips-toggle { flex-shrink: 0; }   /* never squeezed into "CLI" on narrow windows */
+
+/* VIEW menu: show view, touch mode, size, scale */
+.view-menu { min-width: 280px; }
+.view-menu-row { display: flex; align-items: center; gap: 1px; padding: 4px 14px; }
+.view-menu-row > span { width: 52px; color: var(--text-dim); font-size: var(--fs-ui); }

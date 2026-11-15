@@ -53,7 +53,7 @@
   background: var(--bg-lane); border-bottom: 1px solid var(--bg-gutter);
 }
 .bp-label {
-  width: 120px; flex-shrink: 0; text-align: right;
+  width: 140px; flex-shrink: 0; text-align: right;
   color: var(--text-dim); font-size: var(--fs-meta); text-transform: uppercase; letter-spacing: 0.05em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -181,6 +181,7 @@ input[type=range].bp-slider {
 .browser-clip-row.draggable:hover { background: var(--bg-hover); }
 .browser-clip-row.draggable:active { cursor: grabbing; }
 .browser-clip-row.nodrop { opacity: 0.4; cursor: not-allowed; }
+.browser-clip-row.picked, .browser-clip-row.picked:hover { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--select); }
 
 .clip-row-thumb {
   width: 60px; height: 34px; flex-shrink: 0; overflow: hidden;
@@ -276,6 +277,10 @@ input[type=range].bp-slider {
 }
 .btn.modal-primary { background: var(--live-fill); color: var(--text-hi); }
 .btn.modal-primary:hover { background: var(--live-header); }
+.btn.modal-danger { background: var(--danger-fill); color: var(--text-hi); }
+.btn.modal-danger:hover { background: var(--danger); }
+.confirm-message { padding: 14px 16px; color: var(--text); font-size: var(--fs-ui); line-height: 1.5; }
+.confirm-message b { color: var(--text-hi); }
 
 /* Deck tabs in the clip browser (mirror Resolume's deck bar) */
 .browser-decks { flex-shrink: 0; background: var(--bg-gutter); display: flex; flex-direction: column; gap: 1px; }

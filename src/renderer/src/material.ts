@@ -13,6 +13,11 @@ import type { Track, LayerTrack, GroupTrack, ClipCue, AutomationSubTrack, Keyfra
 import { curveOf, frameKeyframes, sampleLane } from '../../shared/automation'
 import { smpteToFrames, framesToSmpte } from './components/timeUtils'
 
+// Clips in 'edit' trim mode keep their picture where it is: a part that now starts later in
+// the clip starts that much later in its media. 'loop' clips start at their media start anyway.
+const shiftMedia = (cue: ClipCue, df: number): ClipCue =>
+  cue.trim === 'edit' && df > 0 ? { ...cue, mediaStart: (cue.mediaStart ?? 0) + df } : cue
+
 /** A timeline row: a layer's clip row (no laneId; a group's own row) or one automation lane. */
 export interface Row { trackId: string; laneId?: string }
 /** Live's time selection: frames [a, b] over rows (top to bottom). */
@@ -171,7 +176,7 @@ export function extractTime(tracks: Track[], sel: TimeSel, ctx: EditCtx): Materi
         const bound = t.automations.filter(l => boundTo(l, cue.id)).map(lane => ({
           lane, keys: shiftKeys(whole ? framesOf(lane, ctx.fps) : sliceKeys(lane, lo, hi, ctx.fps), -a),
         }))
-        cues.push({ cue, f: lo - a, dur: dur === 0 ? 0 : hi - lo, bound })
+        cues.push({ cue: shiftMedia(cue, lo - sf), f: lo - a, dur: dur === 0 ? 0 : hi - lo, bound })
       }
       if (cues.length) mat.clips.push({ trackId, cues })
     }
@@ -211,7 +216,7 @@ export function deleteTime(tracks: Track[], sel: TimeSel, ctx: EditCtx): Track[]
         if (sf >= a && ef <= b) { bound.forEach(l => goneLanes.add(l.id)); continue }
         if (sf < a && ef > b) {
           // Split around the selection: the right part is a new cue with its own copies of the lanes
-          const right: ClipCue = { ...cue, id: ctx.newId('c'), time: framesToSmpte(b, fps), duration: framesToSmpte(ef - b, fps) }
+          const right: ClipCue = { ...shiftMedia(cue, b - sf), id: ctx.newId('c'), time: framesToSmpte(b, fps), duration: framesToSmpte(ef - b, fps) }
           out.push({ ...cue, duration: framesToSmpte(a - sf, fps) }, right)
           for (const l of bound) {
             const keys = framesOf(l, fps)
@@ -221,7 +226,7 @@ export function deleteTime(tracks: Track[], sel: TimeSel, ctx: EditCtx): Track[]
           continue
         }
         if (sf < a) out.push({ ...cue, duration: framesToSmpte(a - sf, fps) })
-        else out.push({ ...cue, time: framesToSmpte(b, fps), duration: framesToSmpte(ef - b, fps) })
+        else out.push({ ...shiftMedia(cue, b - sf), time: framesToSmpte(b, fps), duration: framesToSmpte(ef - b, fps) })
         for (const l of bound) laneEdits.set(l.id, cutKeys(l, a, b, fps))
       }
       clips = sortCues(out, fps)
@@ -254,7 +259,7 @@ export function splitAt(tracks: Track[], trackIds: string[], f: number, ctx: Edi
     const clips = t.clips.flatMap(cue => {
       const { sf, dur } = spans.get(cue.id)!
       if (dur === 0 || f <= sf || f >= sf + dur) return [cue]
-      const right: ClipCue = { ...cue, id: ctx.newId('c'), time: framesToSmpte(f, ctx.fps), duration: framesToSmpte(sf + dur - f, ctx.fps) }
+      const right: ClipCue = { ...shiftMedia(cue, f - sf), id: ctx.newId('c'), time: framesToSmpte(f, ctx.fps), duration: framesToSmpte(sf + dur - f, ctx.fps) }
       ids.push(right.id)
       automations = automations.flatMap(l => {
         if (!boundTo(l, cue.id)) return [l]
@@ -535,4 +540,71 @@ export function moveKeys(tracks: Track[], moves: KeyMove[], fps: number): Track[
 /** The keyframe indices of a lane inside [a, b] (Live: the selected breakpoints). */
 export function keysIn(lane: AutomationSubTrack, a: number, b: number, fps: number): number[] {
   return lane.keyframes.flatMap((kf, i) => { const f = smpteToFrames(kf.time, fps); return f >= a && f <= b ? [i] : [] })
+}
+
+// ── Crossfade ─────────────────────────────────────────────────────────────────
+
+interface Placed { track: LayerTrack; cue: ClipCue; sf: number; ef: number }
+
+function placeCue(tracks: Track[], cueId: string, fps: number): Placed | null {
+  for (const t of tracks) {
+    if (!isLayer(t)) continue
+    const cue = t.clips.find(c => c.id === cueId)
+    if (cue) { const sf = smpteToFrames(cue.time, fps); return { track: t, cue, sf, ef: sf + smpteToFrames(cue.duration, fps) } }
+  }
+  return null
+}
+
+// Why two clips can't crossfade, or the plan: the top clip (higher Resolume layer, drawn
+// over the other) fades over the overlap, in when it starts later, out when it ends first.
+// The lower clip stays at full opacity: with Alpha blending that is a true dissolve.
+// Rarely needed: clips one after another on a layer blend with Resolume's layer transition.
+function crossfadePlan(tracks: Track[], idA: string, idB: string, fps: number):
+  { error: string } | { top: Placed; edge: 'fadeIn' | 'fadeOut'; len: number } {
+  const a = placeCue(tracks, idA, fps), b = placeCue(tracks, idB, fps)
+  if (!a || !b) return { error: 'Select two clips' }
+  if (a.track.id === b.track.id) return { error: 'The clips are on the same layer: put one on another layer' }
+  if (a.ef <= a.sf || b.ef <= b.sf) return { error: 'Trigger-only clips have no length to fade' }
+  if (a.track.resolumeLayerIndex < 1 || b.track.resolumeLayerIndex < 1) return { error: 'A layer is no longer in Resolume' }
+  const lo = Math.max(a.sf, b.sf), hi = Math.min(a.ef, b.ef)
+  if (hi <= lo) return { error: 'The clips don\'t overlap: drag one so they overlap where the blend should be' }
+  if ((a.sf <= b.sf && a.ef >= b.ef) || (b.sf <= a.sf && b.ef >= a.ef))
+    return { error: 'One clip lies inside the other: a crossfade needs one to start while the other ends' }
+  const top = a.track.resolumeLayerIndex > b.track.resolumeLayerIndex ? a : b
+  const low = top === a ? b : a
+  return { top, edge: top.sf > low.sf ? 'fadeIn' : 'fadeOut', len: hi - lo }
+}
+
+/** Why the two clips can't crossfade (menu tooltip), or null when they can. */
+export function crossfadeProblem(tracks: Track[], idA: string, idB: string, fps: number): string | null {
+  const p = crossfadePlan(tracks, idA, idB, fps)
+  return 'error' in p ? p.error : null
+}
+
+/** Clips on other layers a cue can crossfade with (right-click menu). */
+export function crossfadePartners(tracks: Track[], cueId: string, fps: number): { cue: ClipCue; layerName: string }[] {
+  const out: { cue: ClipCue; layerName: string }[] = []
+  for (const t of tracks) {
+    if (!isLayer(t)) continue
+    for (const c of t.clips) if (c.id !== cueId && !crossfadeProblem(tracks, cueId, c.id, fps)) out.push({ cue: c, layerName: t.name })
+  }
+  return out
+}
+
+/** The fade a crossfade puts on the top clip (an opacity lane, made by App's clip fade). */
+export function crossfadeFade(tracks: Track[], idA: string, idB: string, fps: number): { cueId: string; mode: 'in' | 'out'; frames: number } | null {
+  const p = crossfadePlan(tracks, idA, idB, fps)
+  return 'error' in p ? null : { cueId: p.top.cue.id, mode: p.edge === 'fadeIn' ? 'in' : 'out', frames: p.len }
+}
+
+/** A clip's start moved by a left-edge trim: 'edit' clips move their media start with it (the
+ *  picture stays put; never before the media's start), 'loop' clips keep theirs. */
+export function trimStart(cue: ClipCue, newSf: number, fps: number): { sf: number; cue: ClipCue } {
+  const sf0 = smpteToFrames(cue.time, fps)
+  if (cue.trim !== 'edit') return { sf: newSf, cue }
+  const sf = Math.max(newSf, sf0 - (cue.mediaStart ?? 0))
+  const ms = (cue.mediaStart ?? 0) + (sf - sf0)
+  const next = { ...cue }
+  if (ms > 0) next.mediaStart = ms; else delete next.mediaStart
+  return { sf, cue: next }
 }

@@ -7,6 +7,11 @@ import './styles/tokens.css'
 import './styles/chrome.css'
 import './styles/canvas.css'
 import './styles/panels.css'
+import './styles/remote.css'
+import './styles/touch.css'
+import { applyTouchMode } from './touch'
+
+applyTouchMode()
 
 window.onerror = (msg, src, line, col, err) => {
   console.error('[RENDERER CRASH]', msg, src, line, col, err)

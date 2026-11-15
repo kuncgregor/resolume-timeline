@@ -4,6 +4,7 @@ import type { Track, LayerTrack } from '../../../shared/show'
 import type { DragClipData } from '../App'
 import { rv, layerDisplayName } from '../../../shared/resolume'
 import { decksOf } from '../decks'
+import { TOUCH } from '../touch'
 
 // Empty slots are listed by Resolume too; they cannot be triggered meaningfully
 const isEmptySlot = (clip: ResolumeClip) => rv(clip.connected as any, '') === 'Empty'
@@ -16,6 +17,7 @@ interface Props {
   onClose: () => void
   onDragStart: (data: DragClipData) => void
   onDragEnd: () => void
+  onPlace: (clips: DragClipData[]) => void   // touch: picked clips go where the timeline is tapped
 }
 
 // What the list shows: deck, layers and their non-empty clips. A change means a refresh.
@@ -27,7 +29,7 @@ function contentKey(comp: ResolumeComposition | null): string {
   ).join(';')
 }
 
-export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onDragEnd }: Props) {
+export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onDragEnd, onPlace }: Props) {
   const [composition, setComposition] = useState<ResolumeComposition | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,6 +38,8 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
   thumbsRef.current = thumbnails
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set<number>([999999]))
   const [query, setQuery] = useState('')
+  // Selected clips (one layer at a time): dragging one of them drags them all, in list order
+  const [picked, setPicked] = useState<{ layerId: number; ids: number[]; anchor: number } | null>(null)
 
   // quiet: background refresh after a change in Resolume — no "Loading…" flash
   const refresh = useCallback(async (quiet = false) => {
@@ -106,16 +110,38 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
     tracks.filter(t => t.type === 'layer').map(t => (t as LayerTrack).resolumeLayerId)
   )
 
-  const handleDragStart = (e: React.DragEvent, layer: ResolumeLayer, clip: ResolumeClip, li: number, ci: number) => {
-    const clipName = rv(clip.name, `Slot ${ci + 1}`)
-    const data: DragClipData = {
-      layerIndex: li + 1, layerId: layer.id,
-      clipIndex: ci + 1, clipId: clip.id, clipName,
-      ...(shownDeck ? { deckId: shownDeck.id, deckIndex: shownDeck.index, deckName: shownDeck.name } : {}),
-    }
+  const dragData = (layer: ResolumeLayer, clip: ResolumeClip, li: number, ci: number): DragClipData => ({
+    layerIndex: li + 1, layerId: layer.id,
+    clipIndex: ci + 1, clipId: clip.id, clipName: rv(clip.name, `Slot ${ci + 1}`),
+    ...(shownDeck ? { deckId: shownDeck.id, deckIndex: shownDeck.index, deckName: shownDeck.name } : {}),
+  })
+
+  // Click selects a clip, ⌘-click adds / removes one, Shift-click a range (within one layer)
+  const pick = (e: React.MouseEvent, layerId: number, clipId: number, order: number[]) => {
+    setPicked(prev => {
+      const same = prev?.layerId === layerId ? prev : null
+      if (e.metaKey || e.ctrlKey || TOUCH) {   // touch: a tap adds / removes, no modifier keys
+        const ids = same?.ids.includes(clipId) ? same.ids.filter(id => id !== clipId) : [...(same?.ids ?? []), clipId]
+        return ids.length ? { layerId, ids, anchor: clipId } : null
+      }
+      if (e.shiftKey && same) {
+        const a = order.indexOf(same.anchor), b = order.indexOf(clipId)
+        if (a >= 0 && b >= 0) return { layerId, ids: order.slice(Math.min(a, b), Math.max(a, b) + 1), anchor: same.anchor }
+      }
+      return { layerId, ids: [clipId], anchor: clipId }
+    })
+  }
+
+  // Dragging a selected clip takes the whole selection (list order); another clip goes alone
+  const handleDragStart = (e: React.DragEvent, layer: ResolumeLayer, clip: ResolumeClip, li: number, ci: number,
+    rows: { clip: ResolumeClip; ci: number }[]) => {
+    const group = picked?.layerId === layer.id && picked.ids.includes(clip.id)
+      ? rows.filter(r => picked.ids.includes(r.clip.id)) : [{ clip, ci }]
+    if (!group.some(r => r.clip.id === clip.id) || group.length === 1) setPicked({ layerId: layer.id, ids: [clip.id], anchor: clip.id })
+    const data = group.map(r => dragData(layer, r.clip, li, r.ci))
     e.dataTransfer.setData('application/timeline-clip', JSON.stringify(data))
     e.dataTransfer.effectAllowed = 'copy'
-    onDragStart(data)
+    onDragStart(data[0])
   }
 
   const toggleCollapse = (id: number) => {
@@ -217,15 +243,20 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
                     const clipName = rv(clip.name, '')
                     const thumb = thumbnails[`${layer.id}-${clip.id}`]
                     const canDrag = hasTrack
+                    const isPicked = picked?.layerId === layer.id && picked.ids.includes(clip.id)
+                    const nPicked = picked?.layerId === layer.id ? picked.ids.length : 0
 
                     return (
                       <div
                         key={clip.id}
-                        className={`browser-clip-row ${canDrag ? 'draggable' : 'nodrop'}`}
-                        draggable={canDrag}
-                        onDragStart={e => handleDragStart(e, layer, clip, li, ci)}
+                        className={`browser-clip-row ${canDrag ? 'draggable' : 'nodrop'}${isPicked ? ' picked' : ''}`}
+                        draggable={canDrag && !TOUCH}
+                        onClick={e => pick(e, layer.id, clip.id, clips.map(r => r.clip.id))}
+                        onDragStart={e => handleDragStart(e, layer, clip, li, ci, clips)}
                         onDragEnd={onDragEnd}
-                        title={canDrag ? `Drag onto L${li + 1} in the timeline` : `Layer L${li + 1} is not in the timeline — add a lane for this layer first`}
+                        title={!canDrag ? `Layer L${li + 1} is not in the timeline — add a lane for this layer first`
+                          : isPicked && nPicked > 1 ? `Drag the ${nPicked} selected clips onto L${li + 1}: they go one after another`
+                          : `Drag onto L${li + 1} in the timeline. ⌘-click / Shift-click to select several and drag them together`}
                       >
                         <div className="clip-row-thumb">
                           {thumb
@@ -246,6 +277,22 @@ export function ClipBrowser({ tracks, liveComposition, onClose, onDragStart, onD
           )
         })}
       </div>
+      {TOUCH && picked && (() => {
+        // Touch has no drag & drop into the timeline: the picked clips are placed by a tap there
+        const li = (composition?.layers ?? []).findIndex(l => l?.id === picked.layerId)
+        const layer = li >= 0 ? composition!.layers![li] : null
+        const rows = (layer?.clips ?? []).map((clip, ci) => ({ clip, ci })).filter(r => r.clip && picked.ids.includes(r.clip.id))
+        if (!layer || !rows.length || !trackedIds.has(layer.id)) return null
+        return (
+          <div className="browser-place">
+            <button className="btn modal-primary" onClick={() => { onPlace(rows.map(r => dragData(layer, r.clip, li, r.ci))); setPicked(null) }}>
+              Place {rows.length === 1 ? 'clip' : `${rows.length} clips`}
+            </button>
+            <button className="btn" onClick={() => setPicked(null)}>Clear</button>
+          </div>
+        )
+      })()}
+
     </div>
   )
 }

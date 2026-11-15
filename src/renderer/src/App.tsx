@@ -3,11 +3,11 @@ import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, 
 import type { ResolumeComposition } from '../../shared/resolume'
 import { isValidRundown, type RundownEntry, type ShowEntry, type BreakEntry } from '../../shared/concert'
 import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type ShowfileData } from '../../shared/showfile'
-import { rv, layerDisplayName, resolumeColor } from '../../shared/resolume'
+import { rv, layerDisplayName, resolumeColor, layerTransition } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
 import { TimelineCanvas } from './components/TimelineCanvas'
-import { convertItems } from './material'
+import { convertItems, crossfadeFade } from './material'
 import { OverviewBar } from './components/OverviewBar'
 import { BottomPanel } from './components/BottomPanel'
 import { ClipBrowser } from './components/ClipBrowser'
@@ -24,10 +24,14 @@ import { resolveShow, laneFieldsFor, rememberClip, knownClip } from './resolver'
 import type { LaneStatusMap } from './laneStatus'
 import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
+import { MobileRemote, useRemoteLayout } from './components/MobileRemote'
+import { useKeepAwake } from './wakeLock'
 import { frameStore } from './frameStore'
-import { PPF_MIN, PPF_MAX } from './layout'
+import { frameKeyframes } from '../../shared/automation'
+import { PPF_MIN, PPF_MAX, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_LANE_H, MIN_AUTO_H } from './layout'
+import { TOUCH } from './touch'
 import { tempoOf, rulerModeOf, snapOf, gridSnapOf, formatSnapStep, type SnapGrid } from './grid'
-import { sameRef, normalize, resolveRef, oscAddress, type ParamInfo } from '../../shared/paramTree'
+import { sameRef, normalize, resolveRef, oscAddress, CLIP_OPACITY_PATH, type ParamInfo } from '../../shared/paramTree'
 
 const api = (window as any).timeline
 // A browser on the app's tablet server: edits the same session, but LTC, the audio track,
@@ -186,9 +190,20 @@ function resolveClipDuration(clipRaw: any): number {
 
 let uid = 1
 const newId = () => `c${Date.now()}-${uid++}`
+const MAX_ROW_H = 320        // tallest layer row / lane the touch toolbar's Rows + makes
+const BLEND_SETTLE_MS = 150  // after a layer transition, before the cleared clip's parameters are reset
+const DROP_FALLBACK_S = 5   // length of a dropped clip in a row whose media length Resolume doesn't report
+
+// Whether a lane sets its parameter at frame T: it has keyframes and T is inside them (a
+// 'hold' lane always). Outside, the parameter is left alone (the engine's span rule).
+function laneCovers(a: AutomationSubTrack, T: number, fps: number): boolean {
+  if (!a.keyframes.length) return false
+  if (a.outside === 'hold') return true
+  const kf = frameKeyframes(a.keyframes, fps, t => smpteToFrames(t, fps))
+  return T >= kf[0].frame && T <= kf[kf.length - 1].frame
+}
 
 // ── Clip automation templates (clip right-click: fades, copy / paste) ─────────
-const CLIP_OPACITY_PATH: ParamRef['path'] = ['video', 'opacity']
 type CueKey = { frame: number; value: number; ease: string; option?: string }
 // Lanes bound to a cue, keyframe times relative to the cue start (frames at `fps`)
 interface ClipAutoClipboard {
@@ -272,6 +287,10 @@ export default function App() {
   // Playhead locked: SHOW mode while playing (only GO / the clock move it)
   const showLockedRef = () => showModeRef.current && engineRef.current.playing
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
+  // Small portrait screen (the tablet link opened on a phone): the remote control instead of the timeline
+  const phoneRemote = useRemoteLayout()
+  // Tablets and phones on the LAN link stay awake while the app is open (show view on a desk)
+  const awake = useKeepAwake(REMOTE)
   const activeIdRef = useRef<string>(_initActiveId)
 
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
@@ -519,6 +538,8 @@ export default function App() {
   }, [])
   const clearSelection = useCallback(() => setSelection({ trackId: null, cueId: null }), [])
   const [draggingClip, setDraggingClip] = useState<DragClipData | null>(null)
+  // Touch: clips picked in the browser, placed by a tap on the timeline (no drag & drop there)
+  const [placing, setPlacing] = useState<DragClipData[] | null>(null)
   const [autoLaneHeights, setAutoLaneHeights] = useState<Record<string, number>>({})
   const [layerRowHeights, setLayerRowHeights] = useState<Record<string, number>>({})
   const [bottomPanelHeight, setBottomPanelHeight] = useState(250)
@@ -607,6 +628,16 @@ export default function App() {
   const handleReenable = useCallback((ids?: string[]) => { api.reenableAutomation(ids) }, [])
 
   // Resolume's composition tempo (BPM link)
+  // Resolume layer transition per timeline layer (seconds; clip changes blend over it): drawn
+  // as a ramp at each clip start. The key keeps the map stable across polls (canvas props).
+  const transitionKey = useMemo(() => show.tracks.map(t => {
+    if (t.type !== 'layer') return ''
+    const tr = layerTransition(composition?.layers?.find(l => l?.id === (t as LayerTrack).resolumeLayerId))
+    return tr ? `${t.id}=${tr.seconds}` : ''
+  }).filter(Boolean).join('|'), [composition, show.tracks])
+  const transitionSecs = useMemo(() => Object.fromEntries(transitionKey ? transitionKey.split('|')
+    .map(kv => { const i = kv.lastIndexOf('='); return [kv.slice(0, i), Number(kv.slice(i + 1))] }) : []) as Record<string, number>, [transitionKey])
+
   const arenaTempo = useMemo(() => {
     const t = (composition as any)?.tempocontroller?.tempo
     return t?.id != null ? { id: t.id as number, value: Number(t.value) } : null
@@ -765,6 +796,70 @@ export default function App() {
   }, [show, composition, setShow, clipCacheTick])
 
   useEffect(() => { if (!REMOTE) api.loadShowDirect(show) }, [show])
+
+  // Parameters go back to their Resolume default when the timeline lets go of them:
+  // - an edit takes one out of automation at the playhead (its lane removed, or its keyframes
+  //   deleted / moved so the playhead is no longer inside them)
+  // - another timeline is selected: every parameter the previous one automated, except those
+  //   the new one sets at its start (its lanes send them; resetting would flash)
+  const releaseRef = useRef<{ entryId: string; show: Show } | null>(null)
+  useEffect(() => {
+    const prev = releaseRef.current
+    releaseRef.current = { entryId: activeId, show }
+    if (REMOTE || !prev || prev.show === show) return
+    const lanes = (s: Show) => {
+      const out = new Map<string, AutomationSubTrack>()
+      for (const t of s.tracks) if (t.type === 'layer' || t.type === 'group')
+        for (const a of (t as LayerTrack | GroupTrack).automations) out.set(a.id, a)
+      return out
+    }
+    const before = lanes(prev.show), now = lanes(show)
+    // The previous timeline's lanes were resolved; the new one's aren't yet, resolve them here
+    const status = laneStatusRef.current
+    const paramOf = (id: string) => { const st = status[id]; return st?.state === 'ok' ? st.info?.id : undefined }
+    if (prev.entryId !== activeId) {
+      const comp = compositionRef.current
+      const targets = resolveShow(show, comp).targets
+      const held = new Set([...now.values()].filter(a => laneCovers(a, 0, show.frameRate)).map(a => targets[a.id]?.paramId))
+      // A layer the new timeline doesn't start a clip on is cleared, and with a layer transition
+      // its old clip blends out for that long: its parameters go back to default once it's gone
+      // (resetting them at once would bring a faded-out clip back for the blend)
+      const startsOn = (layerId: number) => show.tracks.find(t => t.type === 'layer' && (t as LayerTrack).resolumeLayerId === layerId &&
+        (t as LayerTrack).clips.some(c => smpteToFrames(c.time, show.frameRate) === 0)) as LayerTrack | undefined
+      const later = new Map<number, number[]>()   // delay (ms) → parameter ids
+      const reset = (paramId: number, delay: number) => later.set(delay, [...(later.get(delay) ?? []), paramId])
+      const done = new Set<number>()
+      for (const t of prev.show.tracks) {
+        if (t.type !== 'layer' && t.type !== 'group') continue
+        const lt = t as LayerTrack
+        const layer = t.type === 'layer' ? comp?.layers?.find(l => l?.id === lt.resolumeLayerId) : null
+        const blendMs = Math.round((layerTransition(layer)?.seconds ?? 0) * 1000)
+        const next = t.type === 'layer' ? startsOn(lt.resolumeLayerId) : undefined
+        for (const a of lt.automations) {
+          const paramId = paramOf(a.id)
+          if (paramId === undefined || held.has(paramId) || done.has(paramId)) continue
+          done.add(paramId)
+          // Still showing after the switch: the new timeline's clip on this layer, or the layer it starts one on
+          const showing = a.ref?.scope === 'clip' ? next?.clips.some(c => c.clipId === a.ref!.clipId && smpteToFrames(c.time, show.frameRate) === 0)
+            : t.type === 'group' || !!next
+          reset(paramId, showing || !blendMs ? 0 : blendMs + BLEND_SETTLE_MS)
+        }
+      }
+      for (const [delay, ids] of later) {
+        if (delay) setTimeout(() => api.resetParams(ids), delay); else api.resetParams(ids)
+      }
+      return
+    }
+    const T = frameStore.get(), fr = show.frameRate
+    const held = new Set([...now.values()].filter(a => laneCovers(a, T, fr)).map(a => paramOf(a.id)))
+    for (const [id, old] of before) {
+      const cur = now.get(id)
+      // Removed (it had keyframes), or no longer covering the playhead after the edit
+      const released = cur ? laneCovers(old, T, fr) && !laneCovers(cur, T, fr) : old.keyframes.length > 0
+      const paramId = released ? paramOf(id) : undefined
+      if (paramId !== undefined && !held.has(paramId)) api.resetParam(paramId)
+    }
+  }, [show, activeId])
 
   // ── LTC decoder lifecycle ──────────────────────────────────────────────────
 
@@ -933,7 +1028,9 @@ export default function App() {
 
   const handlePlay = useCallback(() => {
     if (arenaRecRef.current.armed && arenaRecRef.current.state === 'idle' && !isLtcSource(showRef.current.clock.source)) {
-      startAlignedRecording()
+      // The aligned start runs where the recorder is: the app window
+      if (REMOTE) api.remoteCommand('play')
+      else startAlignedRecording()
       return
     }
     api.play()
@@ -985,6 +1082,34 @@ export default function App() {
     if (arenaRecRef.current.state === 'idle') return
     api.recordStop()
     setArenaRec({ state: 'idle', armed: false })
+  }, [setArenaRec])
+
+  // REC ARENA button: arm / disarm, or stop a take. On a tablet or phone the app window does it
+  const toggleArenaRec = useCallback(() => {
+    if (REMOTE) { api.remoteCommand('arenaRec'); return }
+    if (arenaRecRef.current.state !== 'idle') { stopArenaRecording(); api.stop(); audioEngineRef.current.stop(); return }
+    setArenaRec({ armed: !arenaRecRef.current.armed, error: null })
+  }, [stopArenaRecording, setArenaRec])
+  const toggleArenaRecRef = useRef(toggleArenaRec)
+  toggleArenaRecRef.current = toggleArenaRec
+
+  // The app window reports its recording state to tablets and phones and takes their requests;
+  // they show the window's state as their own
+  useEffect(() => {
+    if (!REMOTE) { api.arenaRecPublish?.(arenaRec); return }
+  }, [arenaRec])
+  useEffect(() => {
+    if (REMOTE) {
+      const adopt = (r: ArenaRec | null) => { if (r) setArenaRec(r) }
+      api.arenaRecGet?.().then(adopt, () => {})
+      const unsubRe = api.onReconnect(() => { api.arenaRecGet?.().then(adopt, () => {}) })
+      const unsub = api.onArenaRec?.(adopt)
+      return () => { unsub?.(); unsubRe() }
+    }
+    return api.onRemoteCmd?.(({ cmd }: { cmd: string }) => {
+      if (cmd === 'arenaRec') toggleArenaRecRef.current()
+      else if (cmd === 'play' && !engineRef.current.playing) playRef.current()
+    })
   }, [setArenaRec])
 
   const handleStop = useCallback(() => {
@@ -1070,7 +1195,10 @@ export default function App() {
     if (id === activeId) return
     // The new timeline starts at 0, stopped. An LTC timeline runs as soon as its own
     // timecode arrives (never on the internal clock from the old timeline's position).
-    api.stop(); api.locate(0); audioEngineRef.current.stop()
+    // The engine loads it and locates in one step: a plain locate would still recall the old one.
+    const entry = rundownRef.current.find(e => e.id === id)
+    api.selectShow(entry?.type === 'show' ? (entry as ShowEntry).show : EMPTY_SHOW)
+    audioEngineRef.current.stop()
     setActiveId(id)
     clearSelection(); setScrollFrame(0)
     autoScrollRef.current = true
@@ -1271,27 +1399,34 @@ export default function App() {
 
   // ── Clip operations ────────────────────────────────────────────────────────
 
-  const handleDropClip = useCallback(async (trackIdx: number, frame: number, data: DragClipData) => {
-    let duration = '00:00:00:00'
-    try {
-      const clipRaw = await api.getClipRaw(data.layerIndex, data.clipIndex)
-      const durSec = resolveClipDuration(clipRaw)
-      if (durSec > 0) duration = framesToSmpte(Math.round(durSec * fps), fps)
-    } catch {}
+  // Clips dropped from the browser: each one as long as its media (read from Resolume); several
+  // go one after another from the drop point, without gaps (one undo step). A clip whose length
+  // can't be read is trigger-only when dropped alone, DROP_FALLBACK_S long in a row.
+  const handleDropClip = useCallback(async (trackIdx: number, frame: number, clips: DragClipData[]) => {
+    const durations = await Promise.all(clips.map(async c => {
+      try { return Math.round(resolveClipDuration(await api.getClipRaw(c.layerIndex, c.clipIndex)) * fps) } catch { return 0 }
+    }))
     setShow(prev => {
       const tracks = [...prev.tracks]
       const track = tracks[trackIdx]
       if (!track || track.type !== 'layer') return prev
       const lt = track as LayerTrack
-      if (lt.resolumeLayerId !== data.layerId) return prev
-      const cue: ClipCue = {
-        id: newId(), time: framesToSmpte(frame, prev.frameRate),
-        duration, clipIndex: data.clipIndex, clipId: data.clipId,
-        clipName: data.clipName, release: true,
-        ...(data.deckId !== undefined ? { deckId: data.deckId, deckIndex: data.deckIndex, deckName: data.deckName } : {}),
-      }
+      let at = frame
+      const cues: ClipCue[] = []
+      clips.forEach((data, i) => {
+        if (lt.resolumeLayerId !== data.layerId) return
+        const durF = durations[i] > 0 ? durations[i] : clips.length > 1 ? DROP_FALLBACK_S * prev.frameRate : 0
+        cues.push({
+          id: newId(), time: framesToSmpte(at, prev.frameRate),
+          duration: framesToSmpte(durF, prev.frameRate), clipIndex: data.clipIndex, clipId: data.clipId,
+          clipName: data.clipName, release: true,
+          ...(data.deckId !== undefined ? { deckId: data.deckId, deckIndex: data.deckIndex, deckName: data.deckName } : {}),
+        })
+        at += durF
+      })
+      if (!cues.length) return prev
       tracks[trackIdx] = {
-        ...lt, clips: [...lt.clips, cue].sort(
+        ...lt, clips: [...lt.clips, ...cues].sort(
           (a, b) => smpteToFrames(a.time, prev.frameRate) - smpteToFrames(b.time, prev.frameRate)
         ),
       }
@@ -1485,6 +1620,18 @@ export default function App() {
       return { ...prev, tracks }
     })
   }, [clipOpacityInfo, setShow])
+
+  // Crossfade two overlapping clips on different layers: an opacity fade on the top clip
+  // over the overlap (material.ts crossfadeFade), as editable keyframes like any clip fade
+  const handleCrossfade = useCallback((idA: string, idB: string) => {
+    if (showModeRef.current) return
+    const cur = showRef.current
+    const xf = crossfadeFade(cur.tracks, idA, idB, cur.frameRate)
+    if (!xf) return
+    const ti = cur.tracks.findIndex(t => t.type === 'layer' && (t as LayerTrack).clips.some(c => c.id === xf.cueId))
+    const ci = ti >= 0 ? (cur.tracks[ti] as LayerTrack).clips.findIndex(c => c.id === xf.cueId) : -1
+    if (ci >= 0) handleClipFade(ti, ci, xf.mode, xf.frames / cur.frameRate)
+  }, [handleClipFade])
 
   // Copy / paste every lane bound to a cue, keyframes relative to the cue start
   const clipAutoClipboardRef = useRef<ClipAutoClipboard | null>(null)
@@ -1761,6 +1908,23 @@ export default function App() {
     setLayerRowHeights(prev => ({ ...prev, [id]: height }))
   }, [])
 
+  // Every layer row and lane taller / shorter at once (touch toolbar: no wheel, small handles)
+  const handleScaleRows = useCallback((factor: number) => {
+    const fit = (h: number, min: number) => Math.round(Math.max(min, Math.min(MAX_ROW_H, h * factor)))
+    const tracks = showRef.current.tracks
+    setLayerRowHeights(prev => {
+      const next = { ...prev }
+      for (const t of tracks) if (t.type === 'layer') next[t.id] = fit(prev[t.id] ?? DEFAULT_LANE_H, MIN_LANE_H)
+      return next
+    })
+    setAutoLaneHeights(prev => {
+      const next = { ...prev }
+      for (const t of tracks) if (t.type === 'layer' || t.type === 'group')
+        for (const a of (t as LayerTrack | GroupTrack).automations) next[a.id] = fit(prev[a.id] ?? DEFAULT_AUTO_H, MIN_AUTO_H)
+      return next
+    })
+  }, [])
+
   function handleAddKeyframe(trackIdx: number, autoIdx: number, frame: number, value: number, option?: string) {
     setShow(prev => {
       const tracks = [...prev.tracks]
@@ -1924,7 +2088,7 @@ export default function App() {
 
   // End of the take: the timeline end, or the transport stopped (Stop, LTC gone)
   useEffect(() => {
-    if (arenaRec.state !== 'recording') return
+    if (REMOTE || arenaRec.state !== 'recording') return   // the app window ends the take
     const check = () => {
       if (engineState.playing) { recSeenPlayingRef.current = true }
       const atEnd = endFrame > 0 && frameStore.get() >= endFrame
@@ -1936,6 +2100,33 @@ export default function App() {
 
 
   const editingEntry = editingEntryId ? rundown.find(e => e.id === editingEntryId) ?? null : null
+
+  if (phoneRemote) return (
+    <MobileRemote
+      awake={awake} tracks={show.tracks} laneStatus={laneStatus}
+      rundown={rundown} activeId={activeId}
+      playing={engineState.playing} fps={fps} offsetFrames={offsetFrames} endFrame={endFrame}
+      tempo={tempo} markers={show.markers}
+      clockLabel={show.clock.source === 'ltc-b' ? 'LTC B' : isLtcSource(show.clock.source) ? 'LTC A' : 'INT'}
+      resolumeConnected={engineState.resolumeConnected}
+      showMode={showMode}
+      stopArmed={stopArmed === 'stop'}
+      goArmed={stopArmed && stopArmed !== 'stop' ? stopArmed : null}
+      arenaRec={arenaRec}
+      onPlay={handlePlay} onStop={requestStop}
+      onLocate={handleLocate} onSeek={handleSeek}
+      onGo={dir => {
+        // A thumb on a phone hits GO by accident more easily than Enter: confirm like the rundown does
+        const target = rundown[rundown.findIndex(e => e.id === activeId) + dir]
+        if (target && !needsConfirm(target.id)) handleGo(dir)
+      }}
+      onToggleArenaRec={() => {
+        // Stopping a take stops the show: in SHOW mode it takes a second tap, like ■
+        if (arenaRecRef.current.state !== 'idle' && needsConfirm('stop')) return
+        toggleArenaRec()
+      }}
+    />
+  )
 
   return (
     <div className={`app${showMode ? ' show-mode' : ''}${recordArmed && !showMode ? ' rec-armed' : ''}`}>
@@ -2002,10 +2193,7 @@ export default function App() {
         recordArmed={recordArmed}
         onToggleRecord={() => setRecordArmed(r => !r)}
         arenaRec={arenaRec}
-        onToggleArenaRec={() => {
-          if (arenaRecRef.current.state !== 'idle') { stopArenaRecording(); api.stop(); audioEngineRef.current.stop(); return }
-          setArenaRec({ armed: !arenaRecRef.current.armed, error: null })
-        }}
+        onToggleArenaRec={toggleArenaRec}
         overrideCount={Object.keys(overrides).length}
         onReenable={() => handleReenable()}
         readOnly={showMode}
@@ -2054,6 +2242,8 @@ export default function App() {
           </div>
         ) : (
           <div className="timeline-column">
+          {/* Touch: the edit toolbar's row (TimelineCanvas renders the buttons into it) */}
+          {TOUCH && <div className="touch-edit-row" id="touch-edit-slot" />}
           <OverviewBar
             tracks={show.tracks} markers={show.markers} fps={fps} decks={decks}
             endFrame={endFrame} playing={engineState.playing}
@@ -2093,6 +2283,7 @@ export default function App() {
               onUpdateAudio={handleUpdateAudioTrack}
               rulerMode={rulerMode} hasTempo={!!tempo}
               onSetRulerMode={m => syncShow(prev => ({ ...prev, rulerMode: m }))}
+              onSetTransition={(paramId, seconds) => { api.setParamById(paramId, seconds) }}
               laneClipboard={laneClipboard} onCopyLane={handleCopyLane}
               onPasteLane={ti => handlePasteLane(ti)} onPasteCurve={handlePasteCurve}
             />
@@ -2110,14 +2301,15 @@ export default function App() {
               onScrollFrame={setScrollFrame} onSeek={handleSeek}
               onZoom={f => setPxPerFrame(p => Math.max(PPF_MIN, Math.min(PPF_MAX, p * f)))}
               onSelectCue={selectCue}
-              onDropClip={handleDropClip} onUpdateCue={handleUpdateCue}
+              onDropClip={handleDropClip} placing={placing} onPlaced={() => setPlacing(null)} onUndo={undo} onScaleRows={handleScaleRows}
+              onUpdateCue={handleUpdateCue}
               onEditTracks={handleEditTracks} historyTick={historyTick} lockEnvelopes={!!show.lockEnvelopes} playing={engineState.playing}
               onAddKeyframe={handleAddKeyframe}
               onUpdateKeyframe={handleUpdateKeyframe}
               onDeleteKeyframe={handleDeleteKeyframe}
               onUpdateKeyframes={handleUpdateKeyframes}
               onDeleteKeyframes={handleDeleteKeyframes}
-              onClipFade={handleClipFade} clipFadeUnavailable={clipFadeUnavailable}
+              onClipFade={handleClipFade} onCrossfade={handleCrossfade} transitionSecs={transitionSecs} clipFadeUnavailable={clipFadeUnavailable}
               onCopyClipAutomation={handleCopyClipAutomation}
               onPasteClipAutomation={handlePasteClipAutomation}
               canPasteClipAutomation={canPasteClipAutomation}
@@ -2136,6 +2328,7 @@ export default function App() {
             onClose={() => setShowBrowser(false)}
             onDragStart={setDraggingClip}
             onDragEnd={() => setDraggingClip(null)}
+            onPlace={setPlacing}
           />
         )}
       </div>

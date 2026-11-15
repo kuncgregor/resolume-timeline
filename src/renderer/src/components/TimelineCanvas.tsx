@@ -1,22 +1,25 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useFrame } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind } from '../../../shared/show'
 import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
   extractTime, deleteTime, extractCues, deleteCues, pasteMaterial, splitAt, moveKeys, keysIn, isEmptyMaterial, pruneAddedKeys,
-  snapValue, optionAt,
+  snapValue, optionAt, crossfadePartners, trimStart,
 } from '../material'
 import type { CurveName, FrameKeyframe } from '../../../shared/automation'
 import type { WaveformInfo } from '../audio-engine'
 import type { DragClipData } from '../App'
 import type { LaneStatus, LaneStatusMap } from '../laneStatus'
 import { formatValue } from '../../../shared/paramTree'
+import { TOUCH, LONG_PRESS_MS, DOUBLE_TAP_MS, DOUBLE_TAP_PX } from '../touch'
+import { continuesFrom, mediaStartOf, trimModeFields } from '../../../shared/cues'
 import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { T, TAG_COLORS } from '../theme'
 import { laneColor } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
-import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H } from '../layout'
+import { RULER_H, AUDIO_LANE_H, DEFAULT_LANE_H, DEFAULT_AUTO_H, MIN_AUTO_H, PPF_MIN, PPF_MAX } from '../layout'
 import { type Tempo, type SnapSettings, musicalSteps, forEachGridLine, frameToBarBeat, formatBarBeat, isBarLine, isBeatLine, isOnStep, snapFrame, rulerSteps, gridSnapOf, snapToGrid } from '../grid'
 
 // Picker offers the muted tags first; saturated ones stay for shows that already use them
@@ -25,17 +28,17 @@ const SATURATED_COLORS = ['#E74C3C', '#E2934A', '#F1C40F', '#2ECC71', '#1ABC9C',
 const TC_BAND_H = 19            // ruler: timecode band on top, marker strip below
 const CLIP_PAD = 2              // gap between block and lane edge (room for the state halo)
 const CLIP_TITLE_H = 16
-const RESIZE_HANDLE_W = 10
-const AUTO_RESIZE_ZONE = 6      // px at bottom of auto lane to start resize
+const RESIZE_HANDLE_W = TOUCH ? 18 : 10   // touch: finger-sized hit zones (here and below)
+const AUTO_RESIZE_ZONE = TOUCH ? 12 : 6   // px at bottom of auto lane to start resize
 const TRACKS_TOP = RULER_H + AUDIO_LANE_H
 const KF_R = 4                  // keyframe glyph: 8px, 10px on hover
-const KF_HIT = 6                // half of the 12px keyframe hit area
+const KF_HIT = TOUCH ? 14 : 6    // half of the 12px (touch 28px) keyframe hit area
 const MAX_CHOICE_BANDS = 12     // more options than this: no band separators
-const SNAP_PX = 6               // drags snap to markers / playhead (/ clip edges, keys) this close
-const DRAG_START_PX = 3         // a clip moves only after this much mouse travel (a click must not nudge it)
+const SNAP_PX = 8               // drags snap to markers / playhead / clip edges this close
+const DRAG_START_PX = TOUCH ? 10 : 3   // a clip moves only after this much travel (a click / tap must not nudge it)
 const AXIS_LOCK_PX = 4          // Shift-drag picks its axis after this much movement
 const FINE = 0.1                // Shift drag up / down: finer values (Live)
-const SEG_HIT = 4               // px from a lane's line that grabs the segment
+const SEG_HIT = TOUCH ? 10 : 4   // px from a lane's line that grabs the segment
 const BODY_MIN_H = 10           // a clip lower than its title bar + this is all title bar
 
 // ── Automation values ─────────────────────────────────────────────────────────
@@ -319,7 +322,11 @@ interface Props {
   onSeek: (frame: number) => void
   onZoom: (factor: number) => void
   onSelectCue: (trackIdx: number, cueIdx: number) => void
-  onDropClip: (trackIdx: number, frame: number, data: DragClipData) => void
+  onDropClip: (trackIdx: number, frame: number, clips: DragClipData[]) => void   // several: one after another
+  placing: DragClipData[] | null        // touch: clips picked in the browser, dropped by a tap on their layer
+  onPlaced: () => void                  // placed or cancelled
+  onUndo: (redo: boolean) => void       // touch toolbar
+  onScaleRows: (factor: number) => void // touch toolbar: every layer row / lane taller or shorter
   onUpdateCue: (trackIdx: number, cueIdx: number, updates: Partial<ClipCue>) => void
   // An edit of the tracks (selection edits: move, copy, paste, delete, split…), applied by App
   // as one undoable change. Must be a pure function of the tracks it gets.
@@ -337,6 +344,8 @@ interface Props {
   // Clip right-click automation templates: opacity fade on the cue's clip, copy / paste of
   // every lane bound to the cue. clipFadeUnavailable → reason the fade can't be made, or null.
   onClipFade: (trackIdx: number, cueIdx: number, mode: 'in' | 'out' | 'inout', seconds: number) => void
+  onCrossfade: (cueIdA: string, cueIdB: string) => void
+  transitionSecs: Record<string, number>   // Resolume layer transition per layer track id (s)
   clipFadeUnavailable: (trackIdx: number, cueIdx: number) => string | null
   onCopyClipAutomation: (trackIdx: number, cueIdx: number) => void
   onPasteClipAutomation: (trackIdx: number, cueIdx: number) => void
@@ -348,15 +357,15 @@ interface Props {
   selectedCueIdx: number | null
 }
 
-interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number }
+interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: number; frame: number }   // frame: where it was right-clicked
 
 export function TimelineCanvas({
   tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, lockEnvelopes, playing, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
-  onDropClip, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
+  onDropClip, placing, onPlaced, onUndo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes,
-  onClipFade, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat,
+  onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
@@ -483,22 +492,55 @@ export function TimelineCanvas({
   const ghostDurRef = useRef<{ trackIdx: number; cueIdx: number; durF: number; sf?: number } | null>(null)
 
   const frameToX = (f: number) => (f - scrollFrame) * pxPerFrame
+
+  /** A layer's clip spans as a drag in progress shows them (moved starts, a dragged edge: the
+   *  left edge changes start and length, its end stays). The timeline and the overlay (playing
+   *  clip outline) both draw from this, so they agree while dragging. */
+  const dragSpans = (lt: LayerTrack, trackIdx: number) => {
+    const gc = ghostClipRef.current
+    const ghostMove = gc && !gc.copy
+      ? new Map(gc.items.filter(g => g.trackIdx === trackIdx).map(g => [g.cueIdx, g.frame])) : null
+    const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
+    const starts = ghostDur?.sf != null ? new Map([...(ghostMove ?? []), [ghostDur.cueIdx, ghostDur.sf]]) : ghostMove
+    return { spans: clipSpans(lt, fps, starts, ghostDur), ghostMove }
+  }
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
 
   /** Where a dragged clip edge / dropped clip / new key lands. Snap on: the nearest grid line, or a
-   *  marker / the playhead within SNAP_PX when that is nearer. Snap off or free (⌘): the whole
-   *  frame under the cursor, no snapping. guide = the frame to draw the snap line at. */
-  const snapDrag = (rawF: number, free: boolean): { f: number; guide: number | null } => {
-    if (free || !gridSnap) return { f: Math.max(0, Math.round(rawF)), guide: null }
-    let best = snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo)
-    let bestD = Math.abs(best - rawF)
+   *  marker / the playhead within SNAP_PX when that is nearer. Clip drags (`clips`) also stick to
+   *  the start and end of every other clip within SNAP_PX, with snap on or off, so clips go one
+   *  after another without a gap; a dragged block `len` frames long sticks with its end too.
+   *  Free (⌘): the whole frame under the cursor. guide = the frame to draw the snap line at. */
+  const snapDrag = (rawF: number, free: boolean, clips?: { skip?: Set<string>; len?: number }): { f: number; guide: number | null } => {
+    if (free) return { f: Math.max(0, Math.round(rawF)), guide: null }
     const near = SNAP_PX / pxPerFrame
-    for (const c of [...markers.map(m => smpteToFrames(m.time, fps)), Math.round(frameRef.current)]) {
-      const d = Math.abs(c - rawF)
-      if (d <= near && d < bestD) { best = c; bestD = d }
+    let best: number | null = null, bestD = Infinity, guide: number | null = null
+    const consider = (f: number, line: number) => {
+      const d = Math.abs(f - rawF)
+      if (d <= near && d < bestD) { best = f; bestD = d; guide = line }
     }
-    best = Math.max(0, best)
-    return { f: best, guide: best }
+    if (gridSnap) {
+      best = snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo); bestD = Math.abs(best - rawF); guide = best
+      for (const c of [...markers.map(m => smpteToFrames(m.time, fps)), Math.round(frameRef.current)]) consider(c, c)
+    }
+    if (clips) for (const e of clipEdges(clips.skip)) {
+      consider(e, e)
+      if (clips.len) consider(e - clips.len, e)
+    }
+    if (best === null) return { f: Math.max(0, Math.round(rawF)), guide: null }
+    return { f: Math.max(0, best), guide }
+  }
+
+  /** Start and end frames of the clips on every layer (the ones in `skip` are being dragged). */
+  const clipEdges = (skip?: Set<string>): number[] => {
+    const out: number[] = []
+    for (const t of tracks) if (t.type === 'layer') for (const c of (t as LayerTrack).clips) {
+      if (skip?.has(c.id)) continue
+      const sf = smpteToFrames(c.time, fps), dur = smpteToFrames(c.duration, fps)
+      out.push(sf)
+      if (dur > 0) out.push(sf + dur)
+    }
+    return out
   }
 
   useEffect(() => {
@@ -611,13 +653,14 @@ export function TimelineCanvas({
         const c = clip.color ?? clip.resolumeColor ?? trackColor
         ctx.fillStyle = rgba(c, 0.14); ctx.fillRect(b.x, ly, b.w, lh)
         ctx.fillStyle = rgba(c, 0.7); ctx.fillRect(b.x, ly, b.w, 1)
-        const tx = Math.max(b.x, 0) + 4, tw = b.x + b.w - tx - 4
+        // The clip's name at the box's top right: the lane's range labels sit at the left edge
+        const right = Math.min(b.x + b.w, W) - 4, tw = right - Math.max(b.x, 0) - 8
         if (tw > 6 && lh >= 14) {
           ctx.save()
           ctx.beginPath(); ctx.rect(b.x, ly, b.w, lh); ctx.clip()
           ctx.font = `10px ${T.fontCond}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'
-          ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-          ctx.fillText(fitText(ctx, clip.clipName || `Clip ${clip.clipIndex}`, tw), tx, ly + 3)
+          ctx.textAlign = 'right'; ctx.textBaseline = 'top'
+          ctx.fillText(fitText(ctx, clip.clipName || `Clip ${clip.clipIndex}`, tw), right, ly + 3)
           ctx.restore()
         }
       }
@@ -900,12 +943,7 @@ export function TimelineCanvas({
       const titleH = Math.min(CLIP_TITLE_H, bh)
 
       const gc = ghostClipRef.current
-      const ghostMove = gc && !gc.copy
-        ? new Map(gc.items.filter(g => g.trackIdx === trackIdx).map(g => [g.cueIdx, g.frame])) : null
-      const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
-      // Left edge being dragged: the clip starts later
-      const starts = ghostDur?.sf != null ? new Map([...(ghostMove ?? []), [ghostDur.cueIdx, ghostDur.sf]]) : ghostMove
-      const spans = clipSpans(lt, fps, starts, ghostDur)
+      const { spans, ghostMove } = dragSpans(lt, trackIdx)
       const cutOutlines: { x: number; w: number }[] = []
 
       lt.clips.forEach((clip, cueIdx) => {
@@ -953,7 +991,9 @@ export function TimelineCanvas({
           ctx.beginPath(); ctx.rect(x, by, blockW, bh); ctx.clip()
           ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
           ctx.fillStyle = T.textHi; ctx.font = `bold 12px ${T.fontCond}`
-          ctx.fillText(fitText(ctx, clip.clipName || `Clip ${clip.clipIndex}`, textW), tx, by + titleH / 2 + 0.5)
+          // ⟳: runs free in Resolume (doesn't pause / scrub with the playhead)
+          const title = `${clip.follow === false ? '⟳ ' : ''}${clip.clipName || `Clip ${clip.clipIndex}`}`
+          ctx.fillText(fitText(ctx, title, textW), tx, by + titleH / 2 + 0.5)
           if (bh - titleH >= 13) {
             ctx.font = `10px ${T.fontTc}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'
             ctx.textBaseline = 'top'
@@ -962,7 +1002,12 @@ export function TimelineCanvas({
             if (slotW <= textW) ctx.fillText(slot, tx, by + titleH + 3)
             if (durF > 0) {
               const dur = framesToSmpte(durF, fps)
-              if (slotW + 8 + ctx.measureText(dur).width <= textW) ctx.fillText(dur, tx + slotW + 8, by + titleH + 3)
+              const durW = ctx.measureText(dur).width
+              if (slotW + 8 + durW <= textW) ctx.fillText(dur, tx + slotW + 8, by + titleH + 3)
+              // Edit trim mode, and where in its media the clip starts
+              const ms = mediaStartOf(clip)
+              const inTxt = [clip.trim === 'edit' ? 'edit' : '', ms > 0 ? `▸${framesToSmpte(ms, fps)}` : ''].filter(Boolean).join(' ')
+              if (inTxt && slotW + 16 + durW + ctx.measureText(inTxt).width <= textW) ctx.fillText(inTxt, tx + slotW + durW + 16, by + titleH + 3)
             }
           }
           ctx.restore()
@@ -987,6 +1032,11 @@ export function TimelineCanvas({
           ctx.fillRect(x + blockW - 7, gy, 1, gh)
           ctx.fillRect(x + blockW - 5, gy, 1, gh)
         }
+
+        // Resolume's layer transition: the clip blends in over this long from its start
+        const trF = (transitionSecs[lt.id] ?? 0) * fps
+        const carriesOn = cueIdx > 0 && continuesFrom(lt.clips[cueIdx - 1], clip, t => smpteToFrames(t, fps))
+        if (trF > 0 && !isGhost && !carriesOn) drawTransitionRamp(ctx, x, by + titleH, Math.min(blockW, trF * pxPerFrame), bh - titleH)
 
         // State outlines: 2px inside the block, 1px black halo outside (the playing clip's
         // outline is drawn by the overlay, it changes with the playhead)
@@ -1083,7 +1133,7 @@ export function TimelineCanvas({
 
     ctx.restore() // end track clip region
     drawOverlayRef.current()
-  }, [tracks, markers, fps, bars, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf, clipSel, timeSel, lockEnvelopes])
+  }, [tracks, markers, fps, bars, pxPerFrame, scrollFrame, selectedTrackIdx, selectedCueIdx, draggingClip, autoLaneHeights, layerRowHeights, scrollY, audioTrack, audioDuration, waveformInfo, readOnly, contextMenu, laneStatus, overrides, decks, sel, hoverKf, clipSel, timeSel, lockEnvelopes, transitionSecs])
 
 
   // ── Overlay: what moves with the playhead ─────────────────────────────────
@@ -1106,6 +1156,10 @@ export function TimelineCanvas({
 
     const layout = buildLayout(tracks, clipH, autoH, scrollY)
     const lx = frameToX(frame)
+    // Playhead line first: what sits on it (a key just added at the playhead, the lanes' value
+    // dots) is drawn over it, not hidden under it
+    const px = Math.round(lx)
+    if (px >= -6 && px <= W + 6) { ctx.fillStyle = T.live; ctx.fillRect(px - 1, 0, 2, H) }
     ctx.save()
     ctx.beginPath(); ctx.rect(0, TRACKS_TOP, W, H - TRACKS_TOP); ctx.clip()
     tracks.forEach((track, trackIdx) => {
@@ -1116,11 +1170,7 @@ export function TimelineCanvas({
 
       // The clip playing on this layer: progress bar and live outline
       if (!lt.muted) {
-        const gc = ghostClipRef.current
-        const ghostMove = gc && !gc.copy
-          ? new Map(gc.items.filter(g => g.trackIdx === trackIdx).map(g => [g.cueIdx, g.frame])) : null
-        const ghostDur = ghostDurRef.current?.trackIdx === trackIdx ? ghostDurRef.current : null
-        const spans = clipSpans(lt, fps, ghostMove, ghostDur)
+        const { spans, ghostMove } = dragSpans(lt, trackIdx)
         const by = y + CLIP_PAD, bh = clipH(lt.id) - 1 - CLIP_PAD * 2
         lt.clips.forEach((clip, ci) => {
           const { sf, shownF } = spans[ci]
@@ -1147,12 +1197,20 @@ export function TimelineCanvas({
         const auto = lt.automations[ai]
         if (!auto || lane.h <= 0 || lane.y > H || lane.y + lane.h < TRACKS_TOP) return
         const kind = laneKind(auto), status = laneStatus[auto.id]
-        const cur = sampleLane(drawnKeys(trackIdx, ai, auto, kind, laneRange(auto, status).options ?? []).fks, frame, kind)?.value
+        const { fks } = drawnKeys(trackIdx, ai, auto, kind, laneRange(auto, status).options ?? [])
+        const cur = sampleLane(fks, frame, kind)?.value
         if (cur == null) return
         const ovr = overrides[auto.id]
         const faded = status?.state === 'broken' || auto.enabled === false || (typeof ovr === 'number' && Number.isFinite(ovr))
         ctx.save()
         ctx.beginPath(); ctx.rect(0, lane.y, W, lane.h - 1); ctx.clip()
+        // A key on the playhead's frame: its glyph again, over the playhead line
+        const onKey = fks.find(k => Math.abs(k.frame - frame) < 0.5)
+        if (onKey) {
+          ctx.beginPath(); ctx.arc(lx, kfToY(lane)(onKey.value), KF_R + 1, 0, Math.PI * 2)
+          ctx.fillStyle = laneColor(auto, lt, T.text); ctx.fill()
+          ctx.strokeStyle = T.gutter; ctx.lineWidth = 1.5; ctx.stroke()
+        }
         ctx.beginPath(); ctx.arc(lx, kfToY(lane)(cur), 2.5, 0, Math.PI * 2)
         ctx.fillStyle = faded ? T.textFaint : T.live; ctx.fill()
         ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
@@ -1161,11 +1219,9 @@ export function TimelineCanvas({
     })
     ctx.restore()
 
-    // Playhead over everything, cap in the ruler
-    const px = Math.round(lx)
+    // Playhead cap in the ruler
     if (px >= -6 && px <= W + 6) {
       ctx.fillStyle = T.live
-      ctx.fillRect(px - 1, 0, 2, H)
       ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill()
     }
 
@@ -1256,20 +1312,26 @@ export function TimelineCanvas({
     const spans = clipSpans(lt, fps, null, null)
     const by = layout[ti].y + CLIP_PAD, bh = clipH(lt.id) - 1 - CLIP_PAD * 2
     const titleH = Math.min(CLIP_TITLE_H, bh)
-    // Later clips are drawn on top, so test them first
-    for (let ci = lt.clips.length - 1; ci >= 0; ci--) {
-      const { sf, durF, shownF } = spans[ci]
-      const blockW = spanWidth(shownF, pxPerFrame)
-      const cx = frameToX(sf)
-      if (x < cx - SLOP || x > cx + blockW + SLOP) continue
-      const right = resizeZoneW(shownF < durF ? 0 : durF, blockW)
-      const left = resizeZoneW(durF, blockW)
-      const part = right > 0 && x >= cx + blockW - right ? 'right'
-        : left > 0 && x <= cx + left ? 'left'
-        : y < by + titleH || bh - titleH < BODY_MIN_H ? 'title' : 'body'
-      return { trackIdx: ti, cueIdx: ci, part }
+    // Later clips are drawn on top, so test them first. A clip the cursor is really on wins over
+    // a neighbour's edge reached only through the slop (two clips touching: the edge under the
+    // cursor is the one grabbed, not the next clip's start)
+    const inside = (ci: number, slop: number) => {
+      const cx = frameToX(spans[ci].sf), w = spanWidth(spans[ci].shownF, pxPerFrame)
+      return x >= cx - slop && x <= cx + w + slop
     }
-    return null
+    let hitIdx = -1
+    for (let ci = lt.clips.length - 1; ci >= 0 && hitIdx < 0; ci--) if (inside(ci, 0)) hitIdx = ci
+    for (let ci = lt.clips.length - 1; ci >= 0 && hitIdx < 0; ci--) if (inside(ci, SLOP)) hitIdx = ci
+    if (hitIdx < 0) return null
+    const { sf, durF, shownF } = spans[hitIdx]
+    const blockW = spanWidth(shownF, pxPerFrame)
+    const cx = frameToX(sf)
+    const right = resizeZoneW(shownF < durF ? 0 : durF, blockW)
+    const left = resizeZoneW(durF, blockW)
+    const part = right > 0 && x >= cx + blockW - right ? 'right'
+      : left > 0 && x <= cx + left ? 'left'
+      : TOUCH || y < by + titleH || bh - titleH < BODY_MIN_H ? 'title' : 'body'
+    return { trackIdx: ti, cueIdx: hitIdx, part }
   }, [tracks, fps, pxPerFrame, scrollFrame, getLayout])
 
   /** The line of a lane under the cursor: the breakpoints around it and its value at f. */
@@ -1465,6 +1527,8 @@ export function TimelineCanvas({
     if (next !== cur) updateClipSel(next)
     setTimeSel(null)
     onSelectCue(hit.trackIdx, hit.cueIdx)
+    // Touch: the whole clip is its handle, so a tap on it also marks where Split cuts
+    if (TOUCH) setInsertMk({ f: snapDrag(rawF, false).f, row: { trackId: lt.id } })
     const ids = next.filter(id => { const at = cueById(id); return !!at && canEdit(at.trackIdx) })
     if (!ids.length) return
     const f0 = Math.min(...ids.map(id => smpteToFrames(cueById(id)!.cue.time, fps)))
@@ -1491,7 +1555,7 @@ export function TimelineCanvas({
     if (kfDragRef.current) {
       const kd = kfDragRef.current
       // A plain click (delete / add) must not nudge anything
-      if (!kd.moved && Math.abs(x - kd.startX) < 3 && Math.abs(y - kd.startY) < 3) return
+      if (!kd.moved && Math.abs(x - kd.startX) < DRAG_START_PX && Math.abs(y - kd.startY) < DRAG_START_PX) return
       kd.moved = true
       // Shift: one axis, and finer values (Live); ⌘: no snapping
       kd.accY += (y - kd.lastY) * (e.shiftKey ? FINE : 1)
@@ -1567,11 +1631,15 @@ export function TimelineCanvas({
       const md = matDragRef.current
       if (!md.moved && Math.abs(x - md.startX) < DRAG_START_PX) return
       md.moved = true
-      // The material's start keeps its offset to the cursor; the start is what snaps
-      const { f, guide } = snapDrag(md.f0 + (rawF - md.anchorMouseF), free)
+      // The material's start keeps its offset to the cursor; its start (and the end of dragged
+      // clips, against other clips) is what snaps
+      const cues = md.mode === 'cues' ? md.ids.map(cueById).filter(at => !!at) : []
+      const end = Math.max(md.f0, ...cues.map(at => smpteToFrames(at!.cue.time, fps) + smpteToFrames(at!.cue.duration, fps)))
+      const { f, guide } = snapDrag(md.f0 + (rawF - md.anchorMouseF), free,
+        md.mode === 'cues' ? { skip: new Set(md.ids), len: end - md.f0 } : undefined)
       md.df = Math.max(-md.f0, f - md.f0)
       md.copy = e.altKey
-      snapGuideRef.current = guide != null && md.f0 + md.df === guide ? guide : null
+      snapGuideRef.current = guide != null && md.f0 + md.df === f ? guide : null
       if (md.mode === 'cues') {
         ghostClipRef.current = {
           copy: md.copy,
@@ -1590,14 +1658,17 @@ export function TimelineCanvas({
       const end = rs.startF + rs.startDurF
       if (rs.edge === 'right') {
         // The clip end is what snaps; never shorter than one frame
-        const { f, guide } = snapDrag(end + (x - rs.startX) / pxPerFrame, free)
+        const own = (tracks[rs.trackIdx] as LayerTrack).clips[rs.cueIdx]
+        const { f, guide } = snapDrag(end + (x - rs.startX) / pxPerFrame, free, { skip: new Set(own ? [own.id] : []) })
         const newDur = Math.max(1, f - rs.startF)
         snapGuideRef.current = guide != null && rs.startF + newDur === guide ? guide : null
         ghostDurRef.current = { trackIdx: rs.trackIdx, cueIdx: rs.cueIdx, durF: newDur }
       } else {
-        // Left edge: the clip starts later (or earlier), its end stays
-        const { f, guide } = snapDrag(rs.startF + (x - rs.startX) / pxPerFrame, free)
-        const sf = Math.max(0, Math.min(end - 1, f))
+        // Left edge: the clip starts later (or earlier), its end stays; an 'edit' clip can't
+        // start before its media does
+        const cue = (tracks[rs.trackIdx] as LayerTrack).clips[rs.cueIdx]
+        const { f, guide } = snapDrag(rs.startF + (x - rs.startX) / pxPerFrame, free, { skip: new Set(cue ? [cue.id] : []) })
+        const sf = Math.max(0, Math.min(end - 1, cue ? trimStart(cue, f, fps).sf : f))
         snapGuideRef.current = guide != null && sf === guide ? guide : null
         ghostDurRef.current = { trackIdx: rs.trackIdx, cueIdx: rs.cueIdx, durF: end - sf, sf }
       }
@@ -1660,8 +1731,9 @@ export function TimelineCanvas({
         // A click on the line adds a breakpoint on it (Live)
         onAddKeyframe(kd.at.trackIdx, kd.at.autoIdx, kd.segment.f, parseFloat(kd.segment.value.toFixed(4)), kd.segment.option)
       } else if (!kd.moved && kd.primary.kfIdx >= 0) {
-        // A click on a breakpoint deletes it (Live)
-        onDeleteKeyframe(kd.primary.trackIdx, kd.primary.autoIdx, kd.primary.kfIdx)
+        // A click on a breakpoint deletes it (Live); a tap only marks it (the toolbar's Del deletes it)
+        if (TOUCH) { tappedKfRef.current = kd.primary; setHoverKf(kd.primary) }
+        else onDeleteKeyframe(kd.primary.trackIdx, kd.primary.autoIdx, kd.primary.kfIdx)
       }
       draw()
     }
@@ -1738,7 +1810,7 @@ export function TimelineCanvas({
         edit(t => t.map(tr => tr.id !== trackId || tr.type !== 'layer' ? tr : {
           ...tr,
           clips: (tr as LayerTrack).clips
-            .map(c => c.id === cueId ? { ...c, time: framesToSmpte(sf, fps), duration: framesToSmpte(dur, fps) } : c)
+            .map(c => c.id === cueId ? { ...trimStart(c, sf, fps).cue, time: framesToSmpte(sf, fps), duration: framesToSmpte(dur, fps) } : c)
             .sort((p, q) => smpteToFrames(p.time, fps) - smpteToFrames(q.time, fps)),
         }))
       }
@@ -1754,18 +1826,178 @@ export function TimelineCanvas({
   const isDragging = () => !!(isDraggingPlayhead.current || autoResizeRef.current || kfDragRef.current ||
     bendDragRef.current || selDragRef.current || matDragRef.current || resizeClipRef.current)
 
-  const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+  const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') { touchRef.current.down(e); return }
     handleMouseDown(e)
     if (!isDragging()) return
-    const move = (ev: MouseEvent) => dragHandlersRef.current.move(ev)
+    const move = (ev: PointerEvent) => dragHandlersRef.current.move(ev)
     const up = () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
       dragHandlersRef.current.up()
     }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
   }, [handleMouseDown])
+
+  // ── Touch ──────────────────────────────────────────────────────────────────
+  // One finger does what the mouse does (wider tap slop); two fingers pan (both ways) and pinch
+  // to zoom; a long press opens the right-click menu; a double tap is a double-click. While clips
+  // picked in the browser are being placed, a tap on their layer drops them there.
+  // The toolbar's row above the timeline (App renders it, touch only)
+  const [toolSlot, setToolSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => { if (TOUCH) setToolSlot(document.getElementById('touch-edit-slot')) }, [])
+  const fingersRef = useRef(new Map<number, { x: number; y: number }>())
+  // Zoom and scroll as the gesture has set them: a touch screen sends both fingers' moves within
+  // one frame, before React re-renders with the new props
+  const viewRef = useRef({ ppf: pxPerFrame, scroll: scrollFrame })
+  if (fingersRef.current.size < 2) viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame }
+  // Touch: the key tapped last (the toolbar's Del deletes it)
+  const tappedKfRef = useRef<KfHit | null>(null)
+  const pinchRef = useRef<{ cx: number; cy: number; dist: number } | null>(null)
+  const pressRef = useRef<{ id: number; x: number; y: number; moved: boolean; long: boolean; timer: number | null; pan?: { x: number; y: number } } | null>(null)
+  const lastTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
+
+  /** Drops whatever one finger started (a second finger turned it into a pan / pinch). */
+  const abortDrag = () => {
+    isDraggingPlayhead.current = false
+    autoResizeRef.current = null; kfDragRef.current = null; bendDragRef.current = null
+    selDragRef.current = null; matDragRef.current = null; resizeClipRef.current = null
+    ghostClipRef.current = null; ghostDurRef.current = null; snapGuideRef.current = null
+    draw()
+  }
+
+  const fingers = () => {
+    const [a, b] = [...fingersRef.current.values()]
+    const { x, y } = localXY({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 })
+    return { cx: x, cy: y, dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)) }
+  }
+
+  const fakeMouse = (x: number, y: number) =>
+    ({ clientX: x, clientY: y, button: 0, altKey: false, metaKey: false, ctrlKey: false, shiftKey: false,
+      preventDefault() {}, stopPropagation() {} }) as unknown as React.MouseEvent
+
+  const touchDown = (e: React.PointerEvent) => {
+    e.preventDefault()   // no emulated mouse events after it (they would repeat the gesture)
+    const first = fingersRef.current.size === 0
+    fingersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (first) { tappedKfRef.current = null; setHoverKf(null) }
+    if (first) {
+      window.addEventListener('pointermove', touchMoveWin)
+      window.addEventListener('pointerup', touchUpWin)
+      window.addEventListener('pointercancel', touchUpWin)
+    }
+    if (fingersRef.current.size === 2) {
+      // Second finger: pan / pinch from here on, whatever the first one had started is dropped
+      const p = pressRef.current
+      if (p?.timer) clearTimeout(p.timer)
+      pressRef.current = null
+      abortDrag()
+      pinchRef.current = fingers()
+      viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame }
+      return
+    }
+    if (fingersRef.current.size > 2) return
+    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, long: false, timer: null as number | null }
+    pressRef.current = press
+    if (placing) return   // the tap drops the clips (on lift)
+    press.timer = window.setTimeout(() => {
+      press.timer = null
+      if (press.moved || pressRef.current !== press) return
+      press.long = true
+      abortDrag()
+      handleContextMenu(fakeMouse(press.x, press.y))
+    }, LONG_PRESS_MS)
+    handleMouseDown(e)
+  }
+
+  const touchMove = (ev: PointerEvent) => {
+    if (!fingersRef.current.has(ev.pointerId)) return
+    fingersRef.current.set(ev.pointerId, { x: ev.clientX, y: ev.clientY })
+    if (pinchRef.current && fingersRef.current.size >= 2) {
+      // Both fingers' moves arrive one by one; once per frame, with both of them moved, so
+      // half a move never reads as a pinch
+      if (!pinchRafRef.current) pinchRafRef.current = requestAnimationFrame(() => { pinchRafRef.current = 0; touchRef.current.pinch() })
+      return
+    }
+    const p = pressRef.current
+    if (!p || p.id !== ev.pointerId || p.long) return
+    if (!p.moved && Math.hypot(ev.clientX - p.x, ev.clientY - p.y) >= DRAG_START_PX) {
+      p.moved = true
+      if (p.timer) { clearTimeout(p.timer); p.timer = null }
+      // One finger on the empty background drags the view (a tablet has no wheel); the time
+      // selection it would start with a mouse is dropped
+      if (selDragRef.current || !isDragging()) { selDragRef.current = null; p.pan = { x: ev.clientX, y: ev.clientY }; draw() }
+    }
+    if (p.pan) {
+      const view = viewRef.current
+      const scroll = Math.max(0, view.scroll - (ev.clientX - p.pan.x) / view.ppf)
+      if (scroll !== view.scroll) onScrollFrame(scroll)
+      if (ev.clientY !== p.pan.y) onScrollY(p.pan.y - ev.clientY)
+      viewRef.current = { ...view, scroll }
+      p.pan = { x: ev.clientX, y: ev.clientY }
+      return
+    }
+    if (!placing) dragHandlersRef.current.move(ev)
+  }
+
+  const pinchMove = () => {
+    const pinch = pinchRef.current
+    if (pinch && fingersRef.current.size >= 2) {
+      // Pan and zoom in one: the frame under the fingers' midpoint stays under it
+      const now = fingers(), view = viewRef.current
+      const zoom = now.dist / pinch.dist
+      const ppf = Math.abs(zoom - 1) > 0.01 ? Math.max(PPF_MIN, Math.min(PPF_MAX, view.ppf * zoom)) : view.ppf
+      if (ppf !== view.ppf) onZoom(ppf / view.ppf)
+      const scroll = Math.max(0, pinch.cx / view.ppf + view.scroll - now.cx / ppf)
+      if (scroll !== view.scroll) onScrollFrame(scroll)
+      if (Math.abs(now.cy - pinch.cy) >= 1) onScrollY(pinch.cy - now.cy)
+      viewRef.current = { ppf, scroll }
+      pinchRef.current = ppf !== view.ppf ? now : { ...now, dist: pinch.dist }
+    }
+  }
+
+  const touchUp = (ev: PointerEvent) => {
+    if (!fingersRef.current.delete(ev.pointerId)) return
+    if (fingersRef.current.size === 0) {
+      window.removeEventListener('pointermove', touchMoveWin)
+      window.removeEventListener('pointerup', touchUpWin)
+      window.removeEventListener('pointercancel', touchUpWin)
+    }
+    if (pinchRef.current) { if (fingersRef.current.size < 2) pinchRef.current = null; return }
+    const p = pressRef.current
+    if (!p || p.id !== ev.pointerId) return
+    pressRef.current = null
+    if (p.timer) clearTimeout(p.timer)
+    if (ev.type === 'pointercancel' || p.long) { abortDrag(); return }
+    if (placing) { if (!p.moved) placeAt(ev); return }
+    if (p.pan) { lastTapRef.current = null; return }
+    dragHandlersRef.current.up()
+    if (p.moved) { lastTapRef.current = null; return }
+    const last = lastTapRef.current, t = performance.now()
+    if (last && t - last.t < DOUBLE_TAP_MS && Math.hypot(ev.clientX - last.x, ev.clientY - last.y) < DOUBLE_TAP_PX) {
+      lastTapRef.current = null
+      handleDblClick(fakeMouse(ev.clientX, ev.clientY))
+    } else lastTapRef.current = { t, x: ev.clientX, y: ev.clientY }
+  }
+
+  // Clips picked in the browser go where the layer was tapped (their own layer only)
+  const placeAt = (ev: { clientX: number; clientY: number }) => {
+    if (!placing?.length) return
+    const { x, y } = localXY(ev)
+    const ti = getTrackAtY(getLayout(), y)
+    const lt = ti != null ? tracks[ti] as LayerTrack : null
+    if (ti == null || lt?.type !== 'layer' || lt.resolumeLayerId !== placing[0].layerId || !canEdit(ti)) return
+    onDropClip(ti, snapDrag(x / pxPerFrame + scrollFrame, false, {}).f, placing)
+    onPlaced()
+  }
+
+  // Window listeners call the newest handlers (they close over props that change while dragging)
+  const pinchRafRef = useRef(0)
+  const touchRef = useRef({ down: touchDown, move: touchMove, up: touchUp, pinch: pinchMove })
+  touchRef.current = { down: touchDown, move: touchMove, up: touchUp, pinch: pinchMove }
+  const touchMoveWin = useRef((ev: PointerEvent) => touchRef.current.move(ev)).current
+  const touchUpWin = useRef((ev: PointerEvent) => touchRef.current.up(ev)).current
 
   // ── Double click ───────────────────────────────────────────────────────────
   // Lane background: a breakpoint (Live). Option + double-click on a segment: straight again.
@@ -1826,7 +2058,7 @@ export function TimelineCanvas({
     if (kfHit) return
     const clipHit = hitTestClip(x, y)
     if (clipHit && canEdit(clipHit.trackIdx)) {
-      setClipColorPicker({ x, y, trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx })
+      setClipColorPicker({ x, y, trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, frame: xToFrame(x) })
       setContextMenu(null)
     }
   }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip, tempo, scrollFrame, pxPerFrame])
@@ -2055,7 +2287,7 @@ export function TimelineCanvas({
   const dropTrackAt = (e: React.DragEvent) => getTrackAtY(getLayout(), localXY(e).y)
 
   // Drop position: the clip starts at the cursor, snapped like a clip move (⌘ = free)
-  const dropFrameAt = (e: React.DragEvent) => snapDrag(localXY(e).x / pxPerFrame + scrollFrame, e.metaKey || e.ctrlKey)
+  const dropFrameAt = (e: React.DragEvent) => snapDrag(localXY(e).x / pxPerFrame + scrollFrame, e.metaKey || e.ctrlKey, {})
   const setDropGuide = (f: number | null) => {
     if (snapGuideRef.current === f) return
     snapGuideRef.current = f
@@ -2083,9 +2315,10 @@ export function TimelineCanvas({
     const raw = e.dataTransfer.getData('application/timeline-clip')
     if (!raw) return
     try {
-      const data: DragClipData = JSON.parse(raw)
+      const parsed: DragClipData | DragClipData[] = JSON.parse(raw)
+      const clips = Array.isArray(parsed) ? parsed : [parsed]
       const ti = dropTrackAt(e)
-      if (ti != null && canEdit(ti)) onDropClip(ti, dropFrameAt(e).f, data)
+      if (ti != null && canEdit(ti) && clips.length) onDropClip(ti, dropFrameAt(e).f, clips)
     } catch {}
   }, [readOnly, tracks, getLayout, onDropClip, draw, markers, gridSnap?.stepF, gridSnap?.tempo, scrollFrame, pxPerFrame])
 
@@ -2120,13 +2353,49 @@ export function TimelineCanvas({
     >
       <canvas
         ref={canvasRef}
-        onMouseDown={handleCanvasMouseDown}
-        onMouseMove={e => { if (!isDragging()) handleMouseMove(e) }}
+        onPointerDown={handleCanvasPointerDown}
+        onPointerMove={e => { if (e.pointerType !== 'touch' && !isDragging()) handleMouseMove(e) }}
         onDoubleClick={handleDblClick}
         onContextMenu={handleContextMenu}
         onMouseLeave={() => { if (!isDragging()) setHoverKf(null) }}
       />
       <canvas ref={overlayRef} className="timeline-overlay" />
+
+      {TOUCH && placing && (
+        <div className="touch-banner">
+          <span>Tap layer {placing[0].layerIndex} where {placing.length === 1 ? `"${placing[0].clipName}" goes` : `the ${placing.length} clips go (one after another)`}</span>
+          <button className="btn" onClick={onPlaced}>Cancel</button>
+        </div>
+      )}
+      {TOUCH && toolSlot && createPortal(
+        // Touch: the edit commands that are keyboard shortcuts with a mouse, in a fixed row above
+        // the timeline (not over it)
+        <div className="touch-tools" onPointerDown={e => e.stopPropagation()}>
+          {!readOnly && <>
+            <button className="btn" title="Undo (⌘Z)" onClick={() => onUndo(false)}>Undo</button>
+            <button className="btn" title="Redo (⌘⇧Z)" onClick={() => onUndo(true)}>Redo</button>
+            <span className="touch-sep" />
+            <button className="btn" title="Split at the insert marker (tap a clip first; ⌘E)" onClick={() => keyStateRef.current.splitSel()}>Split</button>
+            <button className="btn" title="Duplicate the selection (⌘D)" onClick={() => keyStateRef.current.duplicateSel()}>Dup</button>
+            <button className="btn" title="Copy (⌘C)" onClick={() => keyStateRef.current.copySel()}>Copy</button>
+            <button className="btn" title="Paste at the insert marker (⌘V)" onClick={() => keyStateRef.current.pasteSel()}>Paste</button>
+            <button className="btn danger-text" title="Delete the tapped key, or the selection (⌫)" onClick={() => {
+              const k = tappedKfRef.current
+              if (k) { tappedKfRef.current = null; setHoverKf(null); onDeleteKeyframe(k.trackIdx, k.autoIdx, k.kfIdx) }
+              else keyStateRef.current.deleteSel()
+            }}>Del</button>
+          </>}
+          <span className="touch-spacer" />
+          <span className="touch-label">Zoom</span>
+          <button className="btn" title="Zoom out" onClick={() => onZoom(1 / 1.5)}>−</button>
+          <button className="btn" title="Zoom in" onClick={() => onZoom(1.5)}>+</button>
+          <span className="touch-sep" />
+          <span className="touch-label">Rows</span>
+          <button className="btn" title="Every layer and lane shorter" onClick={() => onScaleRows(1 / 1.3)}>−</button>
+          <button className="btn" title="Every layer and lane taller (see the curves)" onClick={() => onScaleRows(1.3)}>+</button>
+        </div>,
+        toolSlot,
+      )}
 
       {contextMenu && (() => {
         const { trackIdx: ti, autoIdx: ai, kfIdx: ki } = contextMenu
@@ -2157,7 +2426,7 @@ export function TimelineCanvas({
         return (
           <div
             className="ctx-menu kf-menu"
-            style={clampPos(contextMenu.x, contextMenu.y, 260, kind === 'range' ? 400 : 210)}
+            style={{ ...clampPos(contextMenu.x, contextMenu.y, 260, kind === 'range' ? 400 : 210), maxHeight: (containerRef.current?.clientHeight ?? 600) - 8, overflowY: 'auto' }}
             onMouseDown={e => e.stopPropagation()}
           >
             <div className="ctx-title" title={laneTitle(auto)}>{laneTitle(auto)}</div>
@@ -2175,7 +2444,7 @@ export function TimelineCanvas({
                     if (e.key === 'Enter') commitReal()
                     if (e.key === 'Escape') close()
                   }}
-                  autoFocus
+                  autoFocus={!TOUCH}
                 />
                 {range.suffix && <span className="ctx-unit">{range.suffix}</span>}
               </>}
@@ -2189,7 +2458,7 @@ export function TimelineCanvas({
                     close()
                   }}
                   onKeyDown={e => { if (e.key === 'Escape') close() }}
-                  autoFocus
+                  autoFocus={!TOUCH}
                 >
                   {opts.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
@@ -2274,10 +2543,10 @@ export function TimelineCanvas({
       {clipColorPicker && (
         <div
           className="clip-color-picker"
-          style={clampPos(clipColorPicker.x, clipColorPicker.y, 220, 380)}
+          style={{ ...clampPos(clipColorPicker.x, clipColorPicker.y, 240, 500), maxHeight: (containerRef.current?.clientHeight ?? 600) - 8, overflowY: 'auto' }}
           onMouseDown={e => e.stopPropagation()}
         >
-          <div className="ctx-title">Clip colour</div>
+          <div className="ctx-title">{pickerClip ? pickerClip.clipName || `Clip ${pickerClip.clipIndex}` : 'Clip'}</div>
           <div className="ccp-grid">{TAG_COLORS.map(swatch)}</div>
           <div className="ccp-label">Saturated</div>
           <div className="ccp-grid">{SATURATED_COLORS.map(swatch)}</div>
@@ -2314,12 +2583,6 @@ export function TimelineCanvas({
               <div className="ctx-divider" />
               <div className="ccp-label">Fade in / out (opacity)</div>
               <div className="ctx-row">
-                <label>Fade</label>
-                <div className="ctx-seg">
-                  {fadeBtn('in', 'In')}{fadeBtn('out', 'Out')}{fadeBtn('inout', 'In + Out')}
-                </div>
-              </div>
-              <div className="ctx-row">
                 <label>Length</label>
                 <div className="ctx-seg">
                   {[0.5, 1, 2].map(sec => (
@@ -2330,7 +2593,54 @@ export function TimelineCanvas({
                   ))}
                 </div>
               </div>
+              <div className="ctx-row">
+                <label>Fade</label>
+                <div className="ctx-seg">
+                  {fadeBtn('in', 'In')}{fadeBtn('out', 'Out')}{fadeBtn('inout', 'In + Out')}
+                </div>
+              </div>
               {fadeWhy && <div className="ctx-note">{fadeWhy}</div>}
+              {(() => {
+                // Crossfade with an overlapping clip on another layer (the top clip fades)
+                const partners = crossfadePartners(tracks, cue.id, fps)
+                if (!partners.length) return null
+                return partners.slice(0, 3).map(p => (
+                  <button key={p.cue.id} className="ctx-btn" disabled={!editable}
+                    title={`Blend over the overlap: the clip on the higher layer gets an opacity fade (keyframes you can edit), the lower one stays at full opacity`}
+                    onClick={() => { onCrossfade(cue.id, p.cue.id); close() }}
+                  >Crossfade with {p.cue.clipName || `Clip ${p.cue.clipIndex}`} · {p.layerName}</button>
+                ))
+              })()}
+              <div className="ctx-divider" />
+              <button className="ctx-btn" disabled={!editable}
+                title={cue.follow === false
+                  ? 'Runs free in Resolume: Stop doesn\'t pause it, scrubbing doesn\'t move it (backgrounds, loops). Click to follow the playhead again.'
+                  : 'Follows the playhead: Stop pauses it on the playhead\'s frame, Play and scrubbing move it. Click to let it run free (backgrounds, loops).'}
+                onClick={() => { onUpdateCue(ti, ci, { follow: cue.follow === false ? undefined : false }); close() }}
+              >{cue.follow === false ? '○' : '✓'} Follow playhead</button>
+              <div className="ctx-row" title="Loop: the clip always starts at the media's start, trimming the start doesn't move the picture (VJ loops). Edit: like an editor, trimming the start or splitting cuts into the media, the picture stays where it is on the timeline.">
+                <label>Trim</label>
+                <div className="ctx-seg">
+                  {(['loop', 'edit'] as const).map(m => (
+                    <button key={m} className={`ctx-seg-btn${(cue.trim ?? 'loop') === m ? ' on' : ''}`} disabled={!editable}
+                      onClick={() => onUpdateCue(ti, ci, trimModeFields(m))}
+                    >{m === 'loop' ? 'Loop' : 'Edit'}</button>
+                  ))}
+                </div>
+              </div>
+              {(() => {
+                // Split where the clip was right-clicked (⌘E splits at the insert marker)
+                const f = clipColorPicker.frame, sf = smpteToFrames(cue.time, fps), dur = smpteToFrames(cue.duration, fps)
+                const inside = dur > 0 && f > sf && f < sf + dur
+                return (
+                  <button className="ctx-btn" disabled={!editable || !inside}
+                    title={cue.trim === 'edit'
+                      ? 'Split the clip here: the right part carries on the picture from this point (move it anywhere, it keeps playing from the cut)'
+                      : 'Split the clip here: both parts start at the media\'s start (Loop)'}
+                    onClick={() => { edit((t, c) => splitAt(t, [lt.id], f, c)); close() }}
+                  >Split here · {framesToSmpte(f, fps)}</button>
+                )
+              })()}
               <div className="ctx-divider" />
               <button className="ctx-btn" disabled={!editable || !bound}
                 title={bound ? 'Copy every lane that follows this clip, keyframes relative to its start' : 'No automation lanes follow this clip'}
@@ -2458,6 +2768,16 @@ function kfGlyph(ctx: CanvasRenderingContext2D, c: CurveName, x: number, y: numb
 }
 
 // Small label box next to a point, kept inside the canvas and below the ruler
+/** Resolume's layer transition at a clip start: a low wedge along the bottom of the body (the
+ *  clip blending in), kept small so it doesn't read as an opacity curve or cover the text. */
+function drawTransitionRamp(ctx: CanvasRenderingContext2D, x: number, top: number, w: number, h: number) {
+  const wh = Math.min(7, Math.floor(h * 0.3))
+  if (w < 3 || wh < 3) return
+  const bottom = top + h
+  ctx.beginPath(); ctx.moveTo(x, bottom); ctx.lineTo(x + w, bottom); ctx.lineTo(x + w, bottom - wh); ctx.closePath()
+  ctx.fillStyle = rgba(T.next, 0.45); ctx.fill()
+}
+
 function drawTip(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, W: number, top: number) {
   ctx.font = `11px ${T.fontUi}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
   const bw = Math.ceil(ctx.measureText(text).width) + 12, bh = 18

@@ -7,6 +7,7 @@
 // when the show, width or overall range change; every tick just blits it and draws the lens
 // and the playhead on top, so 3 h shows with hundreds of cues stay cheap.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { TOUCH } from '../touch'
 import { useFrame } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, Marker } from '../../../shared/show'
 import { T, TAG_COLORS } from '../theme'
@@ -17,7 +18,7 @@ const BAR_H = 28          // keep in sync with .overview-bar in canvas.css
 const PAD_Y = 3
 const MAX_ROWS = 8        // more layers than this: several layers share a row
 const MAX_ROW_H = 8
-const EDGE_HIT = 5        // px around a lens edge that grab the edge (zoom)
+const EDGE_HIT = TOUCH ? 14 : 5        // px around a lens edge that grab the edge (zoom)
 const MIN_LENS_W = 8      // the lens never draws thinner than this, so it stays grabbable
 import { PPF_MIN, PPF_MAX } from '../layout'   // same clamp as the main view's Cmd+wheel zoom
 // Grid step candidates in seconds; the first one at least GRID_MIN_PX apart is used

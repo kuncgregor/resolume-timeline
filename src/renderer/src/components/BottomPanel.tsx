@@ -6,6 +6,8 @@ import { framesToSmpte, smpteToFrames } from './timeUtils'
 import { KIND_GLYPH } from './ParamPicker'
 import { trackTag, shade } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
+import { knownClip } from '../resolver'
+import { mediaStartOf, trimModeFields } from '../../../shared/cues'
 
 const api = (window as any).timeline
 
@@ -50,15 +52,20 @@ export function BottomPanel({
   const startRef = useRef({ y: 0, h: 0 })
 
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       if (!resizingRef.current) return
       const delta = startRef.current.y - e.clientY
       onResize(Math.max(80, Math.min(500, startRef.current.h + delta)))
     }
     const onUp = () => { resizingRef.current = false }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+    return () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+    }
   }, [onResize])
 
   useEffect(() => {
@@ -104,7 +111,7 @@ export function BottomPanel({
   const handle = (
     <div
       className="bp-resize-handle"
-      onMouseDown={e => { resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
+      onPointerDown={e => { e.preventDefault(); resizingRef.current = true; startRef.current = { y: e.clientY, h: height } }}
     />
   )
   const roChip = readOnly && <span className="chip">SHOW · read-only</span>
@@ -299,6 +306,47 @@ export function BottomPanel({
                 <span>{cue.release ? 'On' : 'Off'}</span>
               </label>
             </div>
+            <div className="bp-row">
+              <span className="bp-label">Follow playhead</span>
+              <label className="bp-toggle" title="On: Stop pauses the clip on the playhead's frame, Play and scrubbing move it. Off: it runs free in Resolume (backgrounds, loops), marked ⟳ on the timeline.">
+                <input type="checkbox" checked={cue.follow !== false} disabled={readOnly}
+                  onChange={e => onUpdateCue(trackIdx, cueIdx, { follow: e.target.checked ? undefined : false })} />
+                <span>{cue.follow !== false ? 'On' : 'Off'}</span>
+              </label>
+            </div>
+            <div className="bp-row" title="Loop: the clip always starts at the media's start, trimming the start doesn't move the picture (VJ loops). Edit: like an editor, trimming the start or splitting cuts into the media, the picture stays where it is on the timeline.">
+              <span className="bp-label">Trim</span>
+              <div className="seg">
+                {(['loop', 'edit'] as const).map(m => (
+                  <button key={m} className={`seg-btn${(cue.trim ?? 'loop') === m ? ' on' : ''}`} disabled={readOnly}
+                    onClick={() => onUpdateCue(trackIdx, cueIdx, trimModeFields(m))}
+                  >{m === 'loop' ? 'Loop' : 'Edit'}</button>
+                ))}
+              </div>
+            </div>
+            {cue.trim === 'edit' && (() => {
+              // Where the clip starts in its media (slider up to the media's length when known)
+              const ms = mediaStartOf(cue)
+              const mediaMs = Number(knownClip(cue.clipId)?.video?.fileinfo?.duration_ms ?? 0)
+              const max = Math.max(ms, mediaMs > 0 ? Math.floor(mediaMs / 1000 * fps) - 1 : Math.max(durFrame, fps * 10))
+              const set = (f: number) => {
+                const v = Math.max(0, Math.min(max, Math.round(f)))
+                onUpdateCue(trackIdx, cueIdx, { mediaStart: v || undefined })
+              }
+              return (
+                <div className="bp-row" title="Where the clip starts in its media: the picture at the clip's start on the timeline">
+                  <span className="bp-label">Media start</span>
+                  <span className="bp-val mono bp-num">{framesToSmpte(ms, fps)}</span>
+                  <button className="btn ghost bp-icon" disabled={readOnly || ms === 0}
+                    onClick={() => set(ms - 1)} title="−1 frame">−</button>
+                  <input type="range" className="bp-slider bp-dur-slider" min={0} max={max} value={ms}
+                    style={pct(ms, 0, max)} disabled={readOnly}
+                    onChange={e => set(Number(e.target.value))} />
+                  <button className="btn ghost bp-icon" disabled={readOnly || ms >= max}
+                    onClick={() => set(ms + 1)} title="+1 frame">+</button>
+                </div>
+              )
+            })()}
             <div className="bp-row bp-row-action">
               <span className="bp-label" />
               <button className="btn bp-fire" onClick={() => fire(track, cue)}>▶ Fire</button>

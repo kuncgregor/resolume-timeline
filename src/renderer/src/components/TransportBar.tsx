@@ -70,7 +70,8 @@ export function TransportBar({
 
   const remaining = Math.max(0, endFrame - frame)
   const remainingS = remaining / fps
-  const remainClass = endFrame === 0 ? 'idle' : remainingS <= DANGER_S ? 'danger' : remainingS <= WARN_S ? 'warn' : ''
+  // The end warning colours only matter while it runs toward the end
+  const remainClass = endFrame === 0 ? 'idle' : !playing ? '' : remainingS <= DANGER_S ? 'danger' : remainingS <= WARN_S ? 'warn' : ''
 
   return (
     <div className="transport-bar">
@@ -119,8 +120,8 @@ export function TransportBar({
         {/* Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first) */}
         <button
           className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
-          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec} disabled={remote}
-          title={remote ? 'Recording in Arena is started on the computer running the app' : arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
+          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec}
+          title={arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
             : arenaRec.state === 'starting' ? 'Starting Arena\'s recorder…'
             : arenaRec.armed ? 'Armed: Play jumps to the timeline start and records in Arena from there (LTC: from its start TC) until the timeline end. Click to disarm.'
             : 'Record this timeline in Arena: arm, then Play — the recording starts exactly at the timeline start and stops at its end'}
@@ -148,7 +149,7 @@ export function TransportBar({
       <div className="spacer" />
 
 
-      <button className={`btn toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
+      <button className={`btn toggle clips-toggle ${browserOpen ? 'on' : ''}`} onClick={onToggleBrowser}
         title="Show or hide Resolume clips">
         Clips
       </button>

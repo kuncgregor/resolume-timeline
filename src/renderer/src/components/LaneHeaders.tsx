@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Track, LayerTrack, GroupTrack, Show, AutomationSubTrack, Keyframe, LaneKind, ClipCue } from '../../../shared/show'
 import type { ResolumeComposition, ResolumeLayer } from '../../../shared/resolume'
+import { layerTransitionParam } from '../../../shared/resolume'
+import { ConfirmDialog } from './ConfirmDialog'
+import { LONG_PRESS_MS } from '../touch'
 import { formatValue, type ParamInfo } from '../../../shared/paramTree'
 import { laneColor } from '../laneColor'
 import { frameKeyframes, sampleLane } from '../../../shared/automation'
@@ -53,6 +56,7 @@ interface Props {
   onCopyLane: (trackIdx: number, autoIdx: number) => void
   onPasteLane: (trackIdx: number) => void
   onPasteCurve: (trackIdx: number, autoIdx: number) => void
+  onSetTransition: (paramId: number, seconds: number) => void   // Resolume layer transition time
 }
 
 interface HeaderMenu { x: number; y: number; ti: number; ai?: number }
@@ -62,6 +66,8 @@ interface EditState { ti: number; ai: number }
 interface PickerState { ti: number; ai?: number; mode: 'add' | 'retarget'; anchor: DOMRect; key: string }
 
 const LIVE_STRIP_MIN_H = 48
+const MISMATCH_GRACE_MS = 3000   // composition poll (2 s) + slack before a clip change counts as a mismatch
+const TRANSITION_PRESETS = [0, 0.25, 0.5, 1, 2, 4]
 
 // Resolume wraps values as { value }; tolerate plain values too
 const val = (p: unknown): unknown => (p && typeof p === 'object' && 'value' in (p as object) ? (p as { value: unknown }).value : p)
@@ -156,12 +162,13 @@ export function laneCue(lt: LayerTrack, auto: AutomationSubTrack): ClipCue | nul
     ?? null
 }
 
-// Full lane height, so the clip is recognisable (4:3 crop, at most 84 px wide)
+// Full lane height, so the clip is recognisable (4:3 crop, at most 44 px wide: the header
+// column is 232 px and the value and tools beside it must stay readable)
 function ClipThumb({ layerId, cue, color, height }: { layerId: number; cue: ClipCue; color: string; height: number }) {
   const thumb = useClipThumb(layerId, cue.clipId)
   return (
     <span className="auto-thumb" title={`Clip: ${cue.clipName}`}
-      style={{ ['--clip-color' as any]: color, width: Math.min(84, Math.round(height * 4 / 3)) }}>
+      style={{ ['--clip-color' as any]: color, width: Math.min(44, Math.round(height * 4 / 3)) }}>
       {thumb ? <img src={thumb} alt="" draggable={false} /> : <span className="auto-thumb-ph">▶</span>}
     </span>
   )
@@ -193,15 +200,27 @@ export function LaneHeaders({
   onAddParam, onRetarget, onUpdateAutomation, onSnapshot,
   onDeleteAutomation, onToggleLayerBound, onEditAutomationTarget, onScrollY,
   onLoadAudio, onUpdateAudio, rulerMode, hasTempo, onSetRulerMode,
-  laneClipboard, onCopyLane, onPasteLane, onPasteCurve,
+  laneClipboard, onCopyLane, onPasteLane, onPasteCurve, onSetTransition,
 }: Props) {
   const [resizing, setResizing] = useState<ResizeState | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
   const [editValue, setEditValue] = useState('')
   // Removing a lane loses its keyframes: first click arms, second removes
-  const [armedDelete, setArmedDelete] = useState<string | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState<{ ti: number; ai: number } | null>(null)
   const [picker, setPicker] = useState<PickerState | null>(null)
   const [menu, setMenu] = useState<HeaderMenu | null>(null)
+  // Layer transition popover, and values just set (shown until a poll reports them)
+  const [trPop, setTrPop] = useState<{ x: number; y: number; paramId: number; value: number } | null>(null)
+  const [trPending, setTrPending] = useState<Record<number, { value: number; at: number }>>({})
+  useEffect(() => {
+    if (!trPop) return
+    const close = () => setTrPop(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
+  }, [trPop])
+  useEffect(() => { setTrPop(null) }, [scrollY])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -219,15 +238,20 @@ export function LaneHeaders({
 
   useEffect(() => {
     if (!resizing) return
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const delta = e.clientY - resizing.startY
       if (resizing.kind === 'layer') onResizeLayer(resizing.id, Math.max(MIN_LANE_H, resizing.startH + delta))
       else onResizeAutoLane(resizing.id, Math.max(MIN_AUTO_H, resizing.startH + delta))
     }
     const onUp = () => setResizing(null)
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+    return () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+    }
   }, [resizing, onResizeLayer, onResizeAutoLane])
 
   // The picker is anchored to a screen rect; scrolling the lanes would leave it floating
@@ -254,6 +278,36 @@ export function LaneHeaders({
     el.addEventListener('wheel', fn, { passive: false })
     return () => el.removeEventListener('wheel', fn)
   }, [onScrollY])
+
+  // Touch: one finger drags the header column up and down (a tap still hits its buttons), and a
+  // long press on a header opens its menu, like a right-click
+  const panRef = useRef<{ id: number; y: number; moved: boolean; timer: number | null } | null>(null)
+  const onTouchDown = (e: React.PointerEvent) => {
+    if (e.pointerType !== 'touch' || panRef.current) return
+    const target = e.target as HTMLElement
+    const timer = window.setTimeout(() => {
+      const p = panRef.current
+      if (!p || p.moved) return
+      p.timer = null
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }))
+    }, LONG_PRESS_MS)
+    panRef.current = { id: e.pointerId, y: e.clientY, moved: false, timer }
+  }
+  const onTouchMove = (e: React.PointerEvent) => {
+    const p = panRef.current
+    if (!p || p.id !== e.pointerId) return
+    const dy = e.clientY - p.y
+    if (!p.moved && Math.abs(dy) < 10) return
+    if (!p.moved) { p.moved = true; if (p.timer) { clearTimeout(p.timer); p.timer = null } }
+    p.y = e.clientY
+    onScrollY(-dy)
+  }
+  const onTouchUp = (e: React.PointerEvent) => {
+    const p = panRef.current
+    if (!p || p.id !== e.pointerId) return
+    if (p.timer) clearTimeout(p.timer)
+    panRef.current = null
+  }
 
   const audioColor = audioTrack?.color ?? 'var(--live-fill)'
   const layerOf = (lt: LayerTrack): ResolumeLayer | null =>
@@ -329,7 +383,10 @@ export function LaneHeaders({
                   const cueColor = cue ? (cue.color ?? cue.resolumeColor ?? lt.color ?? 'var(--scope-clip)') : ''
                   // A clip lane names its clip, not the generic "Clip · …" owner
                   const sub = refOwner.startsWith('Clip · ') ? refOwner.slice(7) : ''
-                  const owner = cue ? (sub ? `${sub} · ${cue.clipName}` : cue.clipName) : refOwner
+                  // The same clip more than once on the layer (a split): its start tells the lanes apart
+                  const twin = cue && lt.clips.filter(c => c.clipId === cue.clipId).length > 1
+                  const clipLabel = cue ? (twin ? `${cue.time.slice(3)} ${cue.clipName}` : cue.clipName) : ''
+                  const owner = cue ? (sub ? `${sub} · ${clipLabel}` : clipLabel) : refOwner
                   const retargetKey = `rt:${auto.id}`
                   const labelTip = [
                     auto.ref?.label ?? auto.name,
@@ -428,14 +485,10 @@ export function LaneHeaders({
                             disabled={readOnly || status?.state !== 'ok'}
                             onClick={e => { e.stopPropagation(); onSnapshot(i, ai) }}
                           >◉</button>
-                          {!readOnly && (armedDelete === auto.id ? (
-                            <button className="lane-tool armed" title="Click again to remove"
-                              onMouseLeave={() => setArmedDelete(null)}
-                              onClick={e => { e.stopPropagation(); setArmedDelete(null); onDeleteAutomation(i, ai) }}>Remove?</button>
-                          ) : (
-                            <button className="lane-tool danger" title="Remove automation"
-                              onClick={e => { e.stopPropagation(); setArmedDelete(auto.id) }}>✕</button>
-                          ))}
+                          {!readOnly && (
+                            <button className="lane-tool danger" title="Remove automation…"
+                              onClick={e => { e.stopPropagation(); setConfirmRemove({ ti: i, ai }) }}>✕</button>
+                          )}
                         </div>
                       </div>
                       {!readOnly && <ResizeHandle onStart={y => setResizing({ id: auto.id, kind: 'auto', startY: y, startH: autoH })} />}
@@ -446,6 +499,31 @@ export function LaneHeaders({
   ))
 
   // Eye + n: lanes hidden from the view; click shows them all again
+  // The layer's transition time in Resolume (clip changes on it blend over it); click to set.
+  // A value just set shows at once, until the next composition poll reports it.
+  const transitionChip = (lt: LayerTrack) => {
+    const tr = layerTransitionParam(layerOf(lt))
+    if (!tr) return null
+    const pend = trPending[tr.paramId]
+    const secs = pend && Date.now() - pend.at < 4000 ? pend.value : tr.seconds
+    return (
+      <button className={`transition-chip${secs > 0 ? ' on' : ''}`} disabled={readOnly}
+        title={`Layer transition in Resolume: ${secs > 0 ? `clip changes on this layer blend over ${secs.toFixed(2)} s` : 'off, clip changes cut'}. The blend runs in Resolume's own time (it doesn't pause or scrub). Click to change.`}
+        onClick={e => {
+          e.stopPropagation()
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+          setTrPop({ x: r.left, y: r.bottom + 2, paramId: tr.paramId, value: secs })
+        }}
+      >⇄ {secs > 0 ? `${secs.toFixed(secs < 1 && secs * 10 % 1 ? 2 : 1)}s` : '0s'}</button>
+    )
+  }
+  const setTransition = (paramId: number, seconds: number) => {
+    const v = Math.max(0, Math.min(10, seconds))
+    setTrPending(p => ({ ...p, [paramId]: { value: v, at: Date.now() } }))
+    onSetTransition(paramId, v)
+    setTrPop(null)
+  }
+
   const hiddenChip = (lt: LayerTrack, i: number) => {
     const n = lt.automations.filter(a => a.visible === false).length
     if (!n) return null
@@ -514,7 +592,8 @@ export function LaneHeaders({
         )}
       </div>
 
-      <div className="lanes-viewport" ref={viewportRef}>
+      <div className="lanes-viewport" ref={viewportRef}
+        onPointerDown={onTouchDown} onPointerMove={onTouchMove} onPointerUp={onTouchUp} onPointerCancel={onTouchUp}>
         <div className="lanes-inner" style={{ transform: `translateY(-${scrollY}px)` }}>
           {tracks.map((track, i) => {
             const h = layerRowHeights[track.id] ?? DEFAULT_LANE_H
@@ -630,6 +709,7 @@ export function LaneHeaders({
                       </span>
                       <span className="lane-name" title={`${lt.name} · ${lt.clips.length} ${lt.clips.length === 1 ? 'clip' : 'clips'}`}>{lt.name}</span>
                       <div className="lane-toggles">
+                        {transitionChip(lt)}
                         {hiddenChip(lt, i)}
                         {!readOnly && (
                           <button
@@ -667,6 +747,43 @@ export function LaneHeaders({
         </div>
       </div>
       {pickerEl}
+      {confirmRemove && (() => {
+        const t = tracks[confirmRemove.ti] as LayerTrack | undefined
+        const lane = t?.automations?.[confirmRemove.ai]
+        if (!t || !lane) return null
+        const n = lane.keyframes.length
+        return (
+          <ConfirmDialog
+            title="Remove automation"
+            message={<>Remove <b>{lane.ref?.label ?? lane.name}</b> on {t.name} and its {n} {n === 1 ? 'keyframe' : 'keyframes'}?
+              The parameter goes back to its Resolume default.</>}
+            confirmLabel="Remove" danger
+            onConfirm={() => { setConfirmRemove(null); onDeleteAutomation(confirmRemove.ti, confirmRemove.ai) }}
+            onCancel={() => setConfirmRemove(null)}
+          />
+        )
+      })()}
+      {trPop && (
+        <div className="dropdown header-menu transition-pop" style={{ left: trPop.x, top: trPop.y }} onMouseDown={e => e.stopPropagation()}>
+          <div className="transition-pop-title">Layer transition (Resolume)</div>
+          {TRANSITION_PRESETS.map(v => (
+            <button key={v} className="dropdown-item" onClick={() => setTransition(trPop.paramId, v)}>
+              {v === 0 ? 'Off (cut)' : `${v} s`}
+              {Math.abs(trPop.value - v) < 0.005 && <span className="dropdown-key on">✓</span>}
+            </button>
+          ))}
+          <div className="dropdown-sep" />
+          <label className="transition-pop-custom">
+            <span>Other</span>
+            <input type="number" min={0} max={10} step={0.05} defaultValue={trPop.value}
+              onKeyDown={e => {
+                e.stopPropagation()
+                if (e.key === 'Enter') { const v = Number((e.target as HTMLInputElement).value); if (Number.isFinite(v)) setTransition(trPop.paramId, v) }
+              }} />
+            <span>s</span>
+          </label>
+        </div>
+      )}
       {menu && (() => {
         const t = tracks[menu.ti] as LayerTrack | undefined
         const lane = menu.ai != null ? t?.automations?.[menu.ai] : undefined
@@ -704,6 +821,11 @@ function LiveStrip({ layer, clips, fps, offline, connected }: {
   layer: ResolumeLayer | null; clips: ClipCue[]; fps: number; offline: boolean; connected: boolean
 }) {
   const expected = expectedCue(clips, useFrame(), fps)
+  // Resolume's state arrives with the composition poll (every 2 s): right after the timeline's
+  // clip changes, the old clip still showing isn't a mismatch yet
+  const changed = useRef<{ id: string | null; at: number }>({ id: null, at: 0 })
+  if ((expected?.id ?? null) !== changed.current.id) changed.current = { id: expected?.id ?? null, at: Date.now() }
+  const settling = Date.now() - changed.current.at < MISMATCH_GRACE_MS
   if (!layer) {
     return (
       <div className="live-strip">
@@ -711,7 +833,10 @@ function LiveStrip({ layer, clips, fps, offline, connected }: {
       </div>
     )
   }
-  const playing = layer.clips?.find(c => String(val(c.connected) ?? '').startsWith('Connected')) ?? null
+  // During a layer transition Resolume shows two clips connected (the outgoing one and the
+  // incoming one): the timeline's clip among them is a match, not a mismatch
+  const live = (layer.clips ?? []).filter(c => String(val(c.connected) ?? '').startsWith('Connected'))
+  const playing = live.find(c => c.id === expected?.clipId) ?? live[0] ?? null
   const playingName = playing ? String(val(playing.name) ?? '') || `Clip ${playing.id}` : ''
   const expName = expected ? expected.clipName || `Clip ${expected.clipIndex}` : '—'
   const opacity = Number(val((layer as any).video?.opacity) ?? 1)
@@ -721,10 +846,11 @@ function LiveStrip({ layer, clips, fps, offline, connected }: {
   let chip: React.ReactNode
   if (!playing) {
     chip = <span className="live-chip none" title={`Resolume: — · timeline: ${expName}`}>—</span>
-  } else if (expected && playing.id === expected.clipId) {
+  } else if (expected && (playing.id === expected.clipId || settling)) {
+    const name = playing.id === expected.clipId ? playingName : expName   // settling: the new clip
     chip = (
-      <span className="live-chip match" title={`Resolume is playing ${playingName} — matches the timeline`}>
-        <span className="live-chip-glyph">▶</span><span className="live-chip-name">{playingName}</span>
+      <span className="live-chip match" title={`Resolume is playing ${name} — matches the timeline`}>
+        <span className="live-chip-glyph">▶</span><span className="live-chip-name">{name}</span>
       </span>
     )
   } else {
@@ -751,7 +877,7 @@ function ResizeHandle({ onStart }: { onStart: (y: number) => void }) {
   return (
     <div
       className="lane-resize-handle"
-      onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onStart(e.clientY) }}
+      onPointerDown={e => { e.stopPropagation(); e.preventDefault(); onStart(e.clientY) }}
     />
   )
 }

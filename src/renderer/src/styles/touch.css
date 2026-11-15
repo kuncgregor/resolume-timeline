@@ -1,0 +1,107 @@
+/* Touch screens (see touch.ts). html.touch: no browser gestures over the timeline, no hover-only
+   controls, the touch toolbar (the gestures themselves are in TimelineCanvas / LaneHeaders).
+   html.touch-large (size Large): finger-sized buttons, rows and handles; Compact keeps the
+   desktop sizes so more fits on the screen. */
+
+html.touch {
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+html.touch-large {
+  --target-min: 34px;
+  --headers-w: 272px;
+}
+html.touch body { overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+html.touch input, html.touch textarea { -webkit-user-select: text; user-select: text; }
+
+/* The app's own gestures there: the browser must not scroll or zoom the page instead */
+html.touch .timeline-canvas-container,
+html.touch .timeline-canvas-container canvas,
+html.touch .lanes-viewport { touch-action: none; }
+html.touch button, html.touch .chip { touch-action: manipulation; }
+/* In the header column everything (buttons too) leaves the drag to the app: a drag that starts on
+   a button must still scroll the lanes, not be taken by the browser and cancelled */
+html.touch .lanes-viewport * { touch-action: none; }
+
+/* Buttons, chips, menus */
+html.touch-large .btn { min-height: var(--target-min); }
+html.touch-large .btn-sm, html.touch-large .btn-icon { height: 30px; min-width: 30px; }
+html.touch-large .chip { height: 24px; }
+html.touch-large .dropdown-item { height: 40px; }
+html.touch-large .ctx-btn { height: 38px; }
+html.touch-large .ctx-seg-btn { height: 32px; min-width: 40px; }
+html.touch-large .ccp-swatch { width: 30px; height: 30px; }
+html.touch-large .kf-fam-btn { height: 30px; min-width: 34px; }
+html.touch-large .snap-toggle, html.touch-large .snap-grid, html.touch-large .bpm-tap { height: 32px; }
+
+/* Lane headers: toggles and tools a finger can hit, resize handles you can grab */
+html.touch-large .lane-toggle { width: 30px; height: 30px; }
+html.touch-large .lane-tool { width: 28px; height: 28px; }
+html.touch-large .lane-expand { width: 28px; }
+html.touch-large .transition-chip { height: 28px; padding: 0 6px; }
+html.touch-large .auto-title, html.touch-large .auto-line { height: 28px; }
+html.touch-large .auto-label { height: 28px; }
+html.touch-large .bind-chip { height: 22px; }
+html.touch-large .auto-enable { width: 22px; height: 22px; }
+html.touch-large .lane-resize-handle { height: 14px; }
+html.touch-large .bp-resize-handle { height: 14px; }
+
+/* Inspector */
+html.touch-large .bp-tab { height: 34px; }
+html.touch-large .bp-row { min-height: 40px; }
+html.touch-large input[type="range"] { height: 28px; }
+html.touch-large input[type="range"]::-webkit-slider-thumb { width: 22px; height: 26px; }
+html.touch-large input[type="checkbox"] { width: 22px; height: 22px; }
+
+/* Rundown: the card tools are always there (no hover on a touch screen) */
+html.touch .rd-controls { display: flex; }
+html.touch-large .rd-ctl { width: 30px; height: 30px; }
+
+/* Clip browser: the picked clips and the button that places them */
+html.touch-large .browser-clip-row { min-height: 48px; }
+.browser-place {
+  flex-shrink: 0; display: flex; gap: 6px; padding: 8px; background: var(--bg-header);
+  box-shadow: inset 0 1px 0 var(--bg-gutter);   /* under the list: tapping clips never moves it */
+}
+.browser-place .modal-primary { flex: 1; min-width: 0; white-space: normal; }
+
+/* Touch toolbar: its own row above the overview strip (never over the timeline), edits on the
+   left, zoom and row height on the right */
+.touch-edit-row { flex-shrink: 0; background: var(--bg-header); box-shadow: inset 0 -1px 0 var(--bg-gutter); }
+.touch-tools { display: flex; align-items: center; gap: 2px; padding: 4px 8px; overflow-x: auto; scrollbar-width: none; }
+.touch-tools .btn { flex-shrink: 0; height: 40px; min-width: 44px; padding: 0 10px; font-size: var(--fs-label); font-weight: 700; }
+.touch-tools .btn.danger-text { color: var(--danger); }
+.touch-sep { flex-shrink: 0; width: 1px; align-self: stretch; margin: 4px 6px; background: var(--bg-gutter); }
+.touch-spacer { flex: 1; min-width: 8px; }
+.touch-label { flex-shrink: 0; margin: 0 4px 0 2px; color: var(--text-faint); font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.touch-banner {
+  /* bottom left, clear of the layer rows the tap goes to */
+  position: absolute; left: 10px; bottom: 66px; z-index: 40;
+  display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; max-width: calc(100% - 24px);
+  background: var(--select); color: var(--text-on-live); font-size: var(--fs-label); font-weight: 700;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.touch-banner .btn { height: 34px; }
+
+/* Menus: rows grow with their bigger buttons */
+html.touch-large .ctx-row { height: auto; min-height: 38px; padding-top: 2px; padding-bottom: 2px; }
+
+/* Transport bar: the fixed blocks a little narrower; on a narrow tablet it scrolls sideways
+   instead of pushing CLIPS / SNAP off screen */
+html.touch .transport-bar { overflow-x: auto; scrollbar-width: none; }
+html.touch .transport-bar > * { flex-shrink: 0; }
+html.touch-large .tc-block { min-width: 0; padding: 0 10px; }
+html.touch-large .tc-display { font-size: calc(var(--fs-tc) * 0.82); }
+html.touch-large .remain { min-width: 140px; }
+html.touch-large .bpm-block { min-width: 110px; }
+html.touch-large .tbtn.arena-rec { width: 112px; }
+
+/* Narrow tablets (portrait iPad): a denser toolbar */
+@media (max-width: 900px) {
+  .touch-tools .btn { min-width: 38px; padding: 0 6px; font-size: 11px; }
+  .touch-sep { margin: 4px 2px; }
+}
+
+/* Lane / layer resize handles a finger can catch, in both sizes */
+html.touch:not(.touch-large) .lane-resize-handle { height: 12px; }
+html.touch:not(.touch-large) .bp-resize-handle { height: 12px; }

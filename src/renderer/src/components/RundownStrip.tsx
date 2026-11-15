@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
+import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
+import { setAppView } from './MobileRemote'
 import { TabletAccess } from './TabletAccess'
 import { useFrame } from '../frameStore'
 import { framesToSmpte } from './timeUtils'
@@ -62,13 +64,24 @@ export function RundownStrip({
   onImportTimeline, onExportTimeline, onSettings,
   onToggleShowMode, onReconnect,
 }: Props) {
-  const [menu, setMenu] = useState<'add' | 'file' | null>(null)
+  const [menu, setMenu] = useState<'add' | 'file' | 'view' | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropSide, setDropSide] = useState<'before' | 'after'>('after')
   // Delete takes two clicks: the first arms the button, the second removes the entry
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // The active card (and the next one) stay in view when the strip scrolls
+  useEffect(() => {
+    const show = () => {
+      for (const sel of ['.rd-block.next', '.rd-block.active']) {
+        (scrollRef.current?.querySelector(sel) as HTMLElement | null)?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+      }
+    }
+    show()
+    window.addEventListener('resize', show)
+    return () => window.removeEventListener('resize', show)
+  }, [activeId, rundown.length])
 
   // Renaming the showfile in place (click its name)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -201,6 +214,48 @@ export function RundownStrip({
 
           <button className="btn ghost" onClick={onSettings} disabled={showMode || remote}
             title={remote ? 'Timecode and audio settings are made on the computer running the app' : 'Timeline settings'}>⚙</button>
+
+          {/* How this screen shows the app: show view, touch mode, size and scale (per device) */}
+          <div className="menu-anchor">
+            <button className="btn ghost" onClick={e => { e.stopPropagation(); setMenu(m => m === 'view' ? null : 'view') }}>
+              View ▾
+            </button>
+            {menu === 'view' && (
+              <div className="dropdown view-menu" onClick={e => e.stopPropagation()}>
+                <button className="dropdown-item" onClick={() => { setMenu(null); setAppView('remote') }}
+                  title="Clock, NOW / NEXT, play / stop, GO and the rundown, big for a tablet on the desk (SETUP comes back here)">
+                  Show view
+                </button>
+                <div className="dropdown-sep" />
+                <div className="view-menu-row">
+                  <span>Touch</span>
+                  {(['auto', 'on', 'off'] as const).map(m => (
+                    <button key={m} className={`seg-btn${touchSettings.mode() === m ? ' on' : ''}`}
+                      title={m === 'auto' ? 'On for touch screens (tablets)' : m === 'on' ? 'Finger gestures and the touch toolbar on this device' : 'Mouse and keyboard only'}
+                      onClick={() => touchSettings.setMode(m)}>{m === 'auto' ? 'Auto' : m === 'on' ? 'On' : 'Off'}</button>
+                  ))}
+                </div>
+                {TOUCH && (
+                  <div className="view-menu-row">
+                    <span>Size</span>
+                    {(['large', 'compact'] as const).map(z => (
+                      <button key={z} className={`seg-btn${touchSettings.size() === z ? ' on' : ''}`}
+                        title={z === 'large' ? 'Finger-sized buttons and rows' : 'Desktop sizes: more fits on the screen'}
+                        onClick={() => touchSettings.setSize(z)}>{z === 'large' ? 'Large' : 'Compact'}</button>
+                    ))}
+                  </div>
+                )}
+                {(TOUCH || UI_SCALE !== 1 || !!(window as any).timeline?.setUiZoom) && (
+                  <div className="view-menu-row" title="The whole page drawn smaller, so more fits (tablets and the app window; in a desktop browser use its zoom)">
+                    <span>Scale</span>
+                    {UI_SCALES.map(v => (
+                      <button key={v} className={`seg-btn${UI_SCALE === v ? ' on' : ''}`} onClick={() => touchSettings.setScale(v)}>{Math.round(v * 100)}%</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="spacer" />
@@ -262,7 +317,7 @@ export function RundownStrip({
                       {isNext && <span className="chip next">▷ Next</span>}
                       {confirmEntryId === entry.id && <span className="chip warn blink">Click again</span>}
                     </div>
-                    <div className="rd-name" title={`${entryName(entry)}${showMode ? '' : ' — double-click to rename'}`}>{entryName(entry)}</div>
+                    <div className="rd-name" title={`${entryName(entry)}${showMode ? '' : ' — double-click to edit'}`}>{entryName(entry)}</div>
                     {entry.type === 'show' ? (() => {
                       // An internal-clock timeline at 00:00:00:00 needs no start TC: leave room for the BPM
                       const sh = (entry as ShowEntry).show
@@ -305,7 +360,7 @@ export function RundownStrip({
               {active && <span className="nn-num mono">{String(activeIdx + 1).padStart(2, '0')}</span>}
               <span className={`nn-state ${playing ? 'live' : ''}`}>{playing ? '▶ Live' : '■ Stopped'}</span>
             </div>
-            <div className="nn-name" title={active ? `${entryName(active)}${showMode ? '' : ' — double-click to rename'}` : ''}
+            <div className="nn-name" title={active ? `${entryName(active)}${showMode ? '' : ' — double-click to edit'}` : ''}
               onDoubleClick={() => { if (active && !showMode) onEdit(active.id) }}>{active ? entryName(active) : '—'}</div>
             <div className="nn-sub mono">
               {active?.type === 'break' ? `Break · ${(active as BreakEntry).duration}`
