@@ -131,3 +131,25 @@
 .overview-length { font-weight: 400; letter-spacing: 0; color: var(--text-faint); }
 .overview-canvas { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-well); }
 .overview-canvas > canvas { display: block; touch-action: none; }
+
+.ctx-dim { margin-left: 6px; color: var(--text-faint); font-size: var(--fs-meta); }
+
+/* Marker editor (MarkerMenu.tsx) */
+.marker-menu { width: 260px; }
+.marker-menu-at { margin-left: 6px; color: var(--text-faint); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.marker-name {
+  margin: 4px 8px 6px; height: 28px; padding: 0 8px; border: none; outline: none;
+  background: var(--bg-well); color: var(--text-hi); font-size: var(--fs-label); font-weight: 700;
+}
+.marker-name:focus { box-shadow: inset 0 0 0 2px var(--focus-ring); }
+.marker-parts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 8px 6px; background: var(--bg-gutter); }
+.marker-part {
+  height: 26px; padding: 0 0 0 7px; border: none; text-align: left; cursor: pointer;
+  background: var(--bg-control); color: var(--text); font-size: var(--fs-micro); font-weight: 800; letter-spacing: 0.06em;
+}
+.marker-part:hover { background: var(--bg-hover); color: var(--text-hi); }
+.marker-colors { display: flex; gap: 4px; margin: 0 8px 6px; }
+.marker-swatch { width: 22px; height: 22px; border: none; cursor: pointer; }
+.marker-swatch.on { outline: 2px solid var(--text-hi); outline-offset: 1px; }
+html.touch-large .marker-part { height: 34px; }
+html.touch-large .marker-swatch { width: 26px; height: 26px; }

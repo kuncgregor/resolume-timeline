@@ -2336,6 +2336,7 @@ export default function App() {
             <TimelineCanvas
               tracks={show.tracks} markers={show.markers} fps={fps} tempo={tempo} rulerMode={rulerMode} snap={snap}
               onSetDownbeat={f => setShow(prev => ({ ...prev, downbeat: f > 0 ? framesToSmpte(f, prev.frameRate) : undefined }))}
+              onSetMarkers={markers => setShow(prev => ({ ...prev, markers }))}
               readOnly={showMode} laneStatus={laneStatus} overrides={overrides} decks={decks}
               pxPerFrame={pxPerFrame} scrollFrame={scrollFrame}
               draggingClip={draggingClip} autoLaneHeights={autoLaneHeights}

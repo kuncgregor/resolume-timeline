@@ -1,7 +1,8 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useFrame } from '../frameStore'
-import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind } from '../../../shared/show'
+import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind, Marker } from '../../../shared/show'
+import { MarkerMenu, DEFAULT_MARKER_COLOR } from './MarkerMenu'
 import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
@@ -300,6 +301,7 @@ interface Props {
   fps: number
   tempo: Tempo | null                 // musical grid (null = no BPM)
   onSetDownbeat: (frame: number) => void   // ruler right-click: where bar 1 beat 1 is
+  onSetMarkers: (markers: Marker[]) => void // ruler: add, move, rename, recolour, delete markers
   rulerMode: 'timecode' | 'bars'      // in effect; 'bars' only with a tempo
   snap: SnapSettings                  // snap to grid in effect (⌘ during a drag = free; Option = copy)
   lockEnvelopes: boolean              // Live's Lock Envelopes: automation stays put when clips move
@@ -367,7 +369,7 @@ export function TimelineCanvas({
   scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollYTo, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, placing, onPlaced, onUndo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes,
-  onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat,
+  onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat, onSetMarkers,
   onResizeAutoLane, selectedTrackIdx, selectedCueIdx,
 }: Props) {
   const tracks = useMemo(() => toViewTracks(tracksProp), [tracksProp])
@@ -392,6 +394,17 @@ export function TimelineCanvas({
     window.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
   }, [rulerMenu])
+  // Marker editor (ruler right-click / double-click on a marker, or a new marker)
+  const [markerMenu, setMarkerMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  useEffect(() => {
+    if (!markerMenu) return
+    const close = () => setMarkerMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
+  }, [markerMenu])
+  const markerDragRef = useRef<{ id: string; moved: boolean } | null>(null)
   const [fadeSeconds, setFadeSeconds] = useState(1)   // clip menu fade length, kept for the session
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
   const frameRef = useRef(frame)
@@ -507,6 +520,28 @@ export function TimelineCanvas({
     return { spans: clipSpans(lt, fps, starts, ghostDur), ghostMove }
   }
   const xToFrame = (x: number) => Math.max(0, Math.round(x / pxPerFrame + scrollFrame))
+
+  // ── Markers (Live's locators): the strip under the ruler's numbers ──
+  const inMarkerStrip = (y: number) => y >= TC_BAND_H && y < RULER_H
+  /** The marker whose diamond is under x (within 7 px), the nearest one. */
+  const markerAt = (x: number): Marker | null => {
+    let best: Marker | null = null, bestD = 8
+    for (const m of markers) { const d = Math.abs(frameToX(smpteToFrames(m.time, fps)) - x); if (d < bestD) { best = m; bestD = d } }
+    return best
+  }
+  /** The marker whose section (its band in the strip, up to the next marker) is under x. */
+  const sectionMarkerAt = (x: number): Marker | null => {
+    const f = x / pxPerFrame + scrollFrame
+    let best: Marker | null = null, bestF = -Infinity
+    for (const m of markers) { const mf = smpteToFrames(m.time, fps); if (mf <= f && mf > bestF) { best = m; bestF = mf } }
+    return best
+  }
+  const updateMarker = (id: string, patch: Partial<Marker>) => onSetMarkers(markers.map(m => m.id === id ? { ...m, ...patch } : m))
+  const addMarker = (f: number, x: number, y: number) => {
+    const id = `m${Date.now().toString(36)}`
+    onSetMarkers([...markers, { id, time: framesToSmpte(Math.max(0, Math.round(f)), fps), name: '', color: DEFAULT_MARKER_COLOR }])
+    setRulerMenu(null); setMarkerMenu({ x, y, id })
+  }
 
   /** Where a dragged clip edge / dropped clip / new key lands. Snap on: the nearest grid line, or a
    *  marker / the playhead within SNAP_PX when that is nearer. Clip drags (`clips`) also stick to
@@ -1402,7 +1437,12 @@ export function TimelineCanvas({
     const free = e.metaKey || e.ctrlKey   // ⌘: no snapping (Live)
     const rawF = x / pxPerFrame + scrollFrame
 
-    if (y < TRACKS_TOP) { isDraggingPlayhead.current = true; onSeek(xToFrame(x)); return }
+    if (y < TRACKS_TOP) {
+      setMarkerMenu(null)
+      const mk = !readOnly && inMarkerStrip(y) ? markerAt(x) : null
+      if (mk) { markerDragRef.current = { id: mk.id, moved: false }; return }
+      isDraggingPlayhead.current = true; onSeek(xToFrame(x)); return
+    }
 
     // Keyframes win over the lane-resize zone (value-0 keys sit right above the lane edge)
     const kfHit = hitTestKeyframe(x, y, layout, tracks, fps, frameToX, laneStatus)
@@ -1549,6 +1589,16 @@ export function TimelineCanvas({
 
     if (isDraggingPlayhead.current) { onSeek(xToFrame(x)); return }
 
+    // A marker follows the pointer on the grid (⌘: any frame)
+    const md0 = markerDragRef.current
+    if (md0) {
+      const f = Math.max(0, free || !gridSnap ? Math.round(rawF) : snapToGrid(rawF, gridSnap.stepF, gridSnap.tempo))
+      const cur = markers.find(m => m.id === md0.id)
+      if (cur && smpteToFrames(cur.time, fps) !== f) { md0.moved = true; updateMarker(md0.id, { time: framesToSmpte(f, fps) }) }
+      setCursor('grabbing')
+      return
+    }
+
     if (autoResizeRef.current) {
       const rs = autoResizeRef.current
       onResizeAutoLane(rs.autoId, Math.max(MIN_AUTO_H, rs.startH + (y - rs.startY)))
@@ -1682,7 +1732,7 @@ export function TimelineCanvas({
     }
 
     // Cursor feedback
-    if (y < TRACKS_TOP) { setCursor('pointer'); return }
+    if (y < TRACKS_TOP) { setCursor(!readOnly && inMarkerStrip(y) && markerAt(x) ? 'grab' : 'pointer'); return }
     const layout = getLayout()
     const kfHit = hitTestKeyframe(x, y, layout, tracks, fps, frameToX, laneStatus)
     setHoverKf(prev => (sameKf(prev, kfHit) || (!prev && !kfHit) ? prev : kfHit))
@@ -1709,6 +1759,13 @@ export function TimelineCanvas({
   const handleMouseUp = useCallback(() => {
     isDraggingPlayhead.current = false
     autoResizeRef.current = null
+    // A marker clicked, not dragged: the playhead goes there (Live)
+    const mdu = markerDragRef.current
+    if (mdu) {
+      markerDragRef.current = null
+      const m = markers.find(mm => mm.id === mdu.id)
+      if (!mdu.moved && m) onSeek(smpteToFrames(m.time, fps))
+    }
 
     const kd = kfDragRef.current
     if (kd) {
@@ -1822,13 +1879,13 @@ export function TimelineCanvas({
       draw()
     }
     if (canvasRef.current) canvasRef.current.style.cursor = 'default'
-  }, [onUpdateCue, onAddKeyframe, onDeleteKeyframe, onUpdateKeyframe, onEditTracks, onSeek, fps, tracks, tracksProp, draw, playing, readOnly, lockEnvelopes, getLayout])
+  }, [onUpdateCue, onAddKeyframe, onDeleteKeyframe, onUpdateKeyframe, onEditTracks, onSeek, fps, tracks, tracksProp, draw, playing, readOnly, lockEnvelopes, getLayout, markers])
 
   // While a drag is active, follow the mouse on the window so leaving the canvas
   // neither drops nor freezes the drag.
   const dragHandlersRef = useRef({ move: handleMouseMove, up: handleMouseUp })
   dragHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
-  const isDragging = () => !!(isDraggingPlayhead.current || autoResizeRef.current || kfDragRef.current ||
+  const isDragging = () => !!(isDraggingPlayhead.current || markerDragRef.current || autoResizeRef.current || kfDragRef.current ||
     bendDragRef.current || selDragRef.current || matDragRef.current || resizeClipRef.current)
 
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
@@ -1881,7 +1938,7 @@ export function TimelineCanvas({
 
   /** Drops whatever one finger started (a second finger turned it into a pan / pinch). */
   const abortDrag = () => {
-    isDraggingPlayhead.current = false
+    isDraggingPlayhead.current = false; markerDragRef.current = null
     autoResizeRef.current = null; kfDragRef.current = null; bendDragRef.current = null
     selDragRef.current = null; matDragRef.current = null; resizeClipRef.current = null
     ghostClipRef.current = null; ghostDurRef.current = null; snapGuideRef.current = null
@@ -2031,6 +2088,12 @@ export function TimelineCanvas({
 
   const handleDblClick = useCallback((e: React.MouseEvent) => {
     const { x, y } = localXY(e)
+    // The marker strip: edit the marker (its diamond, or the section the click is in)
+    if (inMarkerStrip(y)) {
+      const mk = readOnly ? null : markerAt(x) ?? sectionMarkerAt(x)
+      if (mk) { setMarkerMenu({ x, y, id: mk.id }); setRulerMenu(null) }
+      return
+    }
     const layout = getLayout()
     const info = getAutoLaneAt(layout, y)
     if (!info || !canEditLane(info.trackIdx, info.autoIdx)) return
@@ -2064,9 +2127,14 @@ export function TimelineCanvas({
     e.preventDefault()
     if (readOnly) return
     const { x, y } = localXY(e)
-    // Ruler: tempo menu (bar 1 = the downbeat the bar grid counts from)
+    // Ruler: a marker under the pointer opens its editor; elsewhere add a marker (snapped to the
+    // grid) or, with a tempo, move bar 1
     if (y < RULER_H) {
-      if (tempo) { setRulerMenu({ x, y, frame: Math.max(0, Math.round(scrollFrame + x / pxPerFrame)) }); setContextMenu(null); setClipColorPicker(null) }
+      setContextMenu(null); setClipColorPicker(null)
+      const mk = markerAt(x)
+      if (mk) { setMarkerMenu({ x, y, id: mk.id }); setRulerMenu(null); return }
+      setMarkerMenu(null)
+      setRulerMenu({ x, y, frame: snapDrag(x / pxPerFrame + scrollFrame, false).f })
       return
     }
     const kfHit = hitTestKeyframe(x, y, getLayout(), tracks, fps, frameToX, laneStatus)
@@ -2088,7 +2156,7 @@ export function TimelineCanvas({
       setClipColorPicker({ x, y, trackIdx: clipHit.trackIdx, cueIdx: clipHit.cueIdx, frame: xToFrame(x) })
       setContextMenu(null)
     }
-  }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip, tempo, scrollFrame, pxPerFrame])
+  }, [tracks, fps, readOnly, laneStatus, getLayout, hitTestClip, tempo, scrollFrame, pxPerFrame, markers, gridSnap?.stepF, gridSnap?.tempo])
 
   // ── Keyboard: edits on the selection (Live's Edit menu) ────────────────────
   // Capture phase on window, so Delete/Backspace never also reaches the App.
@@ -2554,12 +2622,20 @@ export function TimelineCanvas({
         )
       })()}
 
-      {rulerMenu && tempo && (() => {
+      {rulerMenu && (() => {
+        const at = (f: number) => tempo ? `${formatBarBeat(frameToBarBeat(f, tempo), 2)} · ${framesToSmpte(f, fps)}` : framesToSmpte(f, fps)
+        return (
+          <div className="ctx-menu" style={clampPos(rulerMenu.x, rulerMenu.y, 240, tempo ? 270 : 110)} onMouseDown={e => e.nativeEvent.stopImmediatePropagation()}>
+            <div className="ctx-title">Marker</div>
+            <button className="ctx-btn" onClick={() => addMarker(rulerMenu.frame, rulerMenu.x, rulerMenu.y)}>Add marker here <span className="ctx-dim mono">{at(rulerMenu.frame)}</span></button>
+            <button className="ctx-btn" onClick={() => addMarker(frameRef.current, rulerMenu.x, rulerMenu.y)}>Add marker at playhead</button>
+            {tempo && (() => {
         const beatF = (fps * 60) / tempo.bpm
         const set = (f: number) => { onSetDownbeat(Math.max(0, Math.round(f))); setRulerMenu(null) }
         const nudge = (df: number) => onSetDownbeat(Math.max(0, Math.round(tempo.downbeatF + df)))
         return (
-          <div className="ctx-menu" style={clampPos(rulerMenu.x, rulerMenu.y, 230, 190)} onMouseDown={e => e.nativeEvent.stopImmediatePropagation()}>
+          <>
+            <div className="ctx-divider" />
             <div className="ctx-title">Bar 1</div>
             <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
             <button className="ctx-btn" onClick={() => set(rulerMenu.frame)}>Set bar 1 here ({framesToSmpte(rulerMenu.frame, fps)})</button>
@@ -2573,9 +2649,27 @@ export function TimelineCanvas({
                 <button className="ctx-seg-btn" title="Bar 1 one beat later" onClick={() => nudge(beatF)}>+beat</button>
               </div>
             </div>
+          </>
+        )
+            })()}
             <div className="ctx-divider" />
             <button className="ctx-btn dim" onClick={() => setRulerMenu(null)}>Close</button>
           </div>
+        )
+      })()}
+
+      {markerMenu && (() => {
+        const mk = markers.find(m => m.id === markerMenu.id)
+        if (!mk) return null
+        const f = smpteToFrames(mk.time, fps)
+        return (
+          <MarkerMenu marker={mk} others={markers.filter(m => m.id !== mk.id)}
+            timeLabel={tempo ? `${formatBarBeat(frameToBarBeat(f, tempo), 2)} · ${mk.time}` : mk.time}
+            style={clampPos(markerMenu.x, markerMenu.y, 260, 330)}
+            onChange={patch => updateMarker(mk.id, patch)}
+            onMoveToPlayhead={() => updateMarker(mk.id, { time: framesToSmpte(Math.round(frameRef.current), fps) })}
+            onDelete={() => { onSetMarkers(markers.filter(m => m.id !== mk.id)); setMarkerMenu(null) }}
+            onClose={() => setMarkerMenu(null)} />
         )
       })()}
 
@@ -2949,12 +3043,21 @@ function drawMarkerStrip(
   ctx: CanvasRenderingContext2D, W: number, fps: number, ppf: number, sf: number,
   markers: { time: string; name: string; color: string }[],
 ) {
-  // Marker strip: diamond + name, name clipped at the next marker
-  const my = TC_BAND_H + (RULER_H - 1 - TC_BAND_H) / 2
+  // Marker strip: each marker's section as a band in its colour up to the next marker (the song's
+  // parts at a glance), diamond + name, the name clipped at the next marker
+  const top = TC_BAND_H, h = RULER_H - 1 - TC_BAND_H
+  const my = top + h / 2
   const mks = markers
     .map(m => ({ ...m, x: Math.round((smpteToFrames(m.time, fps) - sf) * ppf) }))
     .sort((a, b) => a.x - b.x)
-  ctx.font = `11px ${T.fontUi}`
+  mks.forEach((mk, i) => {
+    const x1 = i + 1 < mks.length ? mks[i + 1].x : W
+    if (x1 < 0 || mk.x > W) return
+    ctx.globalAlpha = 0.22; ctx.fillStyle = mk.color || T.loop
+    ctx.fillRect(Math.max(0, mk.x), top, Math.min(W, x1) - Math.max(0, mk.x), h)
+    ctx.globalAlpha = 1
+  })
+  ctx.font = `700 11px ${T.fontUi}`
   mks.forEach((mk, i) => {
     if (mk.x < -200 || mk.x > W + 6) return
     const c = mk.color || T.loop
@@ -2963,7 +3066,7 @@ function drawMarkerStrip(
     ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
     const maxW = (i + 1 < mks.length ? mks[i + 1].x - 6 : W) - (mk.x + 7)
     if (mk.name && maxW > 10) {
-      ctx.fillStyle = T.text
+      ctx.fillStyle = T.textHi
       ctx.fillText(fitText(ctx, mk.name, maxW), mk.x + 7, my + 0.5)
     }
   })

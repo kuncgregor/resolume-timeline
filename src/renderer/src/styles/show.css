@@ -20,23 +20,49 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-tag { flex-shrink: 0; width: 46px; justify-content: center; }
 .chip.on-live { background: var(--live); color: var(--text-on-live); }
 
+/* Show size (VIEW › Show size, per device): every size below comes from these. Normal is the
+   default; Compact fits more on a tablet, Large reads from further away (the first design). */
+.sv, .show-main {
+  --s-band: 40px; --s-strip: 44px; --s-ctl: 76px; --s-tabs: 32px; --s-row: 36px;
+  --s-pad: 10px 14px; --s-song: 24px; --s-bar: 24px; --s-sect: var(--fs-body); --s-remain: 44px;
+  --s-text: var(--fs-label); --s-clip: var(--fs-body); --s-cd: var(--fs-cue-live); --s-cd1: var(--fs-title); --s-cdw: 100px;
+  --s-ic: 22px; --s-lb: var(--fs-ui); --s-go: var(--fs-cue-live); --s-prev: 112px; --s-jump: 52px;
+  --s-left: 230px; --s-right: 340px; --s-side-p: 260px;
+}
+.sv.size-compact, .show-main.size-compact {
+  --s-band: 34px; --s-strip: 36px; --s-ctl: 56px; --s-tabs: 28px; --s-row: 30px;
+  --s-pad: 6px 12px; --s-song: 19px; --s-bar: 19px; --s-sect: var(--fs-label); --s-remain: 32px;
+  --s-text: var(--fs-ui); --s-clip: var(--fs-label); --s-cd: var(--fs-label); --s-cd1: var(--fs-cue-live); --s-cdw: 84px;
+  --s-ic: 17px; --s-lb: var(--fs-meta); --s-go: var(--fs-label); --s-prev: 88px; --s-jump: 44px;
+  --s-left: 200px; --s-right: 300px; --s-side-p: 220px;
+}
+.sv.size-large, .show-main.size-large {
+  --s-band: 44px; --s-strip: 52px; --s-ctl: 104px; --s-tabs: 36px; --s-row: 42px;
+  --s-pad: 12px 16px; --s-song: 28px; --s-bar: 28px; --s-sect: var(--fs-cue-live); --s-remain: 56px;
+  --s-text: var(--fs-body); --s-clip: var(--fs-cue-live); --s-cd: var(--fs-title); --s-cd1: 24px; --s-cdw: 116px;
+  --s-ic: 30px; --s-lb: var(--fs-body); --s-go: var(--fs-title); --s-prev: 150px; --s-jump: 64px;
+  --s-left: 240px; --s-right: 360px; --s-side-p: 300px;
+}
+/* A computer (≥ 1400 px): the clock and song a step bigger, the columns wider */
+.sv.big:not(.size-compact) { --s-song: 32px; --s-bar: 32px; --s-remain: 60px; }
+
 /* ── Layouts ─────────────────────────────────────────────────────────── */
 
 /* Tablet landscape and computer: LAYER · NOW | radar | COMING */
 .sv-landscape {
-  grid-template-columns: 240px minmax(0, 1fr) 360px;
-  grid-template-rows: auto auto 52px minmax(0, 1fr) 104px;
+  grid-template-columns: var(--s-left) minmax(0, 1fr) var(--s-right);
+  grid-template-rows: auto auto var(--s-strip) minmax(0, 1fr) var(--s-ctl);
   grid-template-areas: "band band band" "head head head" "strip strip strip" "layers radar side" "ctl ctl ctl";
 }
-.sv-landscape.big { grid-template-columns: 280px minmax(0, 1fr) 400px; grid-template-rows: auto auto 56px minmax(0, 1fr) 112px; }
+.sv-landscape.big { grid-template-columns: calc(var(--s-left) + 40px) minmax(0, 1fr) calc(var(--s-right) + 40px); }
 .sv-landscape.huge {
-  grid-template-columns: 280px minmax(0, 1fr) 400px 300px;
+  grid-template-columns: calc(var(--s-left) + 40px) minmax(0, 1fr) calc(var(--s-right) + 40px) 300px;
   grid-template-areas: "band band band band" "head head head head" "strip strip strip strip" "layers radar side rd" "ctl ctl ctl ctl";
 }
 /* Tablet portrait: the radar across, COMING under it */
 .sv-portrait {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto 52px minmax(0, 1fr) 300px 104px;
+  grid-template-rows: auto auto var(--s-strip) minmax(0, 1fr) var(--s-side-p) var(--s-ctl);
   grid-template-areas: "band" "head" "strip" "radar" "side" "ctl";
 }
 /* Phone: one column, the controls low in thumb reach */
@@ -64,7 +90,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 /* ── Band: status, alarms, REC, SETUP ────────────────────────────────── */
 
 .sv-band {
-  display: flex; align-items: center; gap: var(--sp-3); min-height: 44px; padding: 0 var(--sp-2) 0 var(--sp-3);
+  display: flex; align-items: center; gap: var(--sp-3); min-height: var(--s-band); padding: 0 var(--sp-2) 0 var(--sp-3);
   background: var(--bg-header); font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.08em; overflow: hidden;
 }
 .sv-dot { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); white-space: nowrap; }
@@ -104,7 +130,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-band { overflow: visible; position: relative; z-index: 7; }
 
 .sv-offline {
-  position: absolute; left: 0; right: 0; top: 44px; z-index: 6; padding: var(--sp-2) var(--sp-3);
+  position: absolute; left: 0; right: 0; top: var(--s-band); z-index: 6; padding: var(--sp-2) var(--sp-3);
   background: var(--danger-fill); color: var(--text-hi); font-size: var(--fs-label); font-weight: 700;
 }
 .sv.offline .sv-bar, .sv.offline .sv-remain-big { color: var(--text-faint); }
@@ -112,19 +138,19 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 /* ── Head: song · position · time to end ─────────────────────────────── */
 
 .sv-head { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 1px; background: var(--bg-gutter); }
-.sv-head > div { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: var(--sp-3) var(--sp-4); background: var(--bg-monitor); }
+.sv-head > div { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: var(--s-pad); background: var(--bg-monitor); }
 .sv-song-row, .sv-next-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
-.sv-song { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-display); font-weight: 800; line-height: 1.15; color: var(--text-hi); }
+.sv-song { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--s-song); font-weight: 800; line-height: 1.15; color: var(--text-hi); }
 .sv-count { flex-shrink: 0; font-size: var(--fs-label); color: var(--text-faint); }
 .sv-next-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); color: var(--text-dim); }
 .sv-pos-row { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
-.sv-bar { font-size: var(--fs-display); font-weight: 800; color: var(--text-hi); white-space: nowrap; }
+.sv-bar { font-size: var(--s-bar); font-weight: 800; color: var(--text-hi); white-space: nowrap; }
 .sv-tc { font-size: var(--fs-body); color: var(--text-dim); }
-.sv-sect { min-height: 1.3em; font-size: var(--fs-cue-live); font-weight: 700; color: var(--loop); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-sect { min-height: 1.3em; font-size: var(--s-sect); font-weight: 700; color: var(--loop); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-sect-next { color: var(--text-dim); font-weight: 600; }
 .sv-sect.dim { color: var(--text-dim); font-weight: 600; font-size: var(--fs-body); white-space: normal; }
 .sv-remain { align-items: flex-end; text-align: right; }
-.sv-remain-big { font-size: var(--fs-huge); font-weight: 800; line-height: 1; letter-spacing: -0.02em; color: var(--text-hi); }
+.sv-remain-big { font-size: var(--s-remain); font-weight: 800; line-height: 1; letter-spacing: -0.02em; color: var(--text-hi); }
 .sv-remain-big.warn { color: var(--loop); }
 .sv-remain-big.danger { color: var(--danger); }
 .sv-remain-big.idle { color: var(--text-faint); }
@@ -137,7 +163,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-strip { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 1px; background: var(--bg-gutter); }
 .sv-jumps { display: flex; gap: 1px; }
 .sv-jumps button {
-  min-width: 64px; padding: 0 var(--sp-3); background: var(--bg-control); color: var(--text-hi);
+  min-width: var(--s-jump); padding: 0 var(--sp-3); background: var(--bg-control); color: var(--text-hi);
   font-size: var(--fs-ui); font-weight: 800; letter-spacing: 0.06em;
 }
 .sv-jumps button:active { background: var(--bg-hover); }
@@ -178,11 +204,11 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-cell.empty { color: var(--text-faint); font-size: var(--fs-label); box-shadow: none; }
 .sv-cell-name { font-size: var(--fs-label); font-weight: 800; letter-spacing: 0.06em; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-cell-name .mono { color: var(--text-dim); }
-.sv-cell-clip { font-size: var(--fs-cue-live); font-weight: 700; color: var(--live); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-cell-clip { font-size: var(--s-clip); font-weight: 700; color: var(--live); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-layers.preview .sv-cell-clip { color: var(--next); }
 .sv-cell-clip.none { font-weight: 400; color: var(--text-faint); font-size: var(--fs-body); }
 .sv-mv { display: grid; grid-template-columns: minmax(0, 1fr) 54px; gap: 2px var(--sp-2); align-items: center; }
-.sv-mv-name { font-size: var(--fs-body); font-weight: 700; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-mv-name { font-size: var(--s-text); font-weight: 700; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-mv-bar { height: 8px; background: var(--bg-well); }
 .sv-mv-bar > i { display: block; height: 100%; background: var(--live); }
 .sv-mv-val { grid-column: 1 / -1; font-size: var(--fs-label); font-weight: 700; color: var(--live); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -202,7 +228,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-side, .sv-rundown-col { min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow: hidden; background: var(--bg-gutter); }
 .sv-tabs { flex-shrink: 0; display: flex; gap: 1px; }
 .sv-tabs button {
-  flex: 1; height: 36px; background: var(--bg-header); color: var(--text-dim);
+  flex: 1; height: var(--s-tabs); background: var(--bg-header); color: var(--text-dim);
   font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.12em;
 }
 .sv-tabs button.on { background: var(--bg-lane); color: var(--text-hi); box-shadow: inset 0 -2px 0 var(--live); }
@@ -211,13 +237,13 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-events > * { width: 100%; }
 .sv-events::after { content: ''; flex: 1 0 0; width: 100%; background: var(--bg-lane); }
 .sv-ev {
-  flex-shrink: 0; display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 2px var(--sp-3);
+  flex-shrink: 0; display: grid; grid-template-columns: var(--s-cdw) minmax(0, 1fr); gap: 2px var(--sp-3);
   padding: var(--sp-2) var(--sp-3); background: var(--bg-lane);
 }
-.sv-cd { font-size: var(--fs-title); font-weight: 800; line-height: 1.1; color: var(--next); white-space: nowrap; }
+.sv-cd { font-size: var(--s-cd); font-weight: 800; line-height: 1.1; color: var(--next); white-space: nowrap; }
 .sv-cd small { display: block; margin-top: 3px; font-size: var(--fs-label); font-weight: 700; color: var(--text-dim); }
 .sv-its { min-width: 0; display: flex; flex-direction: column; gap: 2px; justify-content: center; }
-.sv-it { display: flex; align-items: baseline; min-width: 0; font-size: var(--fs-body); color: var(--text); }
+.sv-it { display: flex; align-items: baseline; min-width: 0; font-size: var(--s-text); color: var(--text); }
 .sv-it-text {
   min-width: 0; overflow: hidden; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;   /* a long target wraps once, then cuts */
@@ -227,7 +253,7 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-it.more { font-size: var(--fs-label); color: var(--text-faint); }
 .sv-ly { flex-shrink: 0; display: inline-block; min-width: 28px; margin-right: 4px; font-size: var(--fs-ui); font-weight: 800; color: var(--text-dim); }
 .sv-ev.first { background: color-mix(in srgb, var(--next) 14%, var(--bg-lane)); padding-top: var(--sp-3); padding-bottom: var(--sp-3); }
-.sv-ev.first .sv-cd { font-size: 24px; }
+.sv-ev.first .sv-cd { font-size: var(--s-cd1); }
 /* Under a bar away: the operator gets ready */
 .sv-ev.imminent { background: var(--next); }
 .sv-ev.imminent .sv-cd, .sv-ev.imminent .sv-cd small, .sv-ev.imminent .sv-it, .sv-ev.imminent .sv-it b, .sv-ev.imminent .sv-ly { color: var(--text-on-live); }
@@ -237,8 +263,8 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 /* The space under a short list: the panel's colour, not the gutter's */
 .sv-rundown::after { content: ''; flex: 1 0 0; background: var(--bg-lane); }
 .sv-rd {
-  flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); min-height: 42px; padding: 0 var(--sp-3);
-  background: var(--bg-lane); font-size: var(--fs-body); color: var(--text);
+  flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); min-height: var(--s-row); padding: 0 var(--sp-3);
+  background: var(--bg-lane); font-size: var(--s-text); color: var(--text);
 }
 .sv-rd.done { color: var(--text-faint); }
 .sv-rd.now { background: var(--live-deep); color: var(--text-hi); font-weight: 700; }
@@ -249,14 +275,14 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 
 /* ── Controls ────────────────────────────────────────────────────────── */
 
-.sv-ctl { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1.6fr); gap: 1px; background: var(--bg-gutter); }
+.sv-ctl { display: grid; grid-template-columns: var(--s-prev) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1.6fr); gap: 1px; background: var(--bg-gutter); }
 .sv-btn {
-  min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  background: var(--bg-control); color: var(--text-hi); font-size: var(--fs-body); font-weight: 800; letter-spacing: 0.1em;
+  min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: var(--bg-control); color: var(--text-hi); font-size: var(--s-lb); font-weight: 800; letter-spacing: 0.1em;
 }
 .sv-btn:active { background: var(--bg-hover); }
 .sv-btn:disabled { background: var(--bg-track); color: var(--text-faint); }
-.sv-ic { font-size: 30px; line-height: 1; }
+.sv-ic { font-size: var(--s-ic); line-height: 1; }
 .sv-lb { white-space: nowrap; }
 .sv-sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label); font-weight: 500; letter-spacing: 0; color: var(--text-dim); }
 .sv-btn.stop { color: var(--text-dim); }
@@ -265,22 +291,16 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-btn.play.rec-armed { box-shadow: inset 0 0 0 2px var(--danger); }
 .sv-btn .sv-rec-dot { color: var(--danger); margin-right: 6px; }
 .sv-btn.go { background: var(--bg-header); box-shadow: inset 0 0 0 2px var(--next); color: var(--next); }
-.sv-btn.go .sv-lb { font-size: var(--fs-title); }
+.sv-btn.go .sv-lb { font-size: var(--s-go); }
 .sv-btn.go:disabled { box-shadow: none; }
 .sv-btn.go.armed { box-shadow: none; }
 .sv-btn.go.armed .sv-sub { color: var(--text-hi); }
-
-/* ── Computer (≥ 1400 px): more room, bigger type ────────────────────── */
-
-.sv.big .sv-song { font-size: 34px; }
 
 /* ── Tablet portrait: song across the top, position and time to end under it ── */
 
 .sv-portrait .sv-head { grid-template-columns: minmax(0, 1fr) auto; }
 .sv-portrait .sv-songs { grid-column: 1 / -1; }
 .sv-portrait .sv-sect { white-space: normal; }
-.sv.big .sv-bar { font-size: 34px; }
-.sv.big .sv-remain-big { font-size: 64px; }
 
 /* ── Phone ───────────────────────────────────────────────────────────── */
 
@@ -296,12 +316,11 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-phone .sv-head { grid-template-columns: minmax(0, 1fr) auto; }
 .sv-phone .sv-head > div { padding: var(--sp-2) var(--sp-3); }
 .sv-phone .sv-pos { grid-column: 1 / -1; grid-row: 2; }
-.sv-phone .sv-song { font-size: var(--fs-title); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.sv-phone .sv-song { font-size: calc(var(--s-song) - 4px); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .sv-phone .sv-sect { white-space: normal; }
-.sv-phone .sv-bar { font-size: var(--fs-title); }
-.sv-phone .sv-sect { font-size: var(--fs-body); }
-.sv-phone .sv-remain-big { font-size: 34px; }
-.sv-phone .sv-strip { grid-template-columns: 1fr 1fr; grid-template-rows: 44px 40px; grid-template-areas: "secs secs" "l r"; }
+.sv-phone .sv-bar { font-size: calc(var(--s-bar) - 4px); }
+.sv-phone .sv-remain-big { font-size: calc(var(--s-remain) * 0.7); }
+.sv-phone .sv-strip { grid-template-columns: 1fr 1fr; grid-template-rows: var(--s-strip) calc(var(--s-strip) - 4px); grid-template-areas: "secs secs" "l r"; }
 .sv-phone .sv-secs { grid-area: secs; }
 .sv-phone .sv-jumps.left { grid-area: l; }
 .sv-phone .sv-jumps.right { grid-area: r; }
@@ -315,21 +334,17 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-pl-clip { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--live); font-weight: 700; }
 .sv-pl-clip.none { color: var(--text-faint); font-weight: 400; }
 .sv-pl-mv { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-hi); }
-.sv-phone .sv-ev { grid-template-columns: 104px minmax(0, 1fr); }
-.sv-phone .sv-cd { font-size: var(--fs-body); }
-.sv-phone .sv-ev.first .sv-cd { font-size: var(--fs-title); }
-.sv-phone .sv-ctl { grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1.4fr); grid-template-rows: 80px 64px; grid-template-areas: "stop stop play" "prev go go"; }
+.sv-phone .sv-ctl { grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1.4fr); grid-template-rows: var(--s-ctl) calc(var(--s-ctl) * 0.8); grid-template-areas: "stop stop play" "prev go go"; }
 .sv-phone .sv-btn.stop { grid-area: stop; }
 .sv-phone .sv-btn.play { grid-area: play; }
 .sv-phone .sv-btn.prev { grid-area: prev; }
 .sv-phone .sv-btn.go { grid-area: go; }
-.sv-phone .sv-ic { font-size: 24px; }
 
 /* ── Desktop SHOW style: the same picture under the editor's top bar and show bar ── */
 
 .show-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; background: var(--bg-gutter); font-size: var(--fs-body); }
-.show-main > .sv-strip { flex-shrink: 0; height: 52px; }
-.show-main-row { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr) 360px; gap: 1px; }
+.show-main > .sv-strip { flex-shrink: 0; height: var(--s-strip); }
+.show-main-row { flex: 1; min-height: 0; display: grid; grid-template-columns: calc(var(--s-left) + 40px) minmax(0, 1fr) var(--s-right); gap: 1px; }
 /* The show view's parts carry its named grid areas: here they sit in plain columns */
 .show-main-row > * { grid-area: auto; min-width: 0; min-height: 0; }
 .show-main > .sv-strip { grid-area: auto; }

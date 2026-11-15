@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
-import { clearForcedView, showStyle, usePhone, useShowStyle } from './show/view'
+import { clearForcedView, showSize, showStyle, usePhone, useShowSize, useShowStyle } from './show/view'
 
 // VIEW menu, per device: what SHOW mode looks like here (Tablet / Desktop), touch mode, size and
 // scale. In the editor's top bar and in the show view's band (a tablet must reach Scale there too).
@@ -10,6 +10,7 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
 }) {
   const [open, setOpen] = useState(false)
   const style = useShowStyle()
+  const size = useShowSize()
   const phone = usePhone()
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -50,8 +51,16 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
             ))}
           </div>
           <div className="view-menu-note">Used in SHOW mode{showMode ? '' : ' — switch to SHOW to see it'}</div>
-          <div className="dropdown-sep" />
           </>}
+          {/* The show view's type, bars and buttons (changes at once, no reload) */}
+          <div className="view-menu-row" title="Size of the show view: Compact fits more, Large reads from further away">
+            <span>Show size</span>
+            {(['compact', 'normal', 'large'] as const).map(z => (
+              <button key={z} className={`seg-btn${size === z ? ' on' : ''}`} onClick={() => showSize.set(z)}>
+                {z === 'compact' ? 'Compact' : z === 'normal' ? 'Normal' : 'Large'}</button>
+            ))}
+          </div>
+          <div className="dropdown-sep" />
           <div className="view-menu-row">
             <span>Touch</span>
             {(['auto', 'on', 'off'] as const).map(m => (

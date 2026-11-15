@@ -6,7 +6,7 @@ import { showModelOf } from '../../showModel'
 import { EMPTY_MODEL, LayerNow, SectionStrip } from './ShowView'
 import { Radar } from './Radar'
 import { ShowColumn } from './ShowColumn'
-import { useMedia } from './view'
+import { useMedia, useShowSize } from './view'
 
 // SHOW mode in the Desktop style: under the editor's top bar and show bar, the tablet show view's
 // minimal picture of the timeline instead of the editor's lanes — the sections, LAYER · NOW, the
@@ -23,13 +23,14 @@ export function ShowMain({ show, next, isBreak, playing, endFrame, laneStatus, o
   onLocate: (frame: number) => void
 }) {
   const big = useMedia('(min-width: 1400px)')
+  const size = useShowSize()
   const viewShow = isBreak ? (next?.type === 'show' ? next.show : null) : show
   const model = viewShow ? showModelOf(viewShow) : EMPTY_MODEL
   const tempo = viewShow ? tempoOf(viewShow) : null
   const fps = viewShow?.frameRate ?? show.frameRate
   const fixedFrame = isBreak ? 0 : undefined
   return (
-    <div className="show-main">
+    <div className={`show-main size-${size}`}>
       {!isBreak && <SectionStrip fps={fps} endFrame={endFrame} model={model} tempo={tempo} locked={playing} disabled={false}
         onSeek={onSeek} onLocate={onLocate} />}
       <div className="show-main-row">

@@ -11,7 +11,7 @@ import {
   sampleAt, laneValue, moveText, type ShowModel, type ShowEvent, type ShowLayer,
 } from '../../showModel'
 import { Radar } from './Radar'
-import { useMedia } from './view'
+import { useMedia, useShowSize } from './view'
 import { ViewMenu } from '../ViewMenu'
 
 // Show view: what an operator needs at showtime, readable from two metres, on a tablet, a phone
@@ -72,6 +72,7 @@ export function ShowView(p: Props) {
   const big = useMedia('(min-width: 1400px) and (min-height: 700px)')
   const huge = useMedia('(min-width: 1800px) and (min-height: 700px)')
   const layout: Layout = !wide ? 'phone' : portrait ? 'portrait' : 'landscape'
+  const size = useShowSize()
 
   const idx = p.rundown.findIndex(e => e.id === p.activeId)
   const entry = p.rundown[idx]
@@ -106,7 +107,7 @@ export function ShowView(p: Props) {
 
   const rundownList = <RundownList rundown={p.rundown} idx={idx} />
   return (
-    <div className={`sv sv-${layout}${big ? ' big' : ''}${huge ? ' huge' : ''}${p.showMode ? ' show-mode' : ''}${off ? ' offline' : ''}`}>
+    <div className={`sv sv-${layout} size-${size}${big ? ' big' : ''}${huge ? ' huge' : ''}${p.showMode ? ' show-mode' : ''}${off ? ' offline' : ''}`}>
       <Band {...p} off={off} locked={locked} phone={layout === 'phone'} />
       {off && <div className="sv-offline">No connection to the app — reconnecting…</div>}
       <Head entry={entry} next={next} idx={idx} count={p.rundown.length} fps={p.fps} tempo={p.tempo}

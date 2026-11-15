@@ -86,3 +86,26 @@ export function useShowViewActive(showMode: boolean): boolean {
   if (phone) return true
   return showMode && s === 'tablet'
 }
+
+// ── Show view size (per device): how big its type, bars and buttons are ───────
+
+const SIZE_KEY = 'resolume-timeline:show-size'
+export type ShowSize = 'compact' | 'normal' | 'large'
+
+let size: ShowSize = (() => {
+  try { const v = localStorage.getItem(SIZE_KEY); if (v === 'compact' || v === 'normal' || v === 'large') return v } catch { /* default */ }
+  return 'normal'
+})()
+
+export const showSize = {
+  get: (): ShowSize => size,
+  set(v: ShowSize) {
+    size = v
+    try { localStorage.setItem(SIZE_KEY, v) } catch { /* ignore */ }
+    notify()
+  },
+}
+
+export function useShowSize(): ShowSize {
+  return useSyncExternalStore(subscribe, () => size)
+}
