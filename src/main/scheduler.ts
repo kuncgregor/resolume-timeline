@@ -209,16 +209,15 @@ export class Scheduler {
 
   // Playing over a bar line resyncs Arena's beat, so clips the operator triggers by hand
   // (and Arena's beat-synced effects) run in phase with the timeline's bars
-  // Arena's beat resynced to the timeline's bars (linked tempo), once: at the first bar line after
-  // Play or a jump. Both clocks then run at the same tempo and stay together to a few ms over a
+  // Arena's beat resynced to the timeline's bars (linked tempo) only when the timeline asks for it
+  // (Beat resync: Once; off by default), once: at the first bar line after Play or a jump. Both clocks then run at the same tempo and stay together to a few ms over a
   // song. Pressing it every bar (the old way) made beat-synced content in Arena jump each bar: the
   // line is seen on the next frame, so the press lands up to a frame late.
   private resyncedSinceStart = false
   private resyncAtBars(lo: number, hi: number) {
     const bpm = this.linkedBpm()
-    const mode = this.show?.tempoResync === 'off' ? 'off' : 'start'
     // Only while playing (scrubbing across a bar line stopped doesn't press it)
-    if (bpm == null || !this.arenaTempo || !this.show || mode === 'off' || !this.transport.playing) return
+    if (bpm == null || !this.arenaTempo || !this.show || this.show.tempoResync !== 'start' || !this.transport.playing) return
     const fps = this.show.frameRate
     const barF = (fps * 60 / bpm) * (this.show.beatsPerBar ?? 4)
     const db = this.show.downbeat ? smpteToFrames(this.show.downbeat, fps) : 0

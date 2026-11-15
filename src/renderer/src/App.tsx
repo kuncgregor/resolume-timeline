@@ -1328,7 +1328,7 @@ export default function App() {
         const reclocked = !!updates.clock && (updates.clock.source !== e.show.clock.source || updates.clock.offset !== e.show.clock.offset)
         const t = updates.tempo
         const retimed = !!t && (t.bpm !== e.show.bpm || (t.beatsPerBar ?? 4) !== (e.show.beatsPerBar ?? 4)
-          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'start') !== (e.show.tempoResync ?? 'start'))
+          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'off') !== (e.show.tempoResync ?? 'off'))
         const show = renamed || reclocked || retimed ? {
           ...e.show,
           ...(renamed ? { name: updates.name! } : {}),

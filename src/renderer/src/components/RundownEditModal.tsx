@@ -59,7 +59,7 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
   const showData = entry.type === 'show' ? (entry as ShowEntry).show : null
   const [bpmText, setBpmText] = useState(showData?.bpm != null ? String(showData.bpm) : '')
   const [bpbText, setBpbText] = useState(String(showData?.beatsPerBar ?? DEFAULT_BEATS_PER_BAR))
-  const [resync, setResync] = useState<'start' | 'off'>(showData?.tempoResync === 'off' ? 'off' : 'start')
+  const [resync, setResync] = useState<'start' | 'off'>(showData?.tempoResync === 'start' ? 'start' : 'off')
   const [downbeat, setDownbeat] = useState(showData?.downbeat || ZERO_TC)
   const bpmNum = bpmText.trim() === '' ? undefined : Number(bpmText.trim().replace(',', '.'))
   const bpmValid = bpmNum === undefined || (Number.isFinite(bpmNum) && bpmNum >= BPM_MIN && bpmNum <= BPM_MAX)
@@ -86,7 +86,7 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
         bpm: bpmNum === undefined ? undefined : roundBpm(bpmNum),
         beatsPerBar: bpbNum === DEFAULT_BEATS_PER_BAR ? undefined : bpbNum,
         downbeat: db === ZERO_TC ? undefined : db,
-        tempoResync: resync === 'start' ? undefined : resync,
+        tempoResync: resync === 'start' ? 'start' : undefined,   // off is the default
       }
       const offset = startTc.trim().replace(';', ':')
       // Untouched (e.g. only the colour changed): keep a legacy 'ltc' / 'mtc' source as it is
@@ -199,14 +199,14 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
               <div className="modal-row">
                 <span className="modal-label">Beat resync</span>
                 <div className="seg">
-                  {(['start', 'off'] as const).map(m => (
+                  {(['off', 'start'] as const).map(m => (
                     <button key={m} className={`seg-btn${resync === m ? ' on' : ''}`} onClick={() => setResync(m)}>
                       {m === 'start' ? 'Once' : 'Off'}</button>
                   ))}
                 </div>
               </div>
               <div className="modal-hint modal-hint-indent">
-                With the BPM linked to Resolume, Arena's beat is set to the timeline's bars by pressing its Resync once: at the first bar line after Play or a jump (from bar 1, before anything moves). The same tempo keeps them together for the whole song. Off: never pressed.
+                Off (default): Arena's Resync is never pressed — the linked BPM sets its tempo, nothing jumps. Once: pressed at the first bar line after Play or a jump, to put Arena's beat on the timeline's bars (clips and effects synced to Arena's beat).
               </div>
             </div>
           )}
