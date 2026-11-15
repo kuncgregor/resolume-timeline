@@ -56,6 +56,9 @@ html.touch-large input[type="checkbox"] { width: 22px; height: 22px; }
 /* Rundown: the card tools are always there (no hover on a touch screen) */
 html.touch .rd-controls { display: flex; }
 html.touch-large .rd-ctl { width: 30px; height: 30px; }
+/* …so the name stops before them */
+html.touch .rd-name { margin-right: 46px; }
+html.touch-large .rd-name { margin-right: 66px; }
 
 /* Clip browser: the picked clips and the button that places them */
 html.touch-large .browser-clip-row { min-height: 48px; }
@@ -91,14 +94,18 @@ html.touch-large .ctx-row { height: auto; min-height: 38px; padding-top: 2px; pa
 html.touch .transport-bar { overflow-x: auto; scrollbar-width: none; }
 html.touch .transport-bar > * { flex-shrink: 0; }
 html.touch-large .tc-block { min-width: 0; padding: 0 10px; }
+/* The section chip needs the room the frame rate badge took (the timeline's settings show it) */
+html.touch-large .tc-badges .fps-badge { display: none; }
+html.touch-large .tc-badges .chip.section { max-width: 84px; }
 html.touch-large .tc-display { font-size: calc(var(--fs-tc) * 0.82); }
-html.touch-large .remain { min-width: 140px; }
+html.touch-large .remain { min-width: 124px; }
+html.touch-large .remain-value { font-size: var(--fs-cue-live); }
 html.touch-large .bpm-block { min-width: 110px; }
-html.touch-large .tbtn.arena-rec { width: 112px; }
+html.touch-large .tbtn.arena-rec { width: 96px; }
 
 /* Narrow tablets (portrait iPad): a denser toolbar */
 @media (max-width: 900px) {
-  .touch-tools .btn { min-width: 38px; padding: 0 6px; font-size: 11px; }
+  .touch-tools .btn { min-width: 38px; padding: 0 6px; font-size: var(--fs-meta); }
   .touch-sep { margin: 4px 2px; }
 }
 

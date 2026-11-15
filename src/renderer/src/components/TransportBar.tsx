@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { showModelOf, sectionAt } from '../showModel'
 import { useFrame } from '../frameStore'
 import type { Show, EngineState } from '../../../shared/show'
 import { framesToSmpte } from './timeUtils'
@@ -67,6 +68,8 @@ export function TransportBar({
   const ltcName = source === 'ltc-b' ? 'LTC B' : 'LTC A'
   const tempo = show ? tempoOf(show) : null
   const barPos = tempo ? formatBarBeat(frameToBarBeat(frame, tempo)) : null
+  // The song section at the playhead (from the markers), as the show view names it
+  const section = show ? sectionAt(showModelOf(show).sections, frame) : null
 
   const remaining = Math.max(0, endFrame - frame)
   const remainingS = remaining / fps
@@ -80,6 +83,8 @@ export function TransportBar({
         <div className="tc-badges">
           <span className="fps-badge" title="Project frame rate">{fps}</span>
           {barPos && <span className={`bar-pos mono ${playing ? 'running' : ''}`} title="Musical position at the playhead (bar.beat.sixteenth)">{barPos}</span>}
+          {section && <span className="chip section" style={{ color: section.marker.color, boxShadow: `inset 0 0 0 1px ${section.marker.color}` }}
+            title="Song section at the playhead (from the markers)">◆ {section.marker.name || 'marker'}</span>}
           {isLtc ? (
             !ltcActive
               ? <span className="chip warn blink" title="No LTC signal">○ {ltcName} no signal</span>
