@@ -21,7 +21,8 @@ The timeline, edited like Ableton Live's Arrangement View.
   - `Showfile ▾`: new, open, save, autosave, export.
   - `+ Add ▾`: a new timeline, an imported timeline, or a break.
   - `View ▾`: the look of SHOW mode on this device, the mini window, touch mode and scale.
-  - `⚙`: the timeline's clock, LTC inputs, audio output and Resolume address.
+  - `⚙`: the project settings, saved in the showfile: Resolume's address, the LTC inputs (SMPTE A / B), the audio output and Follow TC.
+  - `✎` on a timeline: its name, which timecode it follows (Internal, LTC A or LTC B) from which start TC, FPS and tempo.
 - **Layers and clips:** mirror the Resolume composition (layers, groups, decks).
   - Drag clips in from the clip browser.
   - Trim, split, duplicate, copy and paste them.
@@ -66,11 +67,44 @@ A **phone** always gets a compact version of this view.
 
 For one laptop without a tablet: a bar that floats over a full-screen Resolume, docked to an edge of the screen.
 - It shows Now / Next, the bar and section with a progress bar for the section, the time to the end and the next events.
+- On an LTC timeline it shows the incoming timecode: green when it drives the timeline, amber when it is another timeline's, red with no signal.
 - Its buttons: ⏮ · STOP · PLAY · ← · GO →.
 - It can be a strip (top or bottom edge) or a column (left or right edge); drag its edge to set the thickness.
 - Turn it on with View ▾ › Mini window, or with **View › Mini Window (⇧⌘M)**.
 
 ![Mini window, strip](docs/screenshots/mini-strip.png)
+
+## Features
+
+### Undo
+
+⌘Z / ⇧⌘Z, or Edit › Undo / Redo in the app menu, undo and redo everything you edit:
+- clips, keys, lanes and markers on a timeline;
+- the rundown: a timeline or break added, deleted, moved or edited. A deleted timeline comes back with everything on it.
+
+⌘Z takes back the latest change, whether it was on the timeline in front or in the rundown. In a text field it undoes the typing.
+
+### Project settings (per showfile)
+
+`⚙` holds what the whole show shares on this rig, and is saved in the showfile (`.rtshow`), so every project keeps its own:
+- Resolume's address and ports;
+- the LTC inputs: an audio device and channel for SMPTE A and SMPTE B;
+- the audio track's output and channels;
+- *Follow TC*;
+- whether Resolume goes back to the previous deck after a cue from another deck.
+
+Each timeline's own settings are in its `✎`: which timecode it follows (Internal, LTC A or LTC B), its start TC, FPS, freewheel and tempo.
+
+### External timecode (LTC)
+
+The main way to run a show: each song is a timeline that plays to incoming SMPTE / LTC.
+- **Per timeline:** in `✎`, choose *LTC A* or *LTC B* and a start TC, e.g. `05:00:00:00` for song 05. That timeline owns the timecode from its start TC up to the next timeline's start TC on the same input.
+- **GO before the timecode:** the timeline waits at 0. As soon as its timecode arrives, it plays from `incoming TC − start TC`.
+- **GO while the timecode already runs:** the timeline joins at once, at the right place.
+- **Follow TC on (⚙ or the chip next to the clock):** incoming timecode selects its timeline by itself, with no GO. If 05's timecode arrives while 04 is selected, 05 is selected and plays.
+- **Follow TC off:** a timeline whose timecode isn't coming in stays stopped. The transport shows *not here*, and SHOW mode raises the alarm *TIMELINE NOT RUNNING*.
+- **Dropouts:** short ones are bridged (freewheel). When the signal stops, the timeline stops where it was.
+- **One input at a time:** only one LTC input is decoded, the selected timeline's. Keep a show's timelines on one input if Follow TC should switch between them.
 
 ## Build
 
@@ -106,7 +140,10 @@ Run only one engine at a time (the app or `npm run web`): both would send to Res
 3. **Add clips and automation:**
    - `Clips` opens the clip browser. Drag clips onto their layers.
    - Add lanes from a layer's header and draw keys (double-click a lane).
-4. **Set the clock:** in ⚙, choose *Internal* or an *LTC* input (SMPTE A or B, with the timeline's start timecode). An LTC timeline plays when its timecode arrives.
+4. **Set the clock:**
+   - In ⚙, choose the audio inputs for SMPTE A / B.
+   - In each timeline's ✎, choose *Internal*, *LTC A* or *LTC B* and its start timecode.
+   - An LTC timeline plays from the right place as soon as its timecode arrives. With *Follow TC* on, incoming timecode also selects its timeline without GO.
 5. **Build the rundown:** add a timeline per song (`+ Add`) and breaks, and set the BPM and markers.
 6. **Showtime:**
    - Switch to **SHOW** (top bar).
