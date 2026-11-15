@@ -15,8 +15,8 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 /* SHOW mode: a mint frame round the whole view, as round the editor */
 .sv.show-mode::after { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 2px var(--live); z-index: 5; }
 .sv .mono { font-family: var(--font-tc); font-variant-numeric: tabular-nums; }
-.sv button { font-family: var(--font-ui); border: none; cursor: pointer; touch-action: manipulation; }
-.sv button:disabled { cursor: default; }
+.sv button, .show-main button { font-family: var(--font-ui); border: none; cursor: pointer; touch-action: manipulation; }
+.sv button:disabled, .show-main button:disabled { cursor: default; }
 .sv-tag { flex-shrink: 0; width: 46px; justify-content: center; }
 .chip.on-live { background: var(--live); color: var(--text-on-live); }
 
@@ -99,6 +99,9 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-rec:disabled, .sv-setup:disabled { color: var(--text-faint); box-shadow: none; }
 .sv-setup:active, .sv-rec:active { background: var(--bg-hover); }
 .sv-setup.armed { background: var(--danger-fill); color: var(--text-hi); }
+/* The VIEW menu opens under its button, towards the left (the band ends at the screen edge) */
+.sv-band .dropdown { left: auto; right: 0; letter-spacing: 0; font-weight: 400; }
+.sv-band { overflow: visible; position: relative; z-index: 7; }
 
 .sv-offline {
   position: absolute; left: 0; right: 0; top: 44px; z-index: 6; padding: var(--sp-2) var(--sp-3);
@@ -147,16 +150,18 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
   border-left: 2px solid var(--loop); color: var(--text-dim); font-size: var(--fs-ui); font-weight: 700; letter-spacing: 0.06em;
   white-space: nowrap; overflow: hidden; pointer-events: none;
 }
-.sv-sec span { overflow: hidden; text-overflow: ellipsis; }
+/* The name over the playhead line, with a dark halo: "CHORUS 1" stays readable when the line crosses it */
+.sv-sec span { position: relative; z-index: 2; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 3px var(--bg-well), 0 0 6px var(--bg-well); }
 .sv-sec.cur { background: color-mix(in srgb, var(--sec, var(--loop)) 16%, transparent); color: var(--text-hi); }
 .sv-secs-end { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text-faint); pointer-events: none; }
-.sv-secs-head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--live); pointer-events: none; }
+.sv-secs-head { position: absolute; z-index: 1; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--live); pointer-events: none; }
 .sv-secs-target {
   position: absolute; right: var(--sp-2); top: 50%; transform: translateY(-50%); padding: 2px var(--sp-2);
   background: var(--select); color: var(--text-on-live); font-size: var(--fs-label); font-weight: 700; pointer-events: none;
 }
+/* Small, in the bottom corner, clear of the section names */
 .sv-secs-lock {
-  position: absolute; right: 0; top: 0; z-index: 1; padding: 2px 6px; pointer-events: none;
+  position: absolute; right: 0; bottom: 0; z-index: 3; padding: 1px 6px; pointer-events: none;
   background: var(--bg-well); color: var(--text-faint); font-size: var(--fs-micro); font-weight: 800; letter-spacing: 0.1em;
 }
 .sv-strip.break { display: flex; align-items: center; padding: 0 var(--sp-4); background: var(--bg-lane); }
@@ -319,3 +324,13 @@ html.show-view body { -webkit-user-select: none; user-select: none; -webkit-tap-
 .sv-phone .sv-btn.prev { grid-area: prev; }
 .sv-phone .sv-btn.go { grid-area: go; }
 .sv-phone .sv-ic { font-size: 24px; }
+
+/* ── Desktop SHOW style: the same picture under the editor's top bar and show bar ── */
+
+.show-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; background: var(--bg-gutter); font-size: var(--fs-body); }
+.show-main > .sv-strip { flex-shrink: 0; height: 52px; }
+.show-main-row { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr) 360px; gap: 1px; }
+/* The show view's parts carry its named grid areas: here they sit in plain columns */
+.show-main-row > * { grid-area: auto; min-width: 0; min-height: 0; }
+.show-main > .sv-strip { grid-area: auto; }
+.show-main-row .show-column { width: auto; }

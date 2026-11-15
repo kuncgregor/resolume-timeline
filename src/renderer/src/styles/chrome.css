@@ -748,15 +748,17 @@
 /* ── SHOW mode, Desktop style: the transport bar in the show view's language ── */
 .transport-bar.show-bar { height: 96px; }
 .show-bar > .sb-pos, .show-bar > .sb-remain, .show-bar > .sb-bpm { background: var(--bg-monitor); }
+.show-bar > .sb-rec { display: flex; }
+.show-bar .sb-rec .tbtn.arena-rec { height: auto; width: 128px; font-size: var(--fs-ui); }
 .show-bar .tbtn { width: 72px; font-size: 24px; }
 .show-bar .tbtn.play { width: 120px; }
-.sb-pos { min-width: 420px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 var(--sp-4); }
+.sb-pos { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 var(--sp-5); }
 .sb-pos-row { display: flex; align-items: baseline; gap: var(--sp-3); white-space: nowrap; }
 .sb-pos-row .tc-badges { align-self: center; }
 .sb-bar { font-size: 34px; font-weight: 800; line-height: 1; color: var(--text-hi); }
 .sb-bar.running { color: var(--live); }
 .sb-tc { font-size: var(--fs-body); color: var(--text-dim); }
-.sb-sect { font-size: var(--fs-cue-live); font-weight: 700; color: var(--loop); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 560px; }
+.sb-sect { font-size: var(--fs-cue-live); font-weight: 700; color: var(--loop); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sb-sect-next { color: var(--text-dim); font-weight: 600; }
 .sb-remain { min-width: 220px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 4px; padding: 0 var(--sp-4); }
 .sb-remain-value { font-size: 44px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; color: var(--text-hi); }
@@ -770,5 +772,5 @@
 .sb-bpm .mono { font-size: var(--fs-title); font-weight: 700; color: var(--text-hi); }
 .sb-bpm span:last-child { font-size: var(--fs-meta); font-weight: 800; letter-spacing: 0.1em; color: var(--text-faint); }
 
-/* SHOW mode, Desktop style: the COMING column where the clip browser was */
+/* SHOW mode, Desktop style: the COMING column beside the radar */
 .show-column { width: 360px; flex-shrink: 0; display: flex; flex-direction: column; gap: 1px; min-height: 0; background: var(--bg-gutter); font-family: var(--font-ui); }

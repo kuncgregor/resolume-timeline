@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { frameStore } from '../../frameStore'
 import { T } from '../../theme'
 import { barFrames, beatsToFrame, frameToBeats, type Tempo } from '../../grid'
-import { clipAtFrame, sampleAt, type ShowModel } from '../../showModel'
+import { clipAtFrame, inSpan, sampleAt, type ShowModel } from '../../showModel'
 
 // The next bars (or seconds) of the timeline, per layer, sliding towards the playhead: clips as
 // blocks, the lanes as curves with their moves lit (blue = coming, mint = running now), the song
@@ -139,9 +139,11 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
     // Room at the top for the names (and the section names over the first row)
     const top = y0 + (v.labels ? 64 : 36), bottom = cy - 6   // portrait: under the layer name plate (y+20..40)
     if (bottom - top >= 10) {
-      const labelXs: number[] = []
+      // Names on two lines: a second curve starting where another one does still gets its name
+      const levels: number[][] = [[], []]
       for (const lane of layer.lanes) {
-        const yv = (val: number) => bottom - Math.max(0, Math.min(1, val)) * (bottom - top)
+        // On the lane's own span: a move is as tall as the room, whatever the parameter's range
+        const yv = (val: number) => bottom - inSpan(lane, val) * (bottom - top)
         const path = (f0: number, f1: number) => {
           ctx.beginPath()
           const xa = Math.max(0, x(f0)), xb = Math.min(W, x(f1))
@@ -154,6 +156,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
         }
         ctx.strokeStyle = 'rgba(154, 154, 154, 0.35)'; ctx.lineWidth = 1
         path(start, start + span)
+        const named = new Set<object>()   // strobes already named on this row
         lane.moves.forEach((m, mi) => {
           if (m.to < start || m.from > start + span) return
           // A strobe (run of quick steps) is one thing: lit as a whole, named once ("Opacity ×8")
@@ -167,11 +170,14 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, frame: number
             ctx.beginPath(); ctx.moveTo(xs, yv(m.values[0])); ctx.lineTo(xs, yv(m.values[1])); ctx.stroke()
           } else path(m.from, m.to)
           // Its name where it starts (or at the playhead while it runs), unless one is drawn close by
-          if (run && mi !== run.first && !(running && mi === run.last)) return
+          // A strobe is named once, at its first step in the window
+          if (run) { if (named.has(run)) return; named.add(run) }
           const lx = running ? xNow + 6 : x(m.from) + 4
-          if ((running || ahead) && lx < W - 60 && labelXs.every(x0 => Math.abs(lx - x0) >= 70)) {
-            laneLabels.push({ text: run ? `${lane.name} ×${run.last - run.first + 1}` : lane.name, x: lx, y: top - 11, color })
-            labelXs.push(lx)
+          const level = levels.findIndex(xs => xs.every(x0 => Math.abs(lx - x0) >= 70))
+          const ly = top - 11 + level * 16
+          if ((running || ahead) && lx < W - 60 && level >= 0 && ly + 8 < bottom) {
+            laneLabels.push({ text: run ? `${lane.name} ×${run.last - run.first + 1}` : lane.name, x: lx, y: ly, color })
+            levels[level].push(lx)
           }
         })
       }

@@ -26,7 +26,7 @@ import { decksOf } from './decks'
 import { HealthBar } from './components/HealthBar'
 import { alarmsOf, type ClockStatus } from './alarms'
 import { ShowView } from './components/show/ShowView'
-import { ShowColumn } from './components/show/ShowColumn'
+import { ShowMain } from './components/show/ShowMain'
 import { useShowViewActive, clearForcedView } from './components/show/view'
 import { useKeepAwake } from './wakeLock'
 import { frameStore } from './frameStore'
@@ -556,13 +556,6 @@ export default function App() {
   }, [])
   const handleScrollYTo = useCallback((y: number) => setScrollY(Math.max(0, y)), [])
   const autoScrollRef = useRef(true)
-  // Entering SHOW mode: the timeline shows the playhead (it follows it from here on)
-  useEffect(() => {
-    if (!showMode) return
-    autoScrollRef.current = true
-    const f = frameStore.get(), vf = (window.innerWidth - 200 - 360) / pxPerFrame
-    setScrollFrame(prev => f >= prev && f <= prev + vf * 0.75 ? prev : Math.max(0, f - Math.floor(vf * 0.25)))
-  }, [showMode])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Engine tick ────────────────────────────────────────────────────────────
 
@@ -572,11 +565,9 @@ export default function App() {
       // re-renders when the rest changes (play / stop, connection)
       frameStore.set(state.frame)
       setEngineState(prev => sameEngineState(prev, state) ? prev : state)
-      // SHOW mode follows the playhead stopped too (a GO, a locate from a tablet)
-      if ((state.playing || showModeRef.current) && autoScrollRef.current) {
+      if (state.playing && autoScrollRef.current) {
         setScrollFrame(prev => {
-          const side = showModeRef.current ? 360 : showBrowserRef.current ? 260 : 0   // COMING column / clip browser
-          const cw = window.innerWidth - 200 - side
+          const cw = window.innerWidth - 200 - (showBrowserRef.current ? 260 : 0)
           const vf = cw / pxPerFrame
           const px = (state.frame - prev) * pxPerFrame
           if (px > cw * 0.75) return state.frame - Math.floor(vf * 0.25)
@@ -2279,6 +2270,12 @@ export default function App() {
         onReconnect={handleReconnect}
       />
 
+      {/* SHOW mode (Desktop style): the show view's minimal picture instead of the lanes */}
+      {showMode ? (
+        <ShowMain show={show} next={rundown[rundown.findIndex(e => e.id === activeId) + 1] ?? null}
+          isBreak={activeIsBreak} playing={engineState.playing} endFrame={endFrame} laneStatus={laneStatus}
+          onSeek={handleSeek} onLocate={handleLocate} />
+      ) : (
       <div className="main-area">
         {activeIsBreak ? (
           <div className="break-panel">
@@ -2370,13 +2367,7 @@ export default function App() {
           </div>
         )}
 
-        {/* SHOW mode: what comes next where the clip browser is (nothing is placed during a show) */}
-        {showMode && (() => {
-          const next = rundown[rundown.findIndex(e => e.id === activeId) + 1]
-          const preview = activeIsBreak ? (next?.type === 'show' ? next.show : null) : show
-          return <ShowColumn show={preview} preview={activeIsBreak} laneStatus={laneStatus} />
-        })()}
-        {showBrowser && !activeIsBreak && !showMode && (
+        {showBrowser && !activeIsBreak && (
           <ClipBrowser
             tracks={show.tracks}
             liveComposition={composition}
@@ -2387,8 +2378,9 @@ export default function App() {
           />
         )}
       </div>
+      )}
 
-      {/* The inspector edits: not in SHOW mode (the timeline gets its height) */}
+      {/* The inspector edits: not in SHOW mode (the show picture gets its height) */}
       {!activeIsBreak && !showMode && (
         <BottomPanel
           track={selectedTrack} cue={selectedCue} readOnly={showMode}

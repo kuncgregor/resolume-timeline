@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { useFrame } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind } from '../../../shared/show'
 import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, sampleLane } from '../../../shared/automation'
-import { movesOf, moveAtOrAfter, stepRuns, runOf, type Move } from '../../../shared/moves'
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
   extractTime, deleteTime, extractCues, deleteCues, pasteMaterial, splitAt, moveKeys, keysIn, isEmptyMaterial, pruneAddedKeys,
@@ -1216,39 +1215,6 @@ export function TimelineCanvas({
           ctx.fillStyle = laneColor(auto, lt, T.text); ctx.fill()
           ctx.strokeStyle = T.gutter; ctx.lineWidth = 1.5; ctx.stroke()
         }
-        if (readOnly && !faded) {
-          // SHOW mode: the move running now lit mint, the next one blue (the show view's radar
-          // language on the timeline itself)
-          const moves = movesOf(fks, kind), toY = kfToY(lane)
-          const lit = (m: Move, color: string) => {
-            ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath()
-            if (m.to === m.from) {
-              const x = frameToX(m.from)
-              ctx.moveTo(x, toY(m.values[0])); ctx.lineTo(x, toY(m.values[1]))
-            } else {
-              const x0 = Math.max(-2, frameToX(m.from)), x1 = Math.min(W + 2, frameToX(m.to))
-              for (let x = x0; ; x += 3) {
-                const p = Math.min(x, x1), v = sampleLane(fks, p / pxPerFrame + scrollFrame, kind)?.value ?? 0
-                if (x === x0) ctx.moveTo(p, toY(v)); else ctx.lineTo(p, toY(v))
-                if (p >= x1) break
-              }
-            }
-            ctx.stroke()
-          }
-          // A strobe (run of quick steps) is lit as a whole, as the show view counts it as one
-          const runs = stepRuns(moves, fps)
-          const litFrom = (k: number, color: string) => {
-            const run = runOf(runs, k)
-            if (!run) { lit(moves[k], color); return k }
-            for (let q = run.first; q <= run.last; q++) lit(moves[q], color)
-            return run.last
-          }
-          const i = moveAtOrAfter(moves, frame), m = moves[i]
-          const run = m ? runOf(runs, i) : null
-          if (run && run.from <= frame) { const k = litFrom(i, T.live); if (moves[k + 1]) litFrom(k + 1, T.next) }
-          else if (m && !run && m.from <= frame && frame < m.to) { lit(m, T.live); if (moves[i + 1]) litFrom(i + 1, T.next) }
-          else if (m) litFrom(i, T.next)
-        }
         ctx.beginPath(); ctx.arc(lx, kfToY(lane)(cur), 2.5, 0, Math.PI * 2)
         ctx.fillStyle = faded ? T.textFaint : T.live; ctx.fill()
         ctx.strokeStyle = T.gutter; ctx.lineWidth = 1; ctx.stroke()
@@ -1274,7 +1240,7 @@ export function TimelineCanvas({
         ctx.fillStyle = T.textHi; ctx.fillRect(ix - 1, top, 3, vr.y + vr.h - 1 - top)
       }
     }
-  }, [tracks, fps, frame, pxPerFrame, scrollFrame, autoLaneHeights, layerRowHeights, scrollY, laneStatus, overrides, clipSel, insertMk, timeSel, readOnly])
+  }, [tracks, fps, frame, pxPerFrame, scrollFrame, autoLaneHeights, layerRowHeights, scrollY, laneStatus, overrides, clipSel, insertMk, timeSel])
   const drawOverlayRef = useRef(drawOverlay)
   drawOverlayRef.current = drawOverlay
   useEffect(() => { drawOverlay() }, [drawOverlay])

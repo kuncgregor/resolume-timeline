@@ -97,6 +97,21 @@ export function TransportBar({
     </>
   )
 
+  // Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first)
+  const arenaRecButton = (
+    <button
+      className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
+      tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec}
+      title={arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
+        : arenaRec.state === 'starting' ? 'Starting Arena\'s recorder…'
+        : arenaRec.armed ? 'Armed: Play jumps to the timeline start and records in Arena from there (LTC: from its start TC) until the timeline end. Click to disarm.'
+        : 'Record this timeline in Arena: arm, then Play — the recording starts exactly at the timeline start and stops at its end'}
+    ><span className="arena-rec-icon">●</span><span className="tbtn-label">{
+      arenaRec.state === 'recording' ? `REC ${framesToSmpte(frame, fps).slice(3, 8)}`
+      : arenaRec.state === 'starting' ? 'START…'
+      : arenaRec.armed ? 'ARMED' : 'REC ARENA'}</span></button>
+  )
+
   const buttons = (
       <div className="transport-buttons">
         <button className="tbtn" onClick={() => onLocate(0)} disabled={readOnly && playing}
@@ -120,27 +135,18 @@ export function TransportBar({
             : 'KEYS (auto-key): record changes you make in Resolume as keyframes — not a video recording (that is REC ARENA)'}>
           <span className="rec-dot">◆</span><span className="tbtn-label">KEYS</span>
         </button>}
-        {/* Arena's recorder: the take starts exactly at the timeline start (Play goes to 0 first) */}
-        <button
-          className={`tbtn arena-rec ${arenaRec.armed ? 'armed' : ''} ${arenaRec.state !== 'idle' ? 'recording' : ''}`}
-          tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleArenaRec}
-          title={arenaRec.state === 'recording' ? 'Recording in Arena — click to stop the take'
-            : arenaRec.state === 'starting' ? 'Starting Arena\'s recorder…'
-            : arenaRec.armed ? 'Armed: Play jumps to the timeline start and records in Arena from there (LTC: from its start TC) until the timeline end. Click to disarm.'
-            : 'Record this timeline in Arena: arm, then Play — the recording starts exactly at the timeline start and stops at its end'}
-        ><span className="arena-rec-icon">●</span><span className="tbtn-label">{
-          arenaRec.state === 'recording' ? `REC ${framesToSmpte(frame, fps).slice(3, 8)}`
-          : arenaRec.state === 'starting' ? 'START…'
-          : arenaRec.armed ? 'ARMED' : 'REC ARENA'}</span></button>
+        {!readOnly && arenaRecButton}
       </div>
   )
 
-  // SHOW mode: the show view's language — where in the song, what comes next, time to end, big
+  // SHOW mode: the show view's language. Transport on the left as in the editor, where in the song
+  // (it takes the free width), time to end and BPM on the right, REC ARENA last (rarely used live)
   if (readOnly && show) {
     const model = showModelOf(show)
     const nextSec = model.sections.find(sc => sc.start > frame)
     return (
       <div className="transport-bar show-bar">
+        {buttons}
         <div className="sb-pos">
           <div className="sb-pos-row">
             <span className={`sb-bar mono ${playing ? 'running' : ''}`}>{tempo ? `BAR ${formatBarBeat(frameToBarBeat(frame, tempo), 2)}` : tc}</span>
@@ -150,17 +156,16 @@ export function TransportBar({
           <div className="sb-sect">
             {section && <span style={{ color: section.marker.color }}>{section.marker.name || 'marker'}</span>}
             {nextSec && <span className="sb-sect-next">{section ? ' · ' : ''}◆ {nextSec.marker.name || 'marker'} in {countdown(nextSec.start - frame, tempo, fps)}</span>}
-            {!section && !nextSec && <span className="sb-sect-next">{tempo ? `${formatBpm(show.bpm)} BPM` : 'No sections — add markers to name the song parts'}</span>}
+            {!section && !nextSec && <span className="sb-sect-next">No sections — add markers to name the song parts</span>}
           </div>
         </div>
-        {buttons}
         <div className={`sb-remain ${remainClass}`} title="Time until the end of the last clip or audio">
           <span className="sb-remain-value mono">{endFrame === 0 ? '—' : remaining === 0 ? 'END' : `−${clockText(remaining, fps, true)}`}</span>
-          <span className="sb-remain-label">{endFrame === 0 ? 'EMPTY TIMELINE' : 'TO END'}</span>
+          <span className="sb-remain-label">{endFrame === 0 ? 'EMPTY TIMELINE' : remaining === 0 ? 'TIMELINE END' : 'TO END'}</span>
           <span className="sb-prog"><i style={{ width: `${endFrame > 0 ? Math.min(100, frame / endFrame * 100) : 0}%` }} /></span>
         </div>
         {tempo && <div className="sb-bpm"><span className="mono">{formatBpm(show.bpm)}</span><span>BPM</span></div>}
-        <div className="spacer" />
+        <div className="sb-rec">{arenaRecButton}</div>
       </div>
     )
   }

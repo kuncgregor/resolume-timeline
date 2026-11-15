@@ -92,6 +92,3 @@ export function stepRuns(moves: readonly Move[], maxGap: number): StepRun[] {
   runCache.set(moves, { gap: maxGap, runs })
   return runs
 }
-
-/** The run a move belongs to, if any. */
-export const runOf = (runs: readonly StepRun[], i: number) => runs.find(r => i >= r.first && i <= r.last) ?? null

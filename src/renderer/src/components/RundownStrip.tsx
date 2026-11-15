@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
-import { showStyle, useShowStyle } from './show/view'
 import { TabletAccess } from './TabletAccess'
+import { ViewMenu } from './ViewMenu'
 import { useFrame } from '../frameStore'
 import { framesToSmpte } from './timeUtils'
 import type { RundownEntry, ShowEntry, BreakEntry } from '../../../shared/concert'
@@ -66,8 +65,7 @@ export function RundownStrip({
   onImportTimeline, onExportTimeline, onSettings,
   onToggleShowMode, onReconnect,
 }: Props) {
-  const style = useShowStyle()
-  const [menu, setMenu] = useState<'add' | 'file' | 'view' | null>(null)
+  const [menu, setMenu] = useState<'add' | 'file' | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropSide, setDropSide] = useState<'before' | 'after'>('after')
@@ -219,51 +217,7 @@ export function RundownStrip({
             title={remote ? 'Timecode and audio settings are made on the computer running the app' : 'Timeline settings'}>⚙</button>
 
           {/* How this screen shows the app: show view, touch mode, size and scale (per device) */}
-          <div className="menu-anchor">
-            <button className="btn ghost" onClick={e => { e.stopPropagation(); setMenu(m => m === 'view' ? null : 'view') }}>
-              View ▾
-            </button>
-            {menu === 'view' && (
-              <div className="dropdown view-menu" onClick={e => e.stopPropagation()}>
-                {/* What SHOW mode looks like on this device */}
-                <div className="view-menu-row" title="How this device looks in SHOW mode. Tablet: big clock, radar of the next bars and the coming events. Desktop: the timeline with the show bar and the coming events.">
-                  <span>Show view</span>
-                  {(['tablet', 'desktop'] as const).map(v => (
-                    <button key={v} className={`seg-btn${style === v ? ' on' : ''}`}
-                      onClick={() => showStyle.set(v)}>{v === 'tablet' ? 'Tablet' : 'Desktop'}</button>
-                  ))}
-                </div>
-                <div className="view-menu-note">Used in SHOW mode{showMode ? '' : ' — switch to SHOW to see it'}</div>
-                <div className="dropdown-sep" />
-                <div className="view-menu-row">
-                  <span>Touch</span>
-                  {(['auto', 'on', 'off'] as const).map(m => (
-                    <button key={m} className={`seg-btn${touchSettings.mode() === m ? ' on' : ''}`}
-                      title={m === 'auto' ? 'On for touch screens (tablets)' : m === 'on' ? 'Finger gestures and the touch toolbar on this device' : 'Mouse and keyboard only'}
-                      onClick={() => touchSettings.setMode(m)}>{m === 'auto' ? 'Auto' : m === 'on' ? 'On' : 'Off'}</button>
-                  ))}
-                </div>
-                {TOUCH && (
-                  <div className="view-menu-row">
-                    <span>Size</span>
-                    {(['large', 'compact'] as const).map(z => (
-                      <button key={z} className={`seg-btn${touchSettings.size() === z ? ' on' : ''}`}
-                        title={z === 'large' ? 'Finger-sized buttons and rows' : 'Desktop sizes: more fits on the screen'}
-                        onClick={() => touchSettings.setSize(z)}>{z === 'large' ? 'Large' : 'Compact'}</button>
-                    ))}
-                  </div>
-                )}
-                {(TOUCH || UI_SCALE !== 1 || !!(window as any).timeline?.setUiZoom) && (
-                  <div className="view-menu-row" title="The whole page drawn smaller, so more fits (tablets and the app window; in a desktop browser use its zoom)">
-                    <span>Scale</span>
-                    {UI_SCALES.map(v => (
-                      <button key={v} className={`seg-btn${UI_SCALE === v ? ' on' : ''}`} onClick={() => touchSettings.setScale(v)}>{Math.round(v * 100)}%</button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <ViewMenu showMode={showMode} />
         </div>
 
         <div className="spacer" />

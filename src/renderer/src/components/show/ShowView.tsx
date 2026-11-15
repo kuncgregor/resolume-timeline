@@ -7,11 +7,12 @@ import type { Alarm, ArenaRecState } from '../../alarms'
 import { framesToSmpte, smpteToFrames } from '../timeUtils'
 import { beatsToFrame, formatBarBeat, frameToBarBeat, frameToBeats, tempoOf, type Tempo } from '../../grid'
 import {
-  showModelOf, countdown, seconds, clockText, imminent, eventAtOrAfter, sectionAt, clipAtFrame, moveAt, moveTarget, runAt,
+  showModelOf, countdown, seconds, clockText, imminent, eventAtOrAfter, sectionAt, clipAtFrame, moveAt, moveTarget, runAt, inSpan,
   sampleAt, laneValue, moveText, type ShowModel, type ShowEvent, type ShowLayer,
 } from '../../showModel'
 import { Radar } from './Radar'
-import { showStyle, useMedia } from './view'
+import { useMedia } from './view'
+import { ViewMenu } from '../ViewMenu'
 
 // Show view: what an operator needs at showtime, readable from two metres, on a tablet, a phone
 // or the computer (VIEW › Show view). Where in the song you are (bar, section, time to end), what
@@ -177,11 +178,8 @@ function Band(p: Props & { off: boolean; locked: boolean; phone: boolean }) {
       {/* Rarely used and must not be hit by accident: up here, away from the thumb */}
       <RecButton rec={p.arenaRec} fps={p.fps} stopArmed={p.stopArmed && recording}
         disabled={p.off || (p.locked && !recording)} onToggle={() => { buzz(); p.onToggleArenaRec() }} />
-      {/* This device only: the editor in its SHOW dress, SHOW mode stays on for everyone */}
-      {!p.phone && (
-        <button className="sv-setup" onClick={() => showStyle.set('desktop')}
-          title="Show this device the Desktop style (the timeline with the show bar). SHOW mode stays on. VIEW › Show view › Tablet comes back.">DESKTOP</button>
-      )}
+      {/* This device only: Tablet / Desktop style, scale (SHOW mode stays on for everyone) */}
+      <ViewMenu showMode={p.showMode} className="sv-setup" label="VIEW" />
       {/* A phone has only this view: no editor to go to */}
       {!p.phone && (
         <button className={`sv-setup${p.setupArmed ? ' armed' : ''}`} disabled={p.off} onClick={() => { buzz(); p.onSetup() }}
@@ -277,7 +275,8 @@ function Head({ entry, next, idx, count, fps, tempo, offsetFrames, endFrame, mod
 const SCRUB_SEND_MS = 50
 const MARKER_CATCH_PX = 10
 
-function SectionStrip({ fps, endFrame, model, tempo, locked, disabled, onSeek, onLocate }: {
+/** The whole timeline with its sections: scrub, ⏮ −BAR / +BAR ◆▸ (also the Desktop SHOW style). */
+export function SectionStrip({ fps, endFrame, model, tempo, locked, disabled, onSeek, onLocate }: {
   fps: number; endFrame: number; model: ShowModel; tempo: Tempo | null; locked: boolean; disabled: boolean
   onSeek: (frame: number) => void; onLocate: (frame: number) => void
 }) {
@@ -389,7 +388,8 @@ function useShownFrame(fixedFrame: number | undefined) {
   return fixedFrame ?? frame
 }
 
-function LayerNow({ model, fps, tempo, laneStatus, fixedFrame, preview }: {
+/** Per layer: the clip on air and what moves now (also the Desktop SHOW style). */
+export function LayerNow({ model, fps, tempo, laneStatus, fixedFrame, preview }: {
   model: ShowModel; fps: number; tempo: Tempo | null; laneStatus: LaneStatusMap; fixedFrame?: number; preview: boolean
 }) {
   const frame = useShownFrame(fixedFrame)
@@ -420,7 +420,7 @@ function LayerCell({ layer, frame, fps, tempo, laneStatus }: {
       {layer.clips.length > 0 && <div className={`sv-cell-clip${clip ? '' : ' none'}`}>{clip ? `▶ ${clip.name}` : 'no clip'}</div>}
       {moving.map(({ lane, m }) => {
         const now = sampleAt(lane, frame)
-        const v = Math.max(0, Math.min(1, now?.value ?? 0))
+        const v = inSpan(lane, now?.value ?? 0)   // the bar spans what the lane uses
         return (
           <div key={lane.lane.id} className="sv-mv">
             <span className="sv-mv-name">{lane.name}</span>
@@ -434,7 +434,7 @@ function LayerCell({ layer, frame, fps, tempo, laneStatus }: {
         return (
           <div key={lane.lane.id} className="sv-mv">
             <span className="sv-mv-name">{lane.name}</span>
-            <span className="sv-mv-bar"><i style={{ width: `${Math.max(0, Math.min(1, now?.value ?? 0)) * 100}%` }} /></span>
+            <span className="sv-mv-bar"><i style={{ width: `${inSpan(lane, now?.value ?? 0) * 100}%` }} /></span>
             <span className="sv-mv-val mono">×{r.last - r.first + 1} steps · {now ? laneValue(lane, laneStatus, now.value, now.option) : '—'}</span>
           </div>
         )

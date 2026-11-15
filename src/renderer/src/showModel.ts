@@ -18,6 +18,8 @@ export interface ShowLane {
   kfs: FrameKeyframe[]
   moves: Move[]
   runs: StepRun[]           // quick step runs (strobes): one event each
+  lo: number                // the span of values the lane uses (normalised): curves and bars are drawn
+  hi: number                // in it, so 100 → 125 % on a 0–1000 % parameter is not a flat line
 }
 
 export interface ShowLayer {
@@ -79,7 +81,7 @@ function build(show: Show): ShowModel {
       const kfs = frameKeyframes(a.keyframes, fps, toF)
       const moves = movesOf(kfs, kind)
       // Steps under a second apart make a run (a strobe)
-      if (moves.length) lanes.push({ lane: a, name: laneShortName(a), kind, kfs, moves, runs: stepRuns(moves, fps) })
+      if (moves.length) lanes.push({ lane: a, name: laneShortName(a), kind, kfs, moves, runs: stepRuns(moves, fps), ...valueSpan(kfs) })
     }
     const clips = t.type === 'layer' ? clipSpans(t as LayerTrack, toF) : []
     if (!lanes.length && !clips.length) continue
@@ -116,6 +118,18 @@ function build(show: Show): ShowModel {
   events.sort((a, b) => a.frame - b.frame || (a.kind === 'section' ? -1 : 0) - (b.kind === 'section' ? -1 : 0))
   return { layers, events, sections }
 }
+
+// The values a lane moves between, a little wider than its keys (never flatter than 2 % of the range)
+function valueSpan(kfs: FrameKeyframe[]): { lo: number; hi: number } {
+  let lo = Infinity, hi = -Infinity
+  for (const k of kfs) { lo = Math.min(lo, k.value); hi = Math.max(hi, k.value) }
+  const pad = Math.max(0.02 - (hi - lo), 0) / 2
+  return { lo: Math.max(0, lo - pad), hi: Math.min(1, hi + pad) }
+}
+
+/** A value on the lane's own span: 0 at its lowest key, 1 at its highest. */
+export const inSpan = (lane: ShowLane, v: number) =>
+  lane.hi > lane.lo ? Math.max(0, Math.min(1, (v - lane.lo) / (lane.hi - lane.lo))) : 0.5
 
 // What the layer shows from frame to frame, as the engine plays it: the last clip started, while
 // its duration runs (a trigger-only clip, duration 0, until the next one)
