@@ -67,6 +67,14 @@ export class ResolumeWs {
     return `ws://${host.trim()}:${port}/api/v1`
   }
 
+  /** Sets a parameter over the open socket (much lighter than a REST PUT per value: automation
+   *  sends up to 60 values a second per lane). False when the socket isn't open: use REST. */
+  set(id: number, value: Value): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false
+    this.ws.send(JSON.stringify({ action: 'set', parameter: `/parameter/by-id/${id}`, value }))
+    return true
+  }
+
   private send(action: 'subscribe' | 'unsubscribe', id: number) {
     if (this.ws?.readyState !== WebSocket.OPEN) return
     this.ws.send(JSON.stringify({ action, parameter: `/parameter/by-id/${id}` }))

@@ -61,10 +61,12 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
           <div className="view-menu-note">Used in SHOW mode{showMode ? '' : ' — switch to SHOW to see it'}</div>
           </>}
           {api?.miniToggle && (
-            <div className="view-menu-row" title="A small strip (or column) that floats over Resolume: NOW / NEXT, bar and section, time to end, what comes next, BACK · STOP · PLAY · GO. For one laptop without a tablet.">
+            <div className="view-menu-row" title="A bar along the screen's edge that floats over Resolume, beside this window (which stays open): NOW / NEXT, bar and section, time to end, what comes next, ⏮ · STOP · PLAY · BACK · GO. For one laptop without a tablet. Also View › Mini Window (⇧⌘M).">
               <span>Mini window</span>
-              <button className={`seg-btn${miniOpen ? ' on' : ''}`} onClick={() => api.miniToggle().then((st: { open: boolean }) => setMiniOpen(st.open))}>
-                {miniOpen ? 'Open · close it' : 'Open'}</button>
+              {([false, true] as const).map(on => (
+                <button key={String(on)} className={`seg-btn${miniOpen === on ? ' on' : ''}`}
+                  onClick={() => { if (miniOpen !== on) api.miniToggle().then((st: { open: boolean }) => setMiniOpen(st.open)) }}>{on ? 'On' : 'Off'}</button>
+              ))}
             </div>
           )}
           {/* The show view's type, bars and buttons (changes at once, no reload) */}

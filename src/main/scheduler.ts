@@ -12,6 +12,8 @@ export type { LaneTarget }
 
 const SEEK_THRESHOLD = 30
 const ECHO_MS = 600        // how long a value we sent may still come back from Resolume
+const AUTOMATION_MS = 16   // playing: lanes are sampled and sent this often (≈ 60 a second)
+const AUTOMATION_STEP = 1e-5   // smallest change sent (normalised; 0.3 px of Position X)
 const RELEASE_MS = 600     // REC: no operator change for this long = parameter released
 const RECORD_MS = 40       // REC: at most one keyframe per lane per 40 ms (one frame at 25 fps)
 const PREROLL_MS = 150     // cross-deck cues: deck switch starts this early (deck load ~100 ms)
@@ -655,6 +657,12 @@ export class Scheduler {
   }
 
   private wasPlaying = false
+  private autoAt = 0
+  /** Playing: the lanes at the exact playhead (between frames too). */
+  private updateAutomationNow() {
+    this.autoAt = performance.now()
+    this.updateAllAutomation(this.transport.exactFrame())
+  }
   private tick() {
     const T = this.transport.now()
     if (this.transport.playing !== this.linkedPlaying) {
@@ -662,7 +670,14 @@ export class Scheduler {
       this.linkTransport(T)
     }
     // Stopped = the next frame change starts playback (the first frames after Play may not move)
-    if (T === this.lastFrame) { if (!this.transport.playing) this.wasPlaying = false; return }
+    if (T === this.lastFrame) {
+      if (!this.transport.playing) { this.wasPlaying = false; return }
+      // Between frames: the lanes move on at the exact (fractional) position, at most every
+      // AUTOMATION_MS — a fade or a move reaches Resolume as smoothly as it draws, not in
+      // 25 steps a second
+      if (performance.now() - this.autoAt >= AUTOMATION_MS) this.updateAutomationNow()
+      return
+    }
     const starting = !this.wasPlaying
     this.wasPlaying = this.transport.playing
     const delta = T - this.lastFrame
@@ -681,7 +696,7 @@ export class Scheduler {
         this.checkClips(T)
       }
     }
-    this.updateAllAutomation(T)
+    if (this.transport.playing) this.updateAutomationNow(); else this.updateAllAutomation(T)
     this.lastFrame = T
     this.tickCb?.(T)
   }
@@ -820,8 +835,10 @@ export class Scheduler {
     if (!sample) return
     const key = kind === 'choice' ? (sample.option ?? sample.value) : sample.value
     const last = this.lastSent.get(auto.id)
+    // Unchanged values aren't sent again. The step is tiny: 0.1 % of the range (what it was) is
+    // 33 px on Position X, so a slow move went out in visible jumps a few times a second
     if (!force && last !== undefined && (typeof key === 'string' || typeof last === 'string'
-      ? key === last : Math.abs(key - last) <= 0.001)) return
+      ? key === last : Math.abs(key - last) <= AUTOMATION_STEP)) return
     this.lastSent.set(auto.id, key)
     this.dispatchLane(auto, kind, sample.value, sample.option)
   }
@@ -835,7 +852,7 @@ export class Scheduler {
       const real = toRestValue(target.kind ?? kind, v, target, option)
       this.noteSent(target.paramId, real)
       this.lastSeen.set(auto.id, real)
-      this.restSend(target.paramId, real)
+      if (!this.ws.set(target.paramId, real)) this.restSend(target.paramId, real)
       return
     }
     if (auto.ref) return

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, powerSaveBlocker } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, powerSaveBlocker, Menu } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import crypto from 'crypto'
@@ -146,12 +146,40 @@ async function applyRemote() {
 
 const rendererFile = () => join(__dirname, '../renderer/index.html')
 ipcMain.handle('mini:get', () => miniState())
-ipcMain.handle('mini:toggle', () => {
+const toggleMini = () => {
   if (miniWindow()) closeMini(); else openMini(process.env['ELECTRON_RENDERER_URL'], rendererFile())
   return miniState()
-})
+}
+ipcMain.handle('mini:toggle', () => toggleMini())
 ipcMain.handle('mini:layout', (_e, orientation: MiniOrientation, size: MiniSize | null, edge?: MiniEdge) => { setMiniLayout(orientation, size, edge); return miniState() })
-onMiniChange(state => { if (win && !win.isDestroyed()) win.webContents.send('mini:state', state) })
+onMiniChange(state => {
+  if (win && !win.isDestroyed()) win.webContents.send('mini:state', state)
+  buildMenu()   // the View menu's check mark
+})
+
+// The app menu: the standard ones, and View › Mini Window (an option beside the main window,
+// which always stays open)
+function buildMenu() {
+  const mac = process.platform === 'darwin'
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(mac ? [{ role: 'appMenu' as const }] : []),
+    { role: 'fileMenu' as const },
+    { role: 'editMenu' as const },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Mini Window', type: 'checkbox' as const, checked: miniState().open, accelerator: 'Shift+CmdOrCtrl+M', click: () => toggleMini() },
+        { type: 'separator' as const },
+        { role: 'reload' as const }, { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'resetZoom' as const }, { role: 'zoomIn' as const }, { role: 'zoomOut' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const },
+      ],
+    },
+    { role: 'windowMenu' as const },
+  ]))
+}
 
 ipcMain.handle('remote:get', () => remoteInfo())
 ipcMain.handle('remote:set', async (_e, enabled: boolean) => {
@@ -209,6 +237,7 @@ app.whenReady().then(() => {
   // macOS App Nap would slow the engine's timers while the app is in the background
   powerSaveBlocker.start('prevent-app-suspension')
   createWindow()
+  buildMenu()
   applyRemote()
   // The mini window comes back if it was open when the app quit
   if (miniWasOpen()) openMini(process.env['ELECTRON_RENDERER_URL'], rendererFile())
