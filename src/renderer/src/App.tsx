@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { Show, Track, LayerTrack, GroupTrack, AutomationSubTrack, ClipCue, EngineState, Keyframe, ParamRef } from '../../shared/show'
 import type { ResolumeComposition } from '../../shared/resolume'
 import { isValidRundown, type RundownEntry, type ShowEntry, type BreakEntry } from '../../shared/concert'
-import { showfileData, showfileKey, isShowfile, type ShowfileMeta, type ShowfileData } from '../../shared/showfile'
+import { showfileData, showfileKey, isShowfile, settingsFromShow, withProject, type ShowfileMeta, type ShowfileData, type ProjectSettings } from '../../shared/showfile'
 import { rv, layerDisplayName, resolumeColor, layerTransition } from '../../shared/resolume'
 import { TransportBar } from './components/TransportBar'
 import { LaneHeaders } from './components/LaneHeaders'
@@ -86,6 +86,8 @@ const shallowSame = (a: object, b: object) =>
 // gone are kept (they hold cues/automation). Returns `show` unchanged when nothing differs, so
 // the periodic sync does not mark the show dirty.
 const FOLLOW_TC_KEY = 'resolume-timeline:followTc'
+// Follow TC was a per-machine setting before it was per showfile: it seeds the first one
+const LEGACY_FOLLOW_TC = (() => { try { return localStorage.getItem(FOLLOW_TC_KEY) === '1' } catch { return false } })()
 const ARENA_REC_LATENCY_MS = 40   // Arena starts writing ~38 ms after the record command (measured, 7.24)
 const isLtcSource = (src: string) => src === 'ltc' || src === 'ltc-a' || src === 'ltc-b'
 const STOP_CONFIRM_MS = 2500   // SHOW mode: second Space / ■ within this stops (a finger on a tablet needs the time)
@@ -309,11 +311,6 @@ export default function App() {
   // LTC arrives but belongs to no / another timeline (before this one's start TC, or at or
   // after the next LTC timeline's start TC): the active timeline doesn't run
   const [ltcOutside, setLtcOutside] = useState(false)
-  // Follow TC: switch to the timeline whose TC range the incoming LTC is in (per machine)
-  const [followTc, setFollowTc] = useState(() => { try { return localStorage.getItem(FOLLOW_TC_KEY) === '1' } catch { return false } })
-  const followTcRef = useRef(followTc)
-  followTcRef.current = followTc
-  useEffect(() => { try { localStorage.setItem(FOLLOW_TC_KEY, followTc ? '1' : '0') } catch { /* private mode */ } }, [followTc])
 
   // Audio engine
   const audioEngineRef = useRef(new AudioEngine())
@@ -334,6 +331,18 @@ export default function App() {
   const activeShowEntry: ShowEntry | null = activeEntry?.type === 'show' ? activeEntry as ShowEntry : null
   const show: Show = activeShowEntry?.show ?? EMPTY_SHOW
   const activeIsBreak = activeEntry?.type === 'break'
+  // The project's rig settings (⚙): the showfile's. One from before they were per showfile
+  // takes them from its timeline (and keeps them, see below)
+  const settings: ProjectSettings = useMemo(() => showfile.settings ?? settingsFromShow(activeShowEntry?.show, LEGACY_FOLLOW_TC),
+    [showfile.settings, activeShowEntry?.show])   // eslint-disable-line react-hooks/exhaustive-deps
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  // Follow TC: incoming LTC selects the timeline whose TC range it is in (per showfile)
+  const followTc = settings.followTc
+  const followTcRef = useRef(followTc)
+  followTcRef.current = followTc
+  // The timeline as the engine runs it: with this project's Resolume address, inputs and outputs
+  const engineShow = useMemo(() => withProject(show, settings), [show, settings])
   const fps = show.frameRate
   const offsetFrames = smpteToFrames(show.clock.offset || '00:00:00:00', fps)
   const tempo = useMemo(() => tempoOf(show), [show.bpm, show.beatsPerBar, show.downbeat, show.frameRate])
@@ -492,7 +501,8 @@ export default function App() {
     clearAutosave()
     savedKeyRef.current = ''
     setRundown([entry]); setActiveId(entry.id)
-    setShowfile(NEW_SHOWFILE); setShowfileDirty(true); setRestoredAt(null)
+    // The rig stays the same for a new showfile on this computer
+    setShowfile({ ...NEW_SHOWFILE, settings: settingsRef.current }); setShowfileDirty(true); setRestoredAt(null)
     // Fill the new empty show with the current Resolume layers
     api.getComposition().then((comp: ResolumeComposition | null) => {
       if (comp) syncShow(prev => syncLayers(prev, comp))
@@ -740,22 +750,22 @@ export default function App() {
   useEffect(() => {
     if (REMOTE || !sessionReady) return
     const t = setTimeout(() => {
-      const key = showfileKey(showfile.name, rundown)
+      const key = showfileKey(showfile.name, rundown, showfile.settings)
       if (savedKeyRef.current === null) savedKeyRef.current = showfileDirty ? '' : key   // first check after start
       setShowfileDirty(key !== savedKeyRef.current)
     }, 300)
     return () => clearTimeout(t)
-  }, [sessionReady, rundown, showfile.name])   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionReady, rundown, showfile.name, showfile.settings])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const writeShowfile = useCallback(async (path: string, name: string) => {
     const { rundown: rd, activeId: aid, showfile: sf } = autosaveRef.current
-    const key = showfileKey(name, rd)
+    const key = showfileKey(name, rd, sf.settings)
     let r: { ok: boolean; savedAt?: number; error?: string } | null = null
     try { r = await api.showfileWrite(path, showfileData(sf, name, rd, aid, compositionNameRef.current || undefined)) } catch (e) { r = { ok: false, error: String(e) } }
     if (!r?.ok) { setShowfileError(`The showfile could not be saved: ${r?.error ?? 'unknown error'}`); return false }
     savedKeyRef.current = key
     setShowfileError(null); setShowfileSavedAt(r.savedAt ?? Date.now())
-    setShowfileDirty(showfileKey(name, autosaveRef.current.rundown) !== key)
+    setShowfileDirty(showfileKey(name, autosaveRef.current.rundown, autosaveRef.current.showfile.settings) !== key)
     return true
   }, [])
 
@@ -764,7 +774,7 @@ export default function App() {
     if (REMOTE || !sessionReady || !showfile.autosave || !showfile.path || !showfile.name || !showfileDirty) return
     const t = setTimeout(() => { writeShowfile(showfile.path!, showfile.name) }, 1000)
     return () => clearTimeout(t)
-  }, [sessionReady, showfile.autosave, showfile.path, showfile.name, showfileDirty, rundown, writeShowfile])
+  }, [sessionReady, showfile.autosave, showfile.path, showfile.name, showfile.settings, showfileDirty, rundown, writeShowfile])
 
   const handleSaveShowfile = useCallback(async () => {
     if (REMOTE) return   // files live on the computer running the app
@@ -851,8 +861,8 @@ export default function App() {
   // The engine gets the timeline after every edit. A drag or a REC pass edits 60 times a second,
   // and each load is a full copy over IPC that the engine re-parses: at most every 50 ms (the
   // first edit at once, the last one always)
-  const engineShowRef = useRef(show)
-  engineShowRef.current = show
+  const engineShowRef = useRef(engineShow)
+  engineShowRef.current = engineShow
   const engineLoadRef = useRef<{ at: number; timer?: ReturnType<typeof setTimeout> }>({ at: 0 })
   useEffect(() => {
     if (REMOTE) return
@@ -861,7 +871,7 @@ export default function App() {
     const wait = 50 - (performance.now() - l.at)
     const load = () => { l.timer = undefined; l.at = performance.now(); api.loadShowDirect(engineShowRef.current) }
     if (wait <= 0) load(); else l.timer = setTimeout(load, wait)
-  }, [show])
+  }, [engineShow])
   useEffect(() => () => clearTimeout(engineLoadRef.current.timer), [])
 
   // Parameters go back to their Resolume default when the timeline lets go of them:
@@ -961,33 +971,18 @@ export default function App() {
 
   // ── LTC decoder lifecycle ──────────────────────────────────────────────────
 
-  const deviceForSource = (s: Show): string | undefined => {
-    const src = s.clock.source
-    if (src === 'ltc-b') return s.clock.ltcDeviceB
-    if (src === 'ltc-a' || src === 'ltc') return s.clock.ltcDeviceA ?? s.clock.ltcDevice
-    return undefined
-  }
-  const channelForSource = (s: Show): number => {
-    const src = s.clock.source
-    if (src === 'ltc-b') return s.clock.ltcChannelB ?? 0
-    if (src === 'ltc-a' || src === 'ltc') return s.clock.ltcChannelA ?? 0
-    return 0
-  }
-
   const ltcEnabledShows = rundown.filter(
     (e): e is ShowEntry => e.type === 'show' && isLtcSource(e.show.clock.source)
   )
   const ltcShouldRun = !REMOTE && ltcEnabledShows.length > 0
-  const ltcDeviceId = isLtcSource(show.clock.source)
-    ? (deviceForSource(show) ?? '')
-    : (ltcEnabledShows[0] ? (deviceForSource(ltcEnabledShows[0].show) ?? '') : '')
-  const ltcChannelIdx = isLtcSource(show.clock.source)
-    ? channelForSource(show)
-    : (ltcEnabledShows[0] ? channelForSource(ltcEnabledShows[0].show) : 0)
+  // The input decoded: the selected timeline's (else the first LTC timeline's), on the device
+  // and channel the project has for it
+  const ltcInput: 'a' | 'b' = ltcInputOf(show.clock.source) ?? (ltcEnabledShows[0] ? ltcInputOf(ltcEnabledShows[0].show.clock.source) ?? 'a' : 'a')
+  const ltcDeviceId = (ltcInput === 'b' ? settings.ltcB : settings.ltcA).device ?? ''
+  const ltcChannelIdx = (ltcInput === 'b' ? settings.ltcB : settings.ltcA).channel
 
   // Values the running decoder reads without restarting it (a Follow TC switch to a
   // timeline with another frame rate must not drop the signal)
-  const ltcInput: 'a' | 'b' = ltcInputOf(show.clock.source) ?? (ltcEnabledShows[0] ? ltcInputOf(ltcEnabledShows[0].show.clock.source) ?? 'a' : 'a')
   const ltcInputRef = useRef(ltcInput)
   ltcInputRef.current = ltcInput
   const fpsRef = useRef(fps)
@@ -1310,7 +1305,7 @@ export default function App() {
     const entry = rundownRef.current.find(e => e.id === id)
     // An edit of the old timeline still waiting to go to the engine would load it back
     clearTimeout(engineLoadRef.current.timer); engineLoadRef.current.timer = undefined
-    api.selectShow(entry?.type === 'show' ? (entry as ShowEntry).show : EMPTY_SHOW)
+    api.selectShow(withProject(entry?.type === 'show' ? (entry as ShowEntry).show : EMPTY_SHOW, settingsRef.current))
     audioEngineRef.current.stop()
     setActiveId(id)
     clearSelection(); setScrollFrame(0)
@@ -1342,8 +1337,9 @@ export default function App() {
   confirmedGoRef.current = confirmedGo
 
   const handleReconnect = useCallback(() => {
-    api.connectResolume(show.resolume.host, show.resolume.oscPort, show.resolume.restPort)
-  }, [show.resolume.host, show.resolume.oscPort, show.resolume.restPort])
+    const r = settingsRef.current.resolume
+    api.connectResolume(r.host, r.oscPort, r.restPort)
+  }, [])
 
   const handleDeleteEntry = useCallback((id: string) => {
     if (rundown.length <= 1) return  // always keep at least one
@@ -1362,18 +1358,21 @@ export default function App() {
   }, [])
 
   const handleEditEntry = useCallback((id: string, updates: Partial<Pick<BreakEntry, 'color' | 'notes' | 'label' | 'duration'>> & {
-    name?: string; clock?: { source: Show['clock']['source']; offset: string }
+    name?: string; clock?: { source: Show['clock']['source']; offset: string; freewheelFrames: number }; frameRate?: number
     tempo?: Pick<Show, 'bpm' | 'beatsPerBar' | 'downbeat' | 'tempoResync'>   // undefined fields = none / default
   }) => {
     const edited = (show: Show): Show => {
       const renamed = updates.name !== undefined && updates.name !== show.name
-      const reclocked = !!updates.clock && (updates.clock.source !== show.clock.source || updates.clock.offset !== show.clock.offset)
+      const reclocked = !!updates.clock && (updates.clock.source !== show.clock.source || updates.clock.offset !== show.clock.offset
+        || updates.clock.freewheelFrames !== show.clock.freewheelFrames)
+      const refps = updates.frameRate !== undefined && updates.frameRate !== show.frameRate
       const t = updates.tempo
       const retimed = !!t && (t.bpm !== show.bpm || (t.beatsPerBar ?? 4) !== (show.beatsPerBar ?? 4)
         || (t.downbeat || '00:00:00:00') !== (show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'off') !== (show.tempoResync ?? 'off'))
-      return renamed || reclocked || retimed ? {
+      return renamed || reclocked || retimed || refps ? {
         ...show,
         ...(renamed ? { name: updates.name! } : {}),
+        ...(refps ? { frameRate: updates.frameRate! } : {}),
         ...(reclocked ? { clock: { ...show.clock, ...updates.clock } } : {}),
         ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat, tempoResync: t!.tempoResync } : {}),
       } : show
@@ -1413,17 +1412,25 @@ export default function App() {
     const active = entries.some(e => e.id === d.activeId) ? d.activeId : entries[0].id
     // A converted .concert.json (or a file picked in a browser) has no showfile path yet:
     // it is saved as a new showfile, the file it came from stays untouched
-    savedKeyRef.current = result.path ? showfileKey(d.name, entries) : ''
+    // Its own settings; an older showfile's come from its timeline (and are saved with it)
+    const activeShow = (entries.find(e => e.id === active && e.type === 'show') as ShowEntry | undefined)?.show
+    const settings = d.settings ?? settingsFromShow(activeShow, followTcRef.current)
+    savedKeyRef.current = result.path ? showfileKey(d.name, entries, d.settings) : ''
     activeIdRef.current = active
     setRundown(entries); setActiveId(active)
-    setShowfile({ name: d.name, path: result.path, autosave: d.autosave !== false })
+    setShowfile({ name: d.name, path: result.path, autosave: d.autosave !== false, settings })
     setShowfileDirty(!result.path)
     setShowfileError(null); setRestoredAt(null)
   }, [clearSelection])
 
-  const handleUpdateProjectSettings = useCallback((partial: Partial<Show>) => {
-    setShow(prev => ({ ...prev, ...partial }))
-  }, [setShow])
+  // ⚙ Project settings: the showfile's (saved with it, the same for every timeline)
+  const updateSettings = useCallback((patch: Partial<ProjectSettings>) => {
+    setShowfile(sf => ({ ...sf, settings: { ...(sf.settings ?? settingsRef.current), ...patch } }))
+  }, [])
+  // A showfile from before the settings were per showfile keeps what its timeline had
+  useEffect(() => {
+    if (!REMOTE && sessionReady && !showfile.settings) setShowfile(sf => sf.settings ? sf : { ...sf, settings: settingsRef.current })
+  }, [sessionReady, showfile.settings])
 
   // ── Audio track ────────────────────────────────────────────────────────────
 
@@ -1449,8 +1456,9 @@ export default function App() {
     } catch {}
     if (!ok || gen !== audioLoadGenRef.current) return false
     engine.setGain(s.audioTrack?.gain ?? 0.8)
-    if (s.clock.audioOutputDevice) await engine.setOutputDevice(s.clock.audioOutputDevice)
-    engine.setOutputChannels(s.clock.audioOutputChannelL ?? 0, s.clock.audioOutputChannelR ?? 1)
+    const out = settingsRef.current.audioOut
+    if (out.device) await engine.setOutputDevice(out.device)
+    engine.setOutputChannels(out.left, out.right)
     if (gen !== audioLoadGenRef.current) return false
     loadedAudioPathRef.current = filePath
     setAudioLoaded(true)
@@ -1515,15 +1523,13 @@ export default function App() {
 
   useEffect(() => {
     if (!audioLoaded) return
-    const dev = show.clock.audioOutputDevice
+    const dev = settings.audioOut.device
     if (dev) audioEngineRef.current.setOutputDevice(dev)
-  }, [show.clock.audioOutputDevice, audioLoaded])
+  }, [settings.audioOut.device, audioLoaded])
 
   useEffect(() => {
-    audioEngineRef.current.setOutputChannels(
-      show.clock.audioOutputChannelL ?? 0, show.clock.audioOutputChannelR ?? 1,
-    )
-  }, [show.clock.audioOutputChannelL, show.clock.audioOutputChannelR])
+    audioEngineRef.current.setOutputChannels(settings.audioOut.left, settings.audioOut.right)
+  }, [settings.audioOut.left, settings.audioOut.right])
 
   // ── Clip operations ────────────────────────────────────────────────────────
 
@@ -2290,7 +2296,7 @@ export default function App() {
         savedAt={showfileSavedAt}
         saveError={showfileError}
         resolumeConnected={engineState.resolumeConnected}
-        resolumeHost={show.resolume.host}
+        resolumeHost={settings.resolume.host}
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
         onSelect={id => { if (id !== activeId && !needsConfirm(id)) handleSelectEntry(id) }}
         confirmEntryId={entryArmed}
@@ -2334,7 +2340,7 @@ export default function App() {
         ltcActive={ltcActive}
         ltcOutside={ltcOutside}
         followTc={followTc}
-        onToggleFollowTc={() => setFollowTc(f => !f)}
+        onToggleFollowTc={() => updateSettings({ followTc: !followTc })}
         anyLtcTimeline={ltcShouldRun}
         recordArmed={recordArmed}
         onToggleRecord={() => setRecordArmed(r => !r)}
@@ -2505,8 +2511,8 @@ export default function App() {
 
       {showSettings && (
         <ClockSettingsModal
-          show={show}
-          onUpdate={handleUpdateProjectSettings}
+          settings={settings} showfileName={showfileName}
+          onSave={updateSettings}
           onClose={() => setShowSettings(false)}
         />
       )}

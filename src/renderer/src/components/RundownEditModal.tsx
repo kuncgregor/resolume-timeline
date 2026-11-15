@@ -19,7 +19,8 @@ interface Updates {
   label?: string
   duration?: string
   name?: string        // timeline name (show.name)
-  clock?: { source: TcSource; offset: string }   // timeline: which timecode it follows
+  clock?: { source: TcSource; offset: string; freewheelFrames: number }   // timeline: which timecode it follows
+  frameRate?: number
   tempo?: { bpm?: number; beatsPerBar?: number; downbeat?: string; tempoResync?: 'start' | 'off' }  // undefined = none / default
 }
 
@@ -51,7 +52,11 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
   const sameStart = tcSource === 'internal' ? [] : otherTimelines.filter(t =>
     (t.source === 'ltc-b' ? 'ltc-b' : t.source === 'ltc' || t.source === 'ltc-a' ? 'ltc-a' : null) === tcSource
     && t.offset === startTc.trim().replace(';', ':'))
-  const fps = entry.type === 'show' ? (entry as ShowEntry).show.frameRate : 25
+  // Frame rate and freewheel are the timeline's own (the LTC inputs are the project's, in ⚙)
+  const [fps, setFps] = useState(entry.type === 'show' ? (entry as ShowEntry).show.frameRate : 25)
+  const [freewheelText, setFreewheelText] = useState(String(clock?.freewheelFrames ?? 5))
+  const freewheelNum = Number(freewheelText.trim())
+  const freewheelValid = Number.isInteger(freewheelNum) && freewheelNum >= 0 && freewheelNum <= 300
   const tcMatch = TC_RE.exec(startTc.trim())
   const tcValid = !!tcMatch && Number(tcMatch[1]) < 24 && Number(tcMatch[4]) < Math.round(fps)
 
@@ -67,12 +72,13 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
   const bpbValid = Number.isInteger(bpbNum) && bpbNum >= BEATS_PER_BAR_MIN && bpbNum <= BEATS_PER_BAR_MAX
   const dbMatch = TC_RE.exec(downbeat.trim())
   const dbValid = !!dbMatch && Number(dbMatch[1]) < 24 && Number(dbMatch[4]) < Math.round(fps)
-  const tempoValid = entry.type !== 'show' || (bpmValid && bpbValid && dbValid)
+  const tempoValid = entry.type !== 'show' || (bpmValid && bpbValid && dbValid && freewheelValid)
   const invalidReason = entry.type !== 'show' ? undefined
     : !tcValid ? `Start TC must be HH:MM:SS:FF (frames below ${Math.round(fps)})`
     : !bpmValid ? `BPM must be ${BPM_MIN}–${BPM_MAX}, or empty for none`
     : !bpbValid ? `Beats per bar must be a whole number ${BEATS_PER_BAR_MIN}–${BEATS_PER_BAR_MAX}`
     : !dbValid ? `Bar 1 at must be HH:MM:SS:FF (frames below ${Math.round(fps)})`
+    : !freewheelValid ? 'Freewheel must be a whole number of frames, 0–300'
     : undefined
 
   const handleSave = () => {
@@ -90,7 +96,9 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
       }
       const offset = startTc.trim().replace(';', ':')
       // Untouched (e.g. only the colour changed): keep a legacy 'ltc' / 'mtc' source as it is
-      if (tcSource !== initialSource || offset !== (clock?.offset || '00:00:00:00')) updates.clock = { source: tcSource, offset }
+      if (tcSource !== initialSource || offset !== (clock?.offset || '00:00:00:00') || freewheelNum !== (clock?.freewheelFrames ?? 5))
+        updates.clock = { source: tcSource, offset, freewheelFrames: freewheelNum }
+      if (fps !== (entry as ShowEntry).show.frameRate) updates.frameRate = fps
     }
     onSave(entry.id, updates)
     onClose()
@@ -142,6 +150,20 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
                   placeholder="01:00:00:00"
                 />
               </div>
+              <div className="modal-row">
+                <span className="modal-label">FPS</span>
+                <select className="modal-inp modal-sel" value={fps} onChange={e => setFps(Number(e.target.value))}>
+                  {[24, 25, 30, 50, 60].map(f => <option key={f} value={f}>{f} fps</option>)}
+                </select>
+              </div>
+              <div className="modal-row">
+                <span className="modal-label">Freewheel</span>
+                <input className={`modal-inp modal-num mono ${freewheelValid ? '' : 'invalid'}`} inputMode="numeric"
+                  value={freewheelText} onChange={e => setFreewheelText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+                  title="LTC dropouts up to this many frames are bridged (the timeline keeps running)" />
+                <span className="modal-hint inline">frames</span>
+              </div>
               {sameStart.length > 0 && (
                 <div className="modal-hint modal-hint-indent lane-warn">
                   Same start TC as {sameStart.map(t => `“${t.name}”`).join(', ')} on this input: only the selected one runs.
@@ -150,7 +172,7 @@ export function RundownEditModal({ entry, otherTimelines, onSave, onClose, isAct
               <div className="modal-hint modal-hint-indent">
                 {tcSource === 'internal'
                   ? 'Runs on its own clock (Space / GO). The start TC is only shown as the time display.'
-                  : `Timeline 0 = ${startTc || '—'} on ${tcSource === 'ltc-a' ? 'LTC A' : 'LTC B'} (external input, inputs in ⚙ Timeline settings). It runs from its start TC until the next LTC timeline's start TC.`}
+                  : `Timeline 0 = ${startTc || '—'} on ${tcSource === 'ltc-a' ? 'LTC A' : 'LTC B'} (external input; its device and channel are in ⚙ Project settings). It runs from its start TC until the next LTC timeline's start TC.`}
               </div>
             </div>
           )}

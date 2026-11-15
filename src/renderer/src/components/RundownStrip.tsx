@@ -218,7 +218,7 @@ export function RundownStrip({
           </button>
 
           <button className="btn ghost" onClick={onSettings} disabled={showMode || remote}
-            title={remote ? 'Timecode and audio settings are made on the computer running the app' : 'Timeline settings'}>⚙</button>
+            title={remote ? 'Project settings are made on the computer running the app' : 'Project settings: Resolume, LTC inputs, audio output, Follow TC (saved in the showfile)'}>⚙</button>
 
           {/* How this screen shows the app: show view, touch mode, size and scale (per device) */}
           <ViewMenu showMode={showMode} playing={playing} />

@@ -1,21 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { useEscape } from './useEscape'
-import type { Show } from '../../../shared/show'
-import { BPM_MIN, BPM_MAX, roundBpm } from '../grid'
+import type { ProjectSettings } from '../../../shared/showfile'
 
-type ClockSource = 'internal' | 'ltc-a' | 'ltc-b'
+// ⚙ Project settings: what the whole showfile shares on this rig (Resolume's address, the LTC
+// inputs, the audio output, decks, Follow TC). Saved in the showfile. Each timeline's own clock
+// (which input it follows, start TC, fps, freewheel) is in ✎ Edit timeline.
 
 interface Props {
-  show: Show
-  onUpdate: (partial: Partial<Show>) => void
+  settings: ProjectSettings
+  showfileName: string
+  onSave: (settings: ProjectSettings) => void
   onClose: () => void
-}
-
-function normalizeSource(src: string): ClockSource {
-  if (src === 'ltc-a') return 'ltc-a'
-  if (src === 'ltc-b') return 'ltc-b'
-  if (src === 'ltc') return 'ltc-a'  // legacy mapping
-  return 'internal'
 }
 
 // Opens the input briefly to read its channel count. Voice processing must be off,
@@ -52,43 +47,23 @@ function cleanHost(raw: string): string {
   return h || '127.0.0.1'
 }
 
-export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
+export function ClockSettingsModal({ settings, showfileName, onSave, onClose }: Props) {
   useEscape(onClose)
-  const [name, setName] = useState(show.name)
-  // Text, so an empty field means "no BPM" (a number state turned every saved show into 120 BPM)
-  const [bpm, setBpm] = useState(show.bpm != null ? String(show.bpm) : '')
-  const [fps, setFps] = useState(show.frameRate)
-  const [source, setSource] = useState<ClockSource>(normalizeSource(show.clock.source))
-  const [ltcDeviceA, setLtcDeviceA] = useState(show.clock.ltcDeviceA ?? show.clock.ltcDevice ?? '')
-  const [ltcDeviceB, setLtcDeviceB] = useState(show.clock.ltcDeviceB ?? '')
-  const [ltcChannelA, setLtcChannelA] = useState(show.clock.ltcChannelA ?? 0)
-  const [ltcChannelB, setLtcChannelB] = useState(show.clock.ltcChannelB ?? 0)
-  const [audioOutputDevice, setAudioOutputDevice] = useState(show.clock.audioOutputDevice ?? '')
-  const [audioOutputChannelL, setAudioOutputChannelL] = useState(show.clock.audioOutputChannelL ?? 0)
-  const [audioOutputChannelR, setAudioOutputChannelR] = useState(show.clock.audioOutputChannelR ?? 1)
-  const [freewheel, setFreewheel] = useState(show.clock.freewheelFrames)
-  const [host, setHost] = useState(show.resolume.host)
-  const [oscPort, setOscPort] = useState(show.resolume.oscPort)
-  const [restPort, setRestPort] = useState(show.resolume.restPort)
-  const [deckReturn, setDeckReturn] = useState(show.deckReturn !== false)
+  const [ltcDeviceA, setLtcDeviceA] = useState(settings.ltcA.device ?? '')
+  const [ltcDeviceB, setLtcDeviceB] = useState(settings.ltcB.device ?? '')
+  const [ltcChannelA, setLtcChannelA] = useState(settings.ltcA.channel)
+  const [ltcChannelB, setLtcChannelB] = useState(settings.ltcB.channel)
+  const [audioOutputDevice, setAudioOutputDevice] = useState(settings.audioOut.device ?? '')
+  const [audioOutputChannelL, setAudioOutputChannelL] = useState(settings.audioOut.left)
+  const [audioOutputChannelR, setAudioOutputChannelR] = useState(settings.audioOut.right)
+  const [host, setHost] = useState(settings.resolume.host)
+  const [oscPort, setOscPort] = useState(settings.resolume.oscPort)
+  const [restPort, setRestPort] = useState(settings.resolume.restPort)
+  const [deckReturn, setDeckReturn] = useState(settings.deckReturn)
+  const [followTc, setFollowTc] = useState(settings.followTc)
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([])
   const [channelCountByDevice, setChannelCountByDevice] = useState<Record<string, number>>({})
-
-  // Parse offset "HH:MM:SS:FF"
-  const [parts, setParts] = useState(() => {
-    const p = (show.clock.offset || '00:00:00:00').split(':').map(Number)
-    return { hh: p[0] ?? 0, mm: p[1] ?? 0, ss: p[2] ?? 0, ff: p[3] ?? 0 }
-  })
-  const pad = (n: number) => String(Math.floor(Math.max(0, n))).padStart(2, '0')
-  const offsetStr = `${pad(parts.hh)}:${pad(parts.mm)}:${pad(parts.ss)}:${pad(parts.ff)}`
-
-  const setPart = (key: 'hh' | 'mm' | 'ss' | 'ff', val: string) => {
-    const n = parseInt(val, 10)
-    if (isNaN(n)) return
-    const max = { hh: 23, mm: 59, ss: 59, ff: fps - 1 }[key]
-    setParts(prev => ({ ...prev, [key]: Math.min(max, Math.max(0, n)) }))
-  }
 
   // Fetch all audio devices on mount (need media permission for labels)
   useEffect(() => {
@@ -148,36 +123,14 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
     return () => { cancelled = true }
   }, [audioOutputDevice])
 
-  // A lower frame rate can leave the offset's frame field out of range (30 → 25 fps with ff=29)
-  useEffect(() => {
-    setParts(prev => prev.ff > fps - 1 ? { ...prev, ff: fps - 1 } : prev)
-  }, [fps])
-
-  const bpmNum = bpm.trim() === '' ? undefined : Number(bpm.trim().replace(',', '.'))
-  const bpmValid = bpmNum === undefined || (Number.isFinite(bpmNum) && bpmNum >= BPM_MIN && bpmNum <= BPM_MAX)
-
   const handleSave = () => {
-    if (!bpmValid) return
-    onUpdate({
-      name,
-      bpm: bpmNum === undefined ? undefined : roundBpm(bpmNum),
-      frameRate: fps,
-      clock: {
-        source,
-        offset: offsetStr,
-        freewheelFrames: freewheel,
-        ltcDeviceA: ltcDeviceA || undefined,
-        ltcDeviceB: ltcDeviceB || undefined,
-        ltcDevice: ltcDeviceA || undefined, // back-compat
-        ltcChannelA,
-        ltcChannelB,
-        audioOutputDevice: audioOutputDevice || undefined,
-        audioOutputChannelL,
-        audioOutputChannelR,
-      },
+    onSave({
       // "http://10.0.0.5:8080/ " → "10.0.0.5": ports have their own fields
-      resolume: { ...show.resolume, host: cleanHost(host), oscPort, restPort },
-      deckReturn,
+      resolume: { host: cleanHost(host), oscPort, restPort },
+      ltcA: { device: ltcDeviceA || undefined, channel: ltcChannelA },
+      ltcB: { device: ltcDeviceB || undefined, channel: ltcChannelB },
+      audioOut: { device: audioOutputDevice || undefined, left: audioOutputChannelL, right: audioOutputChannelR },
+      deckReturn, followTc,
     })
     onClose()
   }
@@ -186,75 +139,11 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Timeline settings</span>
+          <span className="modal-title">Project settings <span className="modal-title-sub">{showfileName}</span></span>
           <button className="btn ghost modal-close" onClick={onClose} title="Close">✕</button>
         </div>
 
         <div className="modal-body">
-          {/* ── Project ── */}
-          <div className="modal-section">
-            <div className="modal-section-title">Timeline</div>
-            <Row label="Name">
-              <input className="modal-inp" value={name} onChange={e => setName(e.target.value)} />
-            </Row>
-            <Row label="BPM">
-              <input
-                className={`modal-inp modal-num mono ${bpmValid ? '' : 'invalid'}`} inputMode="decimal"
-                value={bpm} onChange={e => setBpm(e.target.value)} placeholder="—"
-              />
-              <span className="modal-hint inline">Empty = no BPM. Bar grid on the timeline ({BPM_MIN}–{BPM_MAX})</span>
-            </Row>
-          </div>
-
-          {/* ── Timecode and frame rate ── */}
-          <div className="modal-section">
-            <div className="modal-section-title">Timecode and frame rate</div>
-            <Row label="FPS">
-              <select className="modal-inp modal-sel" value={fps} onChange={e => setFps(Number(e.target.value))}>
-                {[24, 25, 30, 50, 60].map(f => <option key={f} value={f}>{f} fps</option>)}
-              </select>
-              <span className="modal-hint inline">FPS can be changed at any time</span>
-            </Row>
-            <Row label="Source">
-              <label className="modal-radio">
-                <input type="radio" name="tc-src" checked={source === 'internal'}
-                  onChange={() => setSource('internal')} />
-                Internal
-              </label>
-              <label className="modal-radio">
-                <input type="radio" name="tc-src" checked={source === 'ltc-a'}
-                  onChange={() => setSource('ltc-a')} />
-                SMPTE A
-              </label>
-              <label className="modal-radio">
-                <input type="radio" name="tc-src" checked={source === 'ltc-b'}
-                  onChange={() => setSource('ltc-b')} />
-                SMPTE B
-              </label>
-            </Row>
-
-            <Row label="Start TC">
-              <div className="smpte-row">
-                <SmpteField label="HH" value={parts.hh} max={23} onChange={v => setPart('hh', v)} />
-                <span className="smpte-sep">:</span>
-                <SmpteField label="MM" value={parts.mm} max={59} onChange={v => setPart('mm', v)} />
-                <span className="smpte-sep">:</span>
-                <SmpteField label="SS" value={parts.ss} max={59} onChange={v => setPart('ss', v)} />
-                <span className="smpte-sep">:</span>
-                <SmpteField label="FF" value={parts.ff} max={fps - 1} onChange={v => setPart('ff', v)} />
-              </div>
-              <span className="modal-hint">
-                Timecode at which this timeline starts (timeline 0). With LTC it runs from here until the next LTC timeline's start TC.
-              </span>
-            </Row>
-
-            <Row label="Freewheel">
-              <input type="number" className="modal-inp modal-num" min={0} max={300}
-                value={freewheel} onChange={e => setFreewheel(Number(e.target.value))} />
-              <span className="modal-hint inline">frames</span>
-            </Row>
-          </div>
-
           {/* ── Audio ── */}
           <div className="modal-section">
             <div className="modal-section-title">Audio</div>
@@ -335,8 +224,14 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
               </select>
             </Row>
             <span className="modal-hint modal-hint-indent">
-              SMPTE A/B are two separate LTC inputs; the choice under "Source" sets which one this project uses
+              SMPTE A/B are two separate LTC inputs. Which one a timeline follows, and from which start TC, is set per timeline in ✎ Edit timeline.
             </span>
+            <Row label="Follow TC">
+              <label className="modal-check" title="Incoming LTC selects the timeline whose start TC it belongs to (one song per TC range), and it plays from the right place. Also the FOLLOW TC chip next to the clock.">
+                <input type="checkbox" checked={followTc} onChange={e => setFollowTc(e.target.checked)} />
+                <span>Incoming LTC selects its timeline (no GO needed)</span>
+              </label>
+            </Row>
           </div>
 
           {/* ── Resolume ── */}
@@ -365,8 +260,7 @@ export function ClockSettingsModal({ show, onUpdate, onClose }: Props) {
 
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn modal-primary" onClick={handleSave} disabled={!bpmValid}
-            title={bpmValid ? undefined : `BPM must be ${BPM_MIN}–${BPM_MAX}, or empty for none`}>Save</button>
+          <button className="btn modal-primary" onClick={handleSave}>Save</button>
         </div>
       </div>
     </div>
@@ -378,18 +272,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="modal-row">
       <span className="modal-label">{label}</span>
       <div className="modal-control">{children}</div>
-    </div>
-  )
-}
-
-function SmpteField({ label, value, max, onChange }: {
-  label: string; value: number; max: number; onChange: (v: string) => void
-}) {
-  return (
-    <div className="smpte-field">
-      <input type="number" className="smpte-input mono" min={0} max={max} value={value}
-        onChange={e => onChange(e.target.value)} onFocus={e => e.target.select()} />
-      <span className="smpte-label">{label}</span>
     </div>
   )
 }

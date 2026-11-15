@@ -210,6 +210,7 @@ input[type=range].bp-slider {
   padding-left: 12px; background: var(--live-header);
 }
 .modal-title { align-self: center; color: var(--text-hi); font-size: var(--fs-label); font-weight: 600; }
+.modal-title-sub { margin-left: var(--sp-2); color: var(--text-dim); font-weight: 400; }
 .btn.modal-close { height: 100%; width: 28px; padding: 0; color: var(--text-hi); }
 .btn.modal-close:hover { background: rgba(0, 0, 0, 0.2); }
 
