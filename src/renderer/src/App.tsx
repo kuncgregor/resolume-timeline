@@ -83,7 +83,7 @@ const shallowSame = (a: object, b: object) =>
 // the periodic sync does not mark the show dirty.
 const FOLLOW_TC_KEY = 'resolume-timeline:followTc'
 const ARENA_REC_LATENCY_MS = 40   // Arena starts writing ~38 ms after the record command (measured, 7.24)
-const STOP_CONFIRM_MS = 1500   // SHOW mode: second Space / ■ within this stops
+const STOP_CONFIRM_MS = 2500   // SHOW mode: second Space / ■ within this stops (a finger on a tablet needs the time)
 
 /** LTC input a clock source listens to ('ltc' = legacy A). */
 const ltcInputOf = (src: string): 'a' | 'b' | null => src === 'ltc-b' ? 'b' : src === 'ltc-a' || src === 'ltc' ? 'a' : null
@@ -547,6 +547,7 @@ export default function App() {
   const handleScrollY = useCallback((delta: number) => {
     setScrollY(prev => Math.max(0, prev + delta * 0.8))
   }, [])
+  const handleScrollYTo = useCallback((y: number) => setScrollY(Math.max(0, y)), [])
   const autoScrollRef = useRef(true)
 
   // ── Engine tick ────────────────────────────────────────────────────────────
@@ -2297,7 +2298,7 @@ export default function App() {
               audioTrack={show.audioTrack}
               audioDuration={audioLoaded ? audioEngineRef.current.duration : 0}
               waveformInfo={waveformInfo}
-              scrollY={scrollY} onScrollY={handleScrollY}
+              scrollY={scrollY} onScrollY={handleScrollY} onScrollYTo={handleScrollYTo}
               onScrollFrame={setScrollFrame} onSeek={handleSeek}
               onZoom={f => setPxPerFrame(p => Math.max(PPF_MIN, Math.min(PPF_MAX, p * f)))}
               onSelectCue={selectCue}

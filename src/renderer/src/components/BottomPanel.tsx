@@ -8,6 +8,7 @@ import { trackTag, shade } from '../laneColor'
 import { deckOfCue, type DeckInfo } from '../decks'
 import { knownClip } from '../resolver'
 import { mediaStartOf, trimModeFields } from '../../../shared/cues'
+import { TOUCH } from '../touch'
 
 const api = (window as any).timeline
 
@@ -216,7 +217,7 @@ export function BottomPanel({
   if (!track || !cue || trackIdx == null || cueIdx == null) {
     return (
       <div className="bottom-panel empty">
-        <span>Click a layer or clip in the timeline</span>
+        <span>{TOUCH ? 'Tap' : 'Click'} a layer or clip in the timeline</span>
         {roChip}
       </div>
     )

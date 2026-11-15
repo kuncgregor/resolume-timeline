@@ -394,10 +394,12 @@ function LayerParams({ tracks, fps, laneStatus }: { tracks: Track[]; fps: number
   const toF = (t: string) => smpteToFrames(t, fps)
   const layers = tracks.flatMap(t => {
     if (t.type !== 'layer' && t.type !== 'group') return []
+    // A layer with clips is listed even when none of its lanes changes (what is playing there)
     const lanes = (t as LayerTrack | GroupTrack).automations.filter(changes)
-    return lanes.length ? [{ t, lanes }] : []
+    const hasClips = t.type === 'layer' && (t as LayerTrack).clips.length > 0
+    return lanes.length || hasClips ? [{ t, lanes }] : []
   })
-  if (!layers.length) return <div className="rm-lp-empty">No parameter changes on this timeline</div>
+  if (!layers.length) return <div className="rm-lp-empty">No clips or parameter changes on this timeline</div>
   return (
     <>
       {layers.map(({ t, lanes }) => {

@@ -45,6 +45,8 @@ interface Props {
 }
 
 const remote: boolean = !!(window as any).timeline?.__remote
+// Room for the traffic lights: only the app window on a Mac (hidden title bar), not a browser
+const macWindow = /Electron/.test(navigator.userAgent) && /Mac/.test(navigator.platform)
 
 const entryMeta = (e: RundownEntry) => e.type === 'break'
   ? `⏸ Break ${(e as BreakEntry).duration}`
@@ -136,7 +138,7 @@ export function RundownStrip({
 
       {/* ── Top bar: file actions · mode · connection ── */}
       <div className="topbar">
-        <div className="topbar-mac-spacer" />
+        {macWindow && <div className="topbar-mac-spacer" />}
         {renaming !== null ? (
           <input className="topbar-title-edit" autoFocus value={renaming} onFocus={e => e.target.select()}
             onChange={e => setRenaming(e.target.value)}

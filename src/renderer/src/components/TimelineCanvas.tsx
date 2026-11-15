@@ -35,6 +35,7 @@ const KF_R = 4                  // keyframe glyph: 8px, 10px on hover
 const KF_HIT = TOUCH ? 14 : 6    // half of the 12px (touch 28px) keyframe hit area
 const MAX_CHOICE_BANDS = 12     // more options than this: no band separators
 const SNAP_PX = 8               // drags snap to markers / playhead / clip edges this close
+const TOUCH_TOOL_KEY = 'resolume-timeline:touch-tool'
 const DRAG_START_PX = TOUCH ? 10 : 3   // a clip moves only after this much travel (a click / tap must not nudge it)
 const AXIS_LOCK_PX = 4          // Shift-drag picks its axis after this much movement
 const FINE = 0.1                // Shift drag up / down: finer values (Live)
@@ -318,6 +319,7 @@ interface Props {
   overrides: Record<string, number>
   decks: DeckInfo[]            // Resolume decks; cues show which deck they fire from
   onScrollY: (delta: number) => void
+  onScrollYTo: (y: number) => void      // touch pan / scrollbar: an exact position (1:1 with the finger)
   onScrollFrame: (f: number) => void
   onSeek: (frame: number) => void
   onZoom: (factor: number) => void
@@ -362,7 +364,7 @@ interface ClipColorPicker { x: number; y: number; trackIdx: number; cueIdx: numb
 export function TimelineCanvas({
   tracks: tracksProp, markers, fps, tempo, rulerMode: rulerModeProp, snap, lockEnvelopes, playing, pxPerFrame, scrollFrame, draggingClip,
   autoLaneHeights, layerRowHeights, audioTrack, audioDuration, waveformInfo,
-  scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollFrame, onSeek, onZoom, onSelectCue,
+  scrollY, readOnly, laneStatus, overrides, decks, onScrollY, onScrollYTo, onScrollFrame, onSeek, onZoom, onSelectCue,
   onDropClip, placing, onPlaced, onUndo, onScaleRows, onUpdateCue, onEditTracks, historyTick, onAddKeyframe, onUpdateKeyframe, onDeleteKeyframe,
   onUpdateKeyframes, onDeleteKeyframes,
   onClipFade, onCrossfade, transitionSecs, clipFadeUnavailable, onCopyClipAutomation, onPasteClipAutomation, canPasteClipAutomation, laneClipboard, onPasteLaneOnCue, onSetDownbeat,
@@ -544,7 +546,7 @@ export function TimelineCanvas({
   }
 
   useEffect(() => {
-    if (readOnly) { setContextMenu(null); setClipColorPicker(null) }
+    if (readOnly) { setContextMenu(null); setClipColorPicker(null); setInsertMk(null) }
   }, [readOnly])
 
   /** Rows on screen, top to bottom: each track's clip row, then its shown lanes. */
@@ -995,19 +997,21 @@ export function TimelineCanvas({
           const title = `${clip.follow === false ? '⟳ ' : ''}${clip.clipName || `Clip ${clip.clipIndex}`}`
           ctx.fillText(fitText(ctx, title, textW), tx, by + titleH / 2 + 0.5)
           if (bh - titleH >= 13) {
+            // The body line starts at the clip's edge (the title line makes room for the deck badge)
+            const bx = Math.max(0, x) + 6, bw = Math.min(x + blockW, W) - bx - 4
             ctx.font = `10px ${T.fontTc}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'
             ctx.textBaseline = 'top'
             const slot = `#${clip.clipIndex}`
             const slotW = ctx.measureText(slot).width
-            if (slotW <= textW) ctx.fillText(slot, tx, by + titleH + 3)
+            if (slotW <= bw) ctx.fillText(slot, bx, by + titleH + 3)
             if (durF > 0) {
               const dur = framesToSmpte(durF, fps)
               const durW = ctx.measureText(dur).width
-              if (slotW + 8 + durW <= textW) ctx.fillText(dur, tx + slotW + 8, by + titleH + 3)
+              if (slotW + 8 + durW <= bw) ctx.fillText(dur, bx + slotW + 8, by + titleH + 3)
               // Edit trim mode, and where in its media the clip starts
               const ms = mediaStartOf(clip)
               const inTxt = [clip.trim === 'edit' ? 'edit' : '', ms > 0 ? `▸${framesToSmpte(ms, fps)}` : ''].filter(Boolean).join(' ')
-              if (inTxt && slotW + 16 + durW + ctx.measureText(inTxt).width <= textW) ctx.fillText(inTxt, tx + slotW + durW + 16, by + titleH + 3)
+              if (inTxt && slotW + 16 + durW + ctx.measureText(inTxt).width <= bw) ctx.fillText(inTxt, bx + slotW + durW + 16, by + titleH + 3)
             }
           }
           ctx.restore()
@@ -1026,7 +1030,7 @@ export function TimelineCanvas({
         }
 
         // Trim grip (only where hitTestClip offers one)
-        if (!isGhost && resizeZoneW(isCut ? 0 : durF, blockW) > 0 && bh - titleH >= 10) {
+        if (!isGhost && !readOnly && resizeZoneW(isCut ? 0 : durF, blockW) > 0 && bh - titleH >= 10) {
           ctx.fillStyle = 'rgba(255,255,255,0.3)'
           const gy = by + titleH + 3, gh = bh - titleH - 6
           ctx.fillRect(x + blockW - 7, gy, 1, gh)
@@ -1528,7 +1532,7 @@ export function TimelineCanvas({
     setTimeSel(null)
     onSelectCue(hit.trackIdx, hit.cueIdx)
     // Touch: the whole clip is its handle, so a tap on it also marks where Split cuts
-    if (TOUCH) setInsertMk({ f: snapDrag(rawF, false).f, row: { trackId: lt.id } })
+    if (TOUCH && canEdit(hit.trackIdx)) setInsertMk({ f: snapDrag(rawF, false).f, row: { trackId: lt.id } })
     const ids = next.filter(id => { const at = cueById(id); return !!at && canEdit(at.trackIdx) })
     if (!ids.length) return
     const f0 = Math.min(...ids.map(id => smpteToFrames(cueById(id)!.cue.time, fps)))
@@ -1756,7 +1760,8 @@ export function TimelineCanvas({
         // A click: no selection, the insert marker here; stopped, the playhead too (Live)
         const row = viewRows(getLayout())[sd.row0]?.row
         clearSelection()
-        setInsertMk(row ? { f: sd.f0, row } : null)
+        // SHOW mode: nothing gets pasted, so no insert marker (it looked like a second playhead)
+        setInsertMk(row && !readOnly ? { f: sd.f0, row } : null)
         if (!playing) onSeek(sd.f0)
       }
     }
@@ -1850,12 +1855,28 @@ export function TimelineCanvas({
   const fingersRef = useRef(new Map<number, { x: number; y: number }>())
   // Zoom and scroll as the gesture has set them: a touch screen sends both fingers' moves within
   // one frame, before React re-renders with the new props
-  const viewRef = useRef({ ppf: pxPerFrame, scroll: scrollFrame })
-  if (fingersRef.current.size < 2) viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame }
+  const pressRef = useRef<{ id: number; x: number; y: number; moved: boolean; long: boolean; timer: number | null; pan?: { x: number; y: number }; scrollOnly?: boolean } | null>(null)
+  const viewRef = useRef({ ppf: pxPerFrame, scroll: scrollFrame, y: scrollY })
+  if (fingersRef.current.size < 2 && !pressRef.current?.pan) viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame, y: scrollY }
   // Touch: the key tapped last (the toolbar's Del deletes it)
   const tappedKfRef = useRef<KfHit | null>(null)
   const pinchRef = useRef<{ cx: number; cy: number; dist: number } | null>(null)
-  const pressRef = useRef<{ id: number; x: number; y: number; moved: boolean; long: boolean; timer: number | null; pan?: { x: number; y: number } } | null>(null)
+
+  // How far the lanes can scroll: their full height against the space under the ruler
+  const contentH = (() => {
+    const lay = buildLayout(tracks, clipH, autoH, 0).filter(l => !l.hidden)
+    const last = lay[lay.length - 1]
+    return last ? last.y + last.totalH - TRACKS_TOP : 0
+  })()
+  const viewH = Math.max(0, (containerRef.current?.clientHeight ?? 0) - TRACKS_TOP)
+  const maxScrollY = Math.max(0, contentH - viewH)
+  const clampScrollY = (y: number) => Math.round(Math.max(0, Math.min(maxScrollY, y)))
+  // Touch tool: Scroll (default; one finger pans everywhere, a tap selects / seeks, nothing is
+  // moved by accident) or Edit (one finger edits as the mouse does). SHOW mode always scrolls.
+  const [touchTool, setTouchToolState] = useState<'scroll' | 'edit'>(() => {
+    try { return localStorage.getItem(TOUCH_TOOL_KEY) === 'edit' ? 'edit' : 'scroll' } catch { return 'scroll' }
+  })
+  const setTouchTool = (t: 'scroll' | 'edit') => { setTouchToolState(t); try { localStorage.setItem(TOUCH_TOOL_KEY, t) } catch { /* ignore */ } }
   const lastTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
 
   /** Drops whatever one finger started (a second finger turned it into a pan / pinch). */
@@ -1894,11 +1915,13 @@ export function TimelineCanvas({
       pressRef.current = null
       abortDrag()
       pinchRef.current = fingers()
-      viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame }
+      viewRef.current = { ppf: pxPerFrame, scroll: scrollFrame, y: scrollY }
       return
     }
     if (fingersRef.current.size > 2) return
-    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, long: false, timer: null as number | null }
+    // Scroll tool: one finger below the ruler only pans; the ruler / audio lane still scrub
+    const scrollOnly = (readOnly || touchTool === 'scroll') && localXY(e).y >= TRACKS_TOP
+    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, long: false, timer: null as number | null, scrollOnly }
     pressRef.current = press
     if (placing) return   // the tap drops the clips (on lift)
     press.timer = window.setTimeout(() => {
@@ -1908,7 +1931,7 @@ export function TimelineCanvas({
       abortDrag()
       handleContextMenu(fakeMouse(press.x, press.y))
     }, LONG_PRESS_MS)
-    handleMouseDown(e)
+    if (!scrollOnly) handleMouseDown(e)
   }
 
   const touchMove = (ev: PointerEvent) => {
@@ -1927,14 +1950,15 @@ export function TimelineCanvas({
       if (p.timer) { clearTimeout(p.timer); p.timer = null }
       // One finger on the empty background drags the view (a tablet has no wheel); the time
       // selection it would start with a mouse is dropped
-      if (selDragRef.current || !isDragging()) { selDragRef.current = null; p.pan = { x: ev.clientX, y: ev.clientY }; draw() }
+      if (p.scrollOnly || selDragRef.current || !isDragging()) { selDragRef.current = null; p.pan = { x: ev.clientX, y: ev.clientY }; draw() }
     }
     if (p.pan) {
       const view = viewRef.current
       const scroll = Math.max(0, view.scroll - (ev.clientX - p.pan.x) / view.ppf)
       if (scroll !== view.scroll) onScrollFrame(scroll)
-      if (ev.clientY !== p.pan.y) onScrollY(p.pan.y - ev.clientY)
-      viewRef.current = { ...view, scroll }
+      const y = clampScrollY(view.y + p.pan.y - ev.clientY)
+      if (y !== view.y) onScrollYTo(y)
+      viewRef.current = { ...view, scroll, y }
       p.pan = { x: ev.clientX, y: ev.clientY }
       return
     }
@@ -1951,8 +1975,9 @@ export function TimelineCanvas({
       if (ppf !== view.ppf) onZoom(ppf / view.ppf)
       const scroll = Math.max(0, pinch.cx / view.ppf + view.scroll - now.cx / ppf)
       if (scroll !== view.scroll) onScrollFrame(scroll)
-      if (Math.abs(now.cy - pinch.cy) >= 1) onScrollY(pinch.cy - now.cy)
-      viewRef.current = { ppf, scroll }
+      const y = clampScrollY(view.y + pinch.cy - now.cy)
+      if (y !== view.y) onScrollYTo(y)
+      viewRef.current = { ppf, scroll, y }
       pinchRef.current = ppf !== view.ppf ? now : { ...now, dist: pinch.dist }
     }
   }
@@ -1972,6 +1997,8 @@ export function TimelineCanvas({
     if (ev.type === 'pointercancel' || p.long) { abortDrag(); return }
     if (placing) { if (!p.moved) placeAt(ev); return }
     if (p.pan) { lastTapRef.current = null; return }
+    // Scroll tool: a tap does what a click does (select a clip, set the insert marker / playhead)
+    if (p.scrollOnly) handleMouseDown(fakeMouse(ev.clientX, ev.clientY))
     dragHandlersRef.current.up()
     if (p.moved) { lastTapRef.current = null; return }
     const last = lastTapRef.current, t = performance.now()
@@ -2361,6 +2388,11 @@ export function TimelineCanvas({
       />
       <canvas ref={overlayRef} className="timeline-overlay" />
 
+      {TOUCH && maxScrollY > 0 && (
+        // Touch: the lanes' position, and a thumb to drag them by (there is no wheel)
+        <VScroll top={TRACKS_TOP} viewH={viewH} contentH={contentH} scrollY={Math.min(scrollY, maxScrollY)}
+          onScrollYTo={y => onScrollYTo(clampScrollY(y))} />
+      )}
       {TOUCH && placing && (
         <div className="touch-banner">
           <span>Tap layer {placing[0].layerIndex} where {placing.length === 1 ? `"${placing[0].clipName}" goes` : `the ${placing.length} clips go (one after another)`}</span>
@@ -2372,6 +2404,13 @@ export function TimelineCanvas({
         // the timeline (not over it)
         <div className="touch-tools" onPointerDown={e => e.stopPropagation()}>
           {!readOnly && <>
+            <div className="seg touch-tool" role="group" aria-label="One finger">
+              <button className={`seg-btn${touchTool === 'scroll' ? ' on' : ''}`} onClick={() => setTouchTool('scroll')}
+                title="One finger scrolls the timeline; a tap selects a clip or moves the playhead. Nothing moves by accident.">Scroll</button>
+              <button className={`seg-btn${touchTool === 'edit' ? ' on' : ''}`} onClick={() => setTouchTool('edit')}
+                title="One finger edits: move and trim clips, drag keys, select time">Edit</button>
+            </div>
+            <span className="touch-sep" />
             <button className="btn" title="Undo (⌘Z)" onClick={() => onUndo(false)}>Undo</button>
             <button className="btn" title="Redo (⌘⇧Z)" onClick={() => onUndo(true)}>Redo</button>
             <span className="touch-sep" />
@@ -3064,4 +3103,30 @@ function drawAudioLane(
     ctx.fillStyle = T.text
     ctx.fillText(name, labelX, laneY + 5)
   }
+}
+
+/** Touch: a vertical scrollbar over the timeline's right edge. Drag the thumb, or tap the track
+ *  to page. Pointer-captured, so the finger can leave the bar. */
+function VScroll({ top, viewH, contentH, scrollY, onScrollYTo }: {
+  top: number; viewH: number; contentH: number; scrollY: number; onScrollYTo: (y: number) => void
+}) {
+  const max = Math.max(1, contentH - viewH)
+  const thumbH = Math.max(44, Math.round(viewH * viewH / contentH))
+  const travel = Math.max(1, viewH - thumbH)
+  const thumbTop = Math.round(scrollY / max * travel)
+  const drag = useRef<{ y: number; scroll: number } | null>(null)
+  return (
+    <div className="vscroll" style={{ top, height: viewH }}
+      onPointerDown={e => {
+        e.stopPropagation(); e.preventDefault()
+        const r = e.currentTarget.getBoundingClientRect(), y = e.clientY - r.top
+        if (y < thumbTop || y > thumbTop + thumbH) { onScrollYTo(scrollY + (y < thumbTop ? -viewH : viewH) * 0.9); return }
+        try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* pointer already gone */ }
+        drag.current = { y: e.clientY, scroll: scrollY }
+      }}
+      onPointerMove={e => { const d = drag.current; if (d) onScrollYTo(d.scroll + (e.clientY - d.y) * max / travel) }}
+      onPointerUp={() => { drag.current = null }} onPointerCancel={() => { drag.current = null }}>
+      <div className="vscroll-thumb" style={{ top: thumbTop, height: thumbH }} />
+    </div>
+  )
 }

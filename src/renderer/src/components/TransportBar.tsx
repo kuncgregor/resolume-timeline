@@ -104,11 +104,12 @@ export function TransportBar({
           title={readOnly && playing ? 'Locked while the show runs (SHOW mode)' : 'Go to start (Home)'}>⏮</button>
         <button className={`tbtn ${!playing ? 'stopped' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={onStop}
           title={readOnly && playing ? 'Stop — SHOW mode: press twice (Space twice)' : 'Stop (Space)'}>
-          ■{stopArmed && <span className="tbtn-label">AGAIN TO STOP</span>}
+          ■{stopArmed && <span className="tbtn-label">AGAIN</span>}
         </button>
-        <button className={`tbtn play ${playing ? 'on-live' : ''}`} onClick={playing ? onStop : onPlay}
-          title={playing ? 'Playing — Space to stop' : 'Play (Space)'}>
-          ▶{playing && <span className="tbtn-label">PLAY</span>}
+        {/* Playing, it stops too (as Space does): armed, it says so itself, where the finger is */}
+        <button className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={playing ? onStop : onPlay}
+          title={playing ? (readOnly ? 'Playing — tap twice to stop (SHOW mode)' : 'Playing — Space to stop') : 'Play (Space)'}>
+          {stopArmed ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">PLAY</span>}</>}
         </button>
         {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume */}
         <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={readOnly || remote}

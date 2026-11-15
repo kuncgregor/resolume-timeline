@@ -105,3 +105,15 @@ html.touch-large .tbtn.arena-rec { width: 112px; }
 /* Lane / layer resize handles a finger can catch, in both sizes */
 html.touch:not(.touch-large) .lane-resize-handle { height: 12px; }
 html.touch:not(.touch-large) .bp-resize-handle { height: 12px; }
+
+/* Scroll | Edit (what one finger does on the timeline) */
+.touch-tool { flex-shrink: 0; }
+.touch-tool .seg-btn { height: 40px; min-width: 64px; font-weight: 700; }
+
+/* Vertical scrollbar over the timeline's right edge (touch): wide enough for a finger */
+.vscroll { position: absolute; right: 0; width: 22px; z-index: 30; background: rgba(0, 0, 0, 0.35); touch-action: none; }
+.vscroll-thumb {
+  position: absolute; left: 4px; right: 4px; border-radius: 7px;
+  background: var(--bg-hover); box-shadow: inset 0 0 0 1px var(--border-field);
+}
+.vscroll:active .vscroll-thumb { background: var(--text-dim); }

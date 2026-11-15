@@ -207,6 +207,8 @@ html.phone-remote body { -webkit-user-select: none; user-select: none; -webkit-t
   .rm-scrub { grid-area: scrub; padding: 10px 16px 14px; }
   .rm-jumps { grid-area: jumps; }
   .rm-rundown { grid-area: rundown; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; background: var(--bg-gutter); }
+  /* the space under a short list: the panel's colour, not the gutter's */
+  .rm-rundown::after { content: ''; flex: 1 0 0; background: var(--bg-lane); }
   .rm-transport { grid-area: transport; }
   .rm-go { grid-area: go; }
   .rm-setup { display: inline-flex; align-items: center; height: 30px; }
@@ -234,7 +236,7 @@ html.phone-remote body { -webkit-user-select: none; user-select: none; -webkit-t
     grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
     grid-template-areas: "status" "offline" "now" "rundown" "rec" "clock" "scrub" "jumps" "transport" "go";
   }
-  .rm-rundown { max-height: 22vh; }
+  .rm-rundown { max-height: 34vh; }
 }
 
 /* Side panel tabs (wide screens): RUNDOWN / LAYERS */

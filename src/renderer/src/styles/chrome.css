@@ -659,6 +659,9 @@
 .health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-hi); animation: health-blink 1s steps(2, start) infinite; }
 @keyframes health-blink { to { visibility: hidden; } }
 .tbtn.stop-armed { background: var(--danger-fill); color: var(--text-hi); animation: stop-pulse 0.5s ease-in-out infinite alternate; }
+/* Armed: glyph over a short label, both inside the button (56 px ■, 96 px ▶) */
+.tbtn.stop-armed { flex-direction: column; gap: 2px; }
+.tbtn.stop-armed .tbtn-label { font-size: 10px; line-height: 1.15; text-align: center; padding: 0 4px; }
 @keyframes stop-pulse { to { opacity: 0.6; } }
 .chip.follow-chip { cursor: pointer; border: none; background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--bg-splitter); }
 .chip.follow-chip.on { color: var(--live); box-shadow: inset 0 0 0 1px var(--live); }
