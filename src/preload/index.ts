@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
-import type { Show, CueEvent, EngineState } from '../shared/show'
+import type { Show, CueEvent, ClipCue, EngineState } from '../shared/show'
 import type { ResolumeComposition } from '../shared/resolume'
 
 interface RemoteInfo { enabled: boolean; running: boolean; port: number; urls: string[]; error: string | null }
@@ -99,6 +99,7 @@ const api = {
     ipcRenderer.invoke('resolume:connect', host, oscPort, restPort),
 
   fireCue: (cue: CueEvent, layer: number) => ipcRenderer.invoke('cue:manualFire', cue, layer),
+  fireClip: (cue: ClipCue, layer: number) => ipcRenderer.invoke('clip:fire', cue, layer),
 
   sendLtcFrame: (ltcAbsFrame: number) => ipcRenderer.send('ltc:frame', ltcAbsFrame),
   sendLtcStop: () => ipcRenderer.send('ltc:stop'),

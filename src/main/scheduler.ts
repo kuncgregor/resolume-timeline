@@ -945,4 +945,8 @@ export class Scheduler {
   }
 
   manualTriggerCue(cue: CueEvent, layer: number) { this.fireCue(cue, layer) }
+
+  /** The inspector's Fire: the clip from its own deck (not whatever sits in that slot of the
+   *  deck Resolume shows). The timeline's state is left alone. */
+  fireClip(cue: ClipCue, layer: number) { if (layer >= 1) this.connectCue(layer, cue, 40) }
 }

@@ -125,7 +125,7 @@ export function BottomPanel({
       <span className="bp-clip" title={sub}>{sub}</span>
     </div>
   )
-  const fire = (t: LayerTrack, c: ClipCue) => api.triggerClip(t.resolumeLayerIndex, c.clipIndex)
+  const fire = (t: LayerTrack, c: ClipCue) => api.fireClip(c, t.resolumeLayerIndex)
 
   // GROUP view — the selected track is a layer group: its own parameters (master, opacity,
   // blend, bypass, group effects) polled live like the layer tab

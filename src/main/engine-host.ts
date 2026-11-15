@@ -14,7 +14,7 @@ import { Scheduler, type LaneTarget } from './scheduler'
 import { rv } from '../shared/resolume'
 import { isValidRundown, isValidShow } from '../shared/concert'
 import { SHOWFILE_EXT, SHOWFILE_FORMAT, isShowfile, showfileFileName } from '../shared/showfile'
-import type { Show, CueEvent } from '../shared/show'
+import type { Show, CueEvent, ClipCue } from '../shared/show'
 
 /** Per-user data folder, the same for the packaged app and the dev bridge. */
 export function appDataDir(): string {
@@ -303,6 +303,7 @@ export class EngineHost {
       return this.resolumeConnected
     },
     fireCue: (cue: CueEvent, layer: number) => { this.scheduler.manualTriggerCue(cue, layer); return null },
+    fireClip: (cue: ClipCue, layer: number) => { this.scheduler.fireClip(cue, layer); return null },
 
     // LTC timecode from the renderer's audio decoder
     sendLtcFrame: (ltcAbsFrame: number) => {

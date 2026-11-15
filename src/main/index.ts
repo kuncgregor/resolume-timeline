@@ -50,7 +50,7 @@ const ENGINE_CHANNELS: Record<string, string> = {
   'resolume:clearLayer': 'clearLayer', 'resolume:sendOsc': 'sendOsc', 'resolume:selectDeck': 'selectDeck',
   'resolume:setParamById': 'setParamById', 'resolume:getParamById': 'getParamById', 'resolume:resetParam': 'resetParam', 'resolume:resetParams': 'resetParams',
   'engine:reenable': 'reenableAutomation', 'engine:setRecordArmed': 'setRecordArmed',
-  'engine:setTargets': 'setTargets', 'cue:manualFire': 'fireCue',
+  'engine:setTargets': 'setTargets', 'cue:manualFire': 'fireCue', 'clip:fire': 'fireClip',
 }
 for (const [channel, method] of Object.entries(ENGINE_CHANNELS)) {
   ipcMain.handle(channel, (_e, ...args) => host.methods[method](...args))

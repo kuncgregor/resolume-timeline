@@ -164,6 +164,7 @@ if (!w.timeline) {
       rpc('connectResolume', host, oscPort, restPort),
 
     fireCue: (cue: unknown, layer: number) => rpc('fireCue', cue, layer),
+    fireClip: (cue: unknown, layer: number) => rpc('fireClip', cue, layer),
 
     sendLtcFrame: (ltcAbsFrame: number) => { rpc('sendLtcFrame', ltcAbsFrame) },
     sendLtcStop: () => { rpc('sendLtcStop') },
