@@ -170,7 +170,8 @@ onMiniChange(state => {
 })
 
 // The app menu: the standard ones, and View › Mini Window (an option beside the main window,
-// which always stays open)
+// which always stays open). No zoom items: VIEW › Scale is the page zoom. Reload and DevTools only
+// in development: a reload mid-show drops the LTC decoder and the audio track.
 function buildMenu() {
   const mac = process.platform === 'darwin'
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -182,10 +183,7 @@ function buildMenu() {
       submenu: [
         { label: 'Mini Window', type: 'checkbox' as const, checked: miniState().open, accelerator: 'Shift+CmdOrCtrl+M', click: () => toggleMini() },
         { type: 'separator' as const },
-        { role: 'reload' as const }, { role: 'toggleDevTools' as const },
-        { type: 'separator' as const },
-        { role: 'resetZoom' as const }, { role: 'zoomIn' as const }, { role: 'zoomOut' as const },
-        { type: 'separator' as const },
+        ...(app.isPackaged ? [] : [{ role: 'reload' as const }, { role: 'toggleDevTools' as const }, { type: 'separator' as const }]),
         { role: 'togglefullscreen' as const },
       ],
     },
