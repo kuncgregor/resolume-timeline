@@ -25,9 +25,9 @@ const api = {
   onClock: on<unknown>('clock:status'),
   // The mini show window: its commands go to the main window (remote:cmd), and its own layout
   remoteCommand: (cmd: string) => ipcRenderer.invoke('remote:command', cmd, clientId),
-  miniGet: (): Promise<{ open: boolean; orientation: 'horizontal' | 'vertical'; size: 's' | 'm' | 'l' | null }> => ipcRenderer.invoke('mini:get'),
+  miniGet: (): Promise<{ open: boolean; orientation: 'horizontal' | 'vertical'; size: 's' | 'm' | 'l' | null; edge: string }> => ipcRenderer.invoke('mini:get'),
   miniToggle: () => ipcRenderer.invoke('mini:toggle'),
-  miniLayout: (orientation: 'horizontal' | 'vertical', size: 's' | 'm' | 'l' | null) => ipcRenderer.invoke('mini:layout', orientation, size),
+  miniLayout: (orientation: 'horizontal' | 'vertical', size: 's' | 'm' | 'l' | null, edge?: string) => ipcRenderer.invoke('mini:layout', orientation, size, edge),
   onMiniState: on<{ open: boolean; orientation: 'horizontal' | 'vertical'; size: 's' | 'm' | 'l' | null }>('mini:state'),
   onRemoteCmd: on<{ cmd: string; from: string | null }>('remote:cmd'),
   stop: () => ipcRenderer.invoke('engine:stop', clientId),

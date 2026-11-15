@@ -6,7 +6,7 @@ import { loadAudioFile, AUDIO_EXTENSIONS } from './audio-file'
 import { EngineHost, appDataDir, showfilesDir, readShowfile } from './engine-host'
 import { SHOWFILE_EXT, showfileFileName } from '../shared/showfile'
 import { WebServer, lanAddresses } from './web-server'
-import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, miniAppQuitting, type MiniOrientation, type MiniSize } from './mini-window'
+import { openMini, closeMini, setMiniLayout, miniState, onMiniChange, miniWindow, miniWasOpen, miniAppQuitting, type MiniOrientation, type MiniSize, type MiniEdge } from './mini-window'
 import type { Show } from '../shared/show'
 
 // One engine per computer: a second launch only brings the running app to the front
@@ -150,7 +150,7 @@ ipcMain.handle('mini:toggle', () => {
   if (miniWindow()) closeMini(); else openMini(process.env['ELECTRON_RENDERER_URL'], rendererFile())
   return miniState()
 })
-ipcMain.handle('mini:layout', (_e, orientation: MiniOrientation, size: MiniSize | null) => { setMiniLayout(orientation, size); return miniState() })
+ipcMain.handle('mini:layout', (_e, orientation: MiniOrientation, size: MiniSize | null, edge?: MiniEdge) => { setMiniLayout(orientation, size, edge); return miniState() })
 onMiniChange(state => { if (win && !win.isDestroyed()) win.webContents.send('mini:state', state) })
 
 ipcMain.handle('remote:get', () => remoteInfo())

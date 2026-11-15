@@ -21,7 +21,7 @@ const api = (window as any).timeline
 const CONFIRM_MS = 2500
 
 type Session = { rundown: RundownEntry[]; activeId: string; showMode?: boolean }
-type Layout = { orientation: 'horizontal' | 'vertical'; size: 's' | 'm' | 'l' | null }
+type Layout = { orientation: 'horizontal' | 'vertical'; size: 's' | 'm' | 'l' | null; edge?: 'top' | 'bottom' | 'left' | 'right' }
 
 const entryName = (e: RundownEntry | undefined | null) => !e ? '—' : e.type === 'show' ? e.show.name : e.label || 'Break'
 
@@ -95,7 +95,7 @@ export function MiniShow() {
   const next = session.rundown[idx + 1] ?? null
   const show = entry?.type === 'show' ? entry.show : null
   const ltc = show && ['ltc', 'ltc-a', 'ltc-b'].includes(show.clock.source)
-  const setLayoutTo = (o: Layout['orientation'], size: Layout['size']) => api.miniLayout?.(o, size).then(setLayout, () => {})
+  const setLayoutTo = (o: Layout['orientation'], size: Layout['size'], edge?: Layout['edge']) => api.miniLayout?.(o, size, edge).then(setLayout, () => {})
 
   return (
     <div className={`mini ${vertical ? 'mini-v' : 'mini-h'}${session.showMode ? ' show-mode' : ''}${playing ? ' playing' : ''}`}>
@@ -147,7 +147,14 @@ export function MiniShow() {
                   onClick={() => setLayoutTo(layout?.orientation ?? (vertical ? 'vertical' : 'horizontal'), z)}>{z.toUpperCase()}</button>
               ))}
             </div>
-            <div className="mini-menu-note">Or drag the window's edge</div>
+            {/* The bar spans the screen; it sits on this edge (dragged, it docks to the nearest one) */}
+            <div className="mini-menu-row"><span>Edge</span>
+              {((vertical ? ['left', 'right'] : ['top', 'bottom']) as NonNullable<Layout['edge']>[]).map(ed => (
+                <button key={ed} className={`seg-btn${layout?.edge === ed ? ' on' : ''}`}
+                  onClick={() => setLayoutTo(layout?.orientation ?? (vertical ? 'vertical' : 'horizontal'), null, ed)}>{ed[0].toUpperCase() + ed.slice(1)}</button>
+              ))}
+            </div>
+            <div className="mini-menu-note">Or drag its inner edge for any size</div>
             <button className="mini-menu-close" onClick={() => { setMenu(false); api.miniToggle?.() }}>Close mini window</button>
             <button className="mini-menu-close done" onClick={() => setMenu(false)}>Done</button>
           </div>
