@@ -66,6 +66,12 @@ export function MiniShow() {
   const clock = useClock()
   const vertical = useMedia('(orientation: portrait)')
   const [menu, setMenu] = useState(false)
+  useEffect(() => {
+    if (!menu) return
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(false) }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [menu])
   const [layout, setLayout] = useState<Layout | null>(null)
   useEffect(() => { api.miniGet?.().then(setLayout, () => {}) }, [])
 

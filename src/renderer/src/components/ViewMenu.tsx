@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDismiss } from './useEscape'
 import { TOUCH, UI_SCALE, UI_SCALES, touchSettings } from '../touch'
 import { clearForcedView, showSize, showStyle, usePhone, useShowSize, useShowStyle } from './show/view'
 
 // VIEW menu, per device: what SHOW mode looks like here (Tablet / Desktop), touch mode, size and
 // scale. In the editor's top bar and in the show view's band (a tablet must reach Scale there too).
 
-export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾' }: {
-  showMode: boolean; className?: string; label?: string
+export function ViewMenu({ showMode, playing = false, className = 'btn ghost', label = 'View ▾' }: {
+  showMode: boolean; playing?: boolean; className?: string; label?: string
 }) {
   const [open, setOpen] = useState(false)
   const style = useShowStyle()
@@ -16,33 +17,18 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
   // The mini show window (the app only: a browser can't float a window over Resolume)
   const api = (window as any).timeline
   const [miniOpen, setMiniOpen] = useState(false)
+  // Touch, Size and Scale reload the page. The app window (not a tablet) decodes LTC and plays
+  // the audio track: while the timeline runs they wait
+  const reloadLocked = playing && !api?.__remote
+  const lockedTitle = 'Stop the timeline first: this reloads the window (LTC and the audio track would drop)'
   useEffect(() => {
     if (!api?.miniGet) return
     api.miniGet().then((st: { open: boolean }) => setMiniOpen(st.open), () => {})
     return api.onMiniState?.((st: { open: boolean }) => setMiniOpen(st.open))
   }, [])
 
-  useEffect(() => {
-    if (!open) return
-    // A tap outside only closes the menu: during a show it could land on PLAY, STOP or GO.
-    // Caught before anything else sees it (capture on the window), its click too.
-    let swallow = false
-    const close = (e: PointerEvent) => {
-      if (rootRef.current?.contains(e.target as Node)) return
-      e.stopPropagation(); e.preventDefault()
-      swallow = true; setOpen(false)
-    }
-    const click = (e: MouseEvent) => { if (swallow) { swallow = false; e.stopPropagation(); e.preventDefault() } }
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    window.addEventListener('pointerdown', close, true)
-    window.addEventListener('click', click, true)
-    window.addEventListener('keydown', esc)
-    return () => {
-      window.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', esc)
-      // The click of the closing tap comes after the menu is gone: still swallowed
-      setTimeout(() => window.removeEventListener('click', click, true), 400)
-    }
-  }, [open])
+  const close = useCallback(() => setOpen(false), [])
+  useDismiss(open, rootRef, close)
 
   return (
     <div className="menu-anchor" ref={rootRef}>
@@ -82,7 +68,8 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
             <span>Touch</span>
             {(['auto', 'on', 'off'] as const).map(m => (
               <button key={m} className={`seg-btn${touchSettings.mode() === m ? ' on' : ''}`}
-                title={m === 'auto' ? 'On for touch screens (tablets)' : m === 'on' ? 'Finger gestures and the touch toolbar on this device' : 'Mouse and keyboard only'}
+                disabled={reloadLocked && touchSettings.mode() !== m}
+                title={reloadLocked ? lockedTitle : m === 'auto' ? 'On for touch screens (tablets)' : m === 'on' ? 'Finger gestures and the touch toolbar on this device' : 'Mouse and keyboard only'}
                 onClick={() => touchSettings.setMode(m)}>{m === 'auto' ? 'Auto' : m === 'on' ? 'On' : 'Off'}</button>
             ))}
           </div>
@@ -91,7 +78,8 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
               <span>Size</span>
               {(['large', 'compact'] as const).map(z => (
                 <button key={z} className={`seg-btn${touchSettings.size() === z ? ' on' : ''}`}
-                  title={z === 'large' ? 'Finger-sized buttons and rows' : 'Desktop sizes: more fits on the screen'}
+                  disabled={reloadLocked && touchSettings.size() !== z}
+                  title={reloadLocked ? lockedTitle : z === 'large' ? 'Finger-sized buttons and rows' : 'Desktop sizes: more fits on the screen'}
                   onClick={() => touchSettings.setSize(z)}>{z === 'large' ? 'Large' : 'Compact'}</button>
               ))}
             </div>
@@ -100,7 +88,8 @@ export function ViewMenu({ showMode, className = 'btn ghost', label = 'View ▾'
             <div className="view-menu-row" title="The whole page drawn smaller, so more fits (tablets and the app window; in a desktop browser use its zoom)">
               <span>Scale</span>
               {UI_SCALES.map(v => (
-                <button key={v} className={`seg-btn${UI_SCALE === v ? ' on' : ''}`} onClick={() => touchSettings.setScale(v)}>{Math.round(v * 100)}%</button>
+                <button key={v} className={`seg-btn${UI_SCALE === v ? ' on' : ''}`}
+                  disabled={reloadLocked && UI_SCALE !== v} title={reloadLocked ? lockedTitle : undefined} onClick={() => touchSettings.setScale(v)}>{Math.round(v * 100)}%</button>
               ))}
             </div>
           )}

@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { useDismiss } from './useEscape'
 import { TabletAccess } from './TabletAccess'
 import { ViewMenu } from './ViewMenu'
 import { useFrame } from '../frameStore'
@@ -66,6 +67,9 @@ export function RundownStrip({
   onToggleShowMode, onReconnect,
 }: Props) {
   const [menu, setMenu] = useState<'add' | 'file' | null>(null)
+  const fileRef = useRef<HTMLDivElement>(null), addRef = useRef<HTMLDivElement>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  useDismiss(menu !== null, menu === 'add' ? addRef : fileRef, closeMenu)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropSide, setDropSide] = useState<'before' | 'after'>('after')
@@ -163,7 +167,7 @@ export function RundownStrip({
         )}
 
         <div className="topbar-group">
-          <div className="menu-anchor">
+          <div className="menu-anchor" ref={fileRef}>
             <button className="btn ghost" disabled={remote} title={remote ? FILES : 'Showfile: every timeline of the show in one file'}
               onClick={e => { e.stopPropagation(); setMenu(m => m === 'file' ? null : 'file') }}>
               Showfile ▾
@@ -192,7 +196,7 @@ export function RundownStrip({
             )}
           </div>
 
-          <div className="menu-anchor">
+          <div className="menu-anchor" ref={addRef}>
             <button className="btn ghost" disabled={showMode}
               onClick={e => { e.stopPropagation(); setMenu(m => m === 'add' ? null : 'add') }}>
               + Add ▾
@@ -217,7 +221,7 @@ export function RundownStrip({
             title={remote ? 'Timecode and audio settings are made on the computer running the app' : 'Timeline settings'}>⚙</button>
 
           {/* How this screen shows the app: show view, touch mode, size and scale (per device) */}
-          <ViewMenu showMode={showMode} />
+          <ViewMenu showMode={showMode} playing={playing} />
         </div>
 
         <div className="spacer" />
@@ -316,7 +320,7 @@ export function RundownStrip({
 
         {/* Now → Next → GO: what is running, what GO will load, and the button itself */}
         <div className="now-next">
-          <button className="nn-back" onClick={() => onGo(-1)} disabled={activeIdx <= 0}
+          <button className="nn-back" tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => onGo(-1)} disabled={activeIdx <= 0}
             title={activeIdx > 0 ? `Back to: ${entryName(rundown[activeIdx - 1])}` : 'This is the first entry'}>←</button>
           <div className={`nn-card now ${playing ? 'live' : ''}`}>
             <div className="nn-head">
@@ -340,7 +344,7 @@ export function RundownStrip({
             <div className="nn-name" title={next ? entryName(next) : ''}>{next ? entryName(next) : 'End of rundown'}</div>
             <div className="nn-sub">{next ? entryMeta(next) : 'No more entries'}</div>
           </div>
-          <button className="go-btn" onClick={() => onGo(1)} disabled={!next}
+          <button className="go-btn" tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => onGo(1)} disabled={!next}
             title={next ? `GO: load “${entryName(next)}” (Enter)` : 'No next entry'}>
             <span className="go-word">GO →</span>
             <span className="go-hint">{next ? `load ${String(activeIdx + 2).padStart(2, '0')}` : 'end'}</span>

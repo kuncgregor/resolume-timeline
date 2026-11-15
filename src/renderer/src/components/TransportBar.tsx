@@ -112,24 +112,26 @@ export function TransportBar({
       : arenaRec.armed ? 'ARMED' : 'REC ARENA'}</span></button>
   )
 
+  // The transport buttons never keep keyboard focus: Enter is GO and Space Play / Stop wherever
+  // the mouse clicked last (a focused ■ took Enter as a second click, and stopped the show)
   const buttons = (
       <div className="transport-buttons">
-        <button className="tbtn" onClick={() => onLocate(0)} disabled={readOnly && playing}
+        <button tabIndex={-1} onMouseDown={e => e.preventDefault()} className="tbtn" onClick={() => onLocate(0)} disabled={readOnly && playing}
           title={readOnly && playing ? 'Locked while the show runs (SHOW mode)' : 'Go to start (Home)'}>⏮</button>
-        <button className={`tbtn ${!playing ? 'stopped' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={onStop}
+        <button tabIndex={-1} onMouseDown={e => e.preventDefault()} className={`tbtn ${!playing ? 'stopped' : ''} ${stopArmed ? 'stop-armed' : ''}`} onClick={onStop}
           title={readOnly && playing ? 'Stop — SHOW mode: press twice (Space twice)' : 'Stop (Space)'}>
           ■{stopArmed && <span className="tbtn-label">AGAIN</span>}
         </button>
         {/* Playing, it stops too (as Space does): armed, it says so itself, where the finger is */}
         {/* SHOW mode: only ■ stops (a second "did it register?" press on ▶ must not end the show) */}
-        <button className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed && !readOnly ? 'stop-armed' : ''}`}
+        <button tabIndex={-1} onMouseDown={e => e.preventDefault()} className={`tbtn play ${playing ? 'on-live' : ''} ${stopArmed && !readOnly ? 'stop-armed' : ''}`}
           onClick={playing ? (readOnly ? undefined : onStop) : onPlay}
           title={playing ? (readOnly ? 'Playing — ■ stops (twice, SHOW mode)' : 'Playing — Space to stop') : 'Play (Space)'}>
           {stopArmed && !readOnly ? <>■<span className="tbtn-label">AGAIN TO STOP</span></> : <>▶{playing && <span className="tbtn-label">PLAYING</span>}</>}
         </button>
         {/* Record sits with the transport like in a DAW: arm it, then change parameters in Resolume
             (not in SHOW mode: nothing is edited there) */}
-        {!readOnly && <button className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={remote}
+        {!readOnly && <button tabIndex={-1} onMouseDown={e => e.preventDefault()} className={`tbtn rec ${recordArmed ? 'armed' : ''}`} onClick={onToggleRecord} disabled={remote}
           title={remote ? 'KEYS records on the computer running the app' : recordArmed
             ? 'KEYS armed (auto-key): changes to automated parameters in Resolume are written as keyframes at the playhead'
             : 'KEYS (auto-key): record changes you make in Resolume as keyframes — not a video recording (that is REC ARENA)'}>

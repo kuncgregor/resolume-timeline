@@ -1101,14 +1101,10 @@ export default function App() {
           playRef.current()
         }
       }
-      if (e.code === 'Home' && showLockedRef()) { e.preventDefault(); return }
-      if (e.code === 'Home') { e.preventDefault(); api.locate(0); setScrollFrame(0); autoScrollRef.current = true
-        if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(0)
-        else audioEngineRef.current.stop()
-      }
+      if (e.code === 'Home') { e.preventDefault(); toStartRef.current() }
       if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault()
-        if (!e.repeat) goRef.current(1)
+        if (!e.repeat) confirmedGoRef.current(1)
       }
       // N: snap to grid on / off (as in DaVinci Resolve); an edit setting, so not in SHOW mode
       if (e.code === 'KeyN' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !showModeRef.current) {
@@ -1211,7 +1207,7 @@ export default function App() {
       else if (cmd === 'go') goRef.current(1)
       else if (cmd === 'back') goRef.current(-1)
       // To the timeline's start, as Home does; not while a SHOW runs (the playhead is locked)
-      else if (cmd === 'start' && !showLockedRef()) { api.locate(0); setScrollFrame(0); autoScrollRef.current = true }
+      else if (cmd === 'start') toStartRef.current()
     })
   }, [setArenaRec])
 
@@ -1249,6 +1245,16 @@ export default function App() {
   useEffect(() => () => clearTimeout(stopTimerRef.current), [])
   const stopRef = useRef(requestStop)
   stopRef.current = requestStop
+  // To the timeline's start (Home, the mini window's ⏮); not while a SHOW plays (the playhead is
+  // locked). The audio track follows: this window's own locate doesn't come back to it.
+  const toStart = useCallback(() => {
+    if (showLockedRef()) return
+    api.locate(0); setScrollFrame(0); autoScrollRef.current = true
+    if (engineRef.current.playing && audioLoadedRef.current) audioEngineRef.current.play(0)
+    else audioEngineRef.current.stop()
+  }, [])
+  const toStartRef = useRef(toStart)
+  toStartRef.current = toStart
 
   const handleLocate = useCallback((frame: number) => {
     if (showLockedRef()) return
@@ -1326,6 +1332,14 @@ export default function App() {
   }, [rundown, activeId, handleSelectEntry])
   const goRef = useRef(handleGo)
   goRef.current = handleGo
+  // GO / BACK from a button or Enter: while a SHOW plays it takes a second press, like a card
+  // (one stray Enter would load the next timeline and stop the show)
+  const confirmedGo = useCallback((direction: 1 | -1) => {
+    const target = rundown[rundown.findIndex(e => e.id === activeId) + direction]
+    if (target && !needsConfirm(target.id)) handleGo(direction)
+  }, [rundown, activeId, needsConfirm, handleGo])
+  const confirmedGoRef = useRef(confirmedGo)
+  confirmedGoRef.current = confirmedGo
 
   const handleReconnect = useCallback(() => {
     api.connectResolume(show.resolume.host, show.resolume.oscPort, show.resolume.restPort)
@@ -1351,20 +1365,27 @@ export default function App() {
     name?: string; clock?: { source: Show['clock']['source']; offset: string }
     tempo?: Pick<Show, 'bpm' | 'beatsPerBar' | 'downbeat' | 'tempoResync'>   // undefined fields = none / default
   }) => {
+    const edited = (show: Show): Show => {
+      const renamed = updates.name !== undefined && updates.name !== show.name
+      const reclocked = !!updates.clock && (updates.clock.source !== show.clock.source || updates.clock.offset !== show.clock.offset)
+      const t = updates.tempo
+      const retimed = !!t && (t.bpm !== show.bpm || (t.beatsPerBar ?? 4) !== (show.beatsPerBar ?? 4)
+        || (t.downbeat || '00:00:00:00') !== (show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'off') !== (show.tempoResync ?? 'off'))
+      return renamed || reclocked || retimed ? {
+        ...show,
+        ...(renamed ? { name: updates.name! } : {}),
+        ...(reclocked ? { clock: { ...show.clock, ...updates.clock } } : {}),
+        ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat, tempoResync: t!.tempoResync } : {}),
+      } : show
+    }
+    // The running timeline's name, clock and tempo are an undo step like any edit (else ⌘Z
+    // would quietly take them back together with the edit before)
+    const active = id === activeIdRef.current
+    if (active && edited(showRef.current) !== showRef.current) setShow(edited)
     setRundown(prev => prev.map(e => {
       if (e.id !== id) return e
       if (e.type === 'show') {
-        const renamed = updates.name !== undefined && updates.name !== e.show.name
-        const reclocked = !!updates.clock && (updates.clock.source !== e.show.clock.source || updates.clock.offset !== e.show.clock.offset)
-        const t = updates.tempo
-        const retimed = !!t && (t.bpm !== e.show.bpm || (t.beatsPerBar ?? 4) !== (e.show.beatsPerBar ?? 4)
-          || (t.downbeat || '00:00:00:00') !== (e.show.downbeat || '00:00:00:00') || (t.tempoResync ?? 'off') !== (e.show.tempoResync ?? 'off'))
-        const show = renamed || reclocked || retimed ? {
-          ...e.show,
-          ...(renamed ? { name: updates.name! } : {}),
-          ...(reclocked ? { clock: { ...e.show.clock, ...updates.clock } } : {}),
-          ...(retimed ? { bpm: t!.bpm, beatsPerBar: t!.beatsPerBar, downbeat: t!.downbeat, tempoResync: t!.tempoResync } : {}),
-        } : e.show
+        const show = active ? e.show : edited(e.show)
         return {
           ...e, color: updates.color ?? e.color, notes: updates.notes ?? e.notes,
           ...(show !== e.show ? { show, dirty: true } : {}),
@@ -1372,7 +1393,7 @@ export default function App() {
       }
       return { ...e, ...updates }
     }))
-  }, [])
+  }, [setShow])
 
   // Export the active timeline as its own file (a copy; the showfile keeps it too)
   const handleExportTimeline = useCallback(async () => {
@@ -2244,11 +2265,7 @@ export default function App() {
       arenaRec={arenaRec}
       onPlay={handlePlay} onStop={requestStop}
       onLocate={handleLocate} onSeek={handleSeek}
-      onGo={dir => {
-        // A thumb on a phone hits GO by accident more easily than Enter: confirm like the rundown does
-        const target = rundown[rundown.findIndex(e => e.id === activeId) + dir]
-        if (target && !needsConfirm(target.id)) handleGo(dir)
-      }}
+      onGo={confirmedGo}
       onToggleArenaRec={() => {
         // Stopping a take stops the show: in SHOW mode it takes a second tap, like ■
         if (arenaRecRef.current.state !== 'idle' && needsConfirm('stop')) return
@@ -2277,7 +2294,7 @@ export default function App() {
         currentDeck={selectedDeck ? { index: selectedDeck.index, name: selectedDeck.name, color: selectedDeck.color, count: decks.length } : null}
         onSelect={id => { if (id !== activeId && !needsConfirm(id)) handleSelectEntry(id) }}
         confirmEntryId={entryArmed}
-        onGo={handleGo}
+        onGo={confirmedGo}
         onReorder={handleReorder}
         onAddShow={handleAddShow}
         onAddBreak={handleAddBreak}
@@ -2347,7 +2364,7 @@ export default function App() {
         {...health}
         fps={fps}
         onDismissRecError={() => setArenaRec({ error: null })}
-        onReenable={handleReenable}
+        onReenable={ids => { if (!needsConfirm('manual')) handleReenable(ids) }}
         onReconnect={handleReconnect}
       />
 

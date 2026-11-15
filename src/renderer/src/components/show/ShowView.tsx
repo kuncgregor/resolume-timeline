@@ -181,7 +181,7 @@ function Band(p: Props & { off: boolean; locked: boolean; phone: boolean }) {
       <RecButton rec={p.arenaRec} fps={p.fps} stopArmed={p.stopArmed && recording}
         disabled={p.off || (p.locked && !recording)} onToggle={() => { buzz(); p.onToggleArenaRec() }} />
       {/* This device only: Tablet / Desktop style, scale (SHOW mode stays on for everyone) */}
-      <ViewMenu showMode={p.showMode} className="sv-setup" label="VIEW" />
+      <ViewMenu showMode={p.showMode} playing={p.playing} className="sv-setup" label="VIEW" />
       {/* A phone has only this view: no editor to go to */}
       {!p.phone && (
         <button className={`sv-setup${p.setupArmed ? ' armed' : ''}`} disabled={p.off} onClick={() => { buzz(); p.onSetup() }}

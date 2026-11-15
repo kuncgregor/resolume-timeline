@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { frameStore } from '../frameStore'
 import type { Track, LayerTrack, GroupTrack, ClipCue, Keyframe, Show, AutomationSubTrack, LaneKind, Marker } from '../../../shared/show'
 import { MarkerMenu, DEFAULT_MARKER_COLOR } from './MarkerMenu'
+import { useDismiss } from './useEscape'
 import { BASIC_CURVES, FAMILY_CURVES, curveLabel, curveOf, lowerBound, sampleLane } from '../../../shared/automation'
 import {
   type Material, type Row, type TimeSel, type EditCtx, type KeyMove,
@@ -395,25 +396,13 @@ export function TimelineCanvas({
   const [clipColorPicker, setClipColorPicker] = useState<ClipColorPicker | null>(null)
   // frame: where a marker goes (snapped); raw: the frame clicked (bar 1 is set exactly there)
   const [rulerMenu, setRulerMenu] = useState<{ x: number; y: number; frame: number; raw: number; section?: string } | null>(null)
-  // The Bar 1 menu closes on any click outside it (headers, transport, panels) and on Escape
-  useEffect(() => {
-    if (!rulerMenu) return
-    const close = () => setRulerMenu(null)
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
-    document.addEventListener('mousedown', close)
-    window.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
-  }, [rulerMenu])
   // Marker editor (ruler right-click / double-click on a marker, or a new marker)
   const [markerMenu, setMarkerMenu] = useState<{ x: number; y: number; id: string } | null>(null)
-  useEffect(() => {
-    if (!markerMenu) return
-    const close = () => setMarkerMenu(null)
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
-    document.addEventListener('mousedown', close)
-    window.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
-  }, [markerMenu])
+  // Every menu here (key, clip, ruler, marker) closes on Escape and on a press anywhere outside
+  // it, and that press does nothing else (it could land on the transport)
+  const menusRef = useRef<HTMLDivElement>(null)
+  const closeMenus = useCallback(() => { setContextMenu(null); setClipColorPicker(null); setRulerMenu(null); setMarkerMenu(null) }, [])
+  useDismiss(!!(contextMenu || clipColorPicker || rulerMenu || markerMenu), menusRef, closeMenus)
   const markerDragRef = useRef<{ id: string; moved: boolean } | null>(null)
   const [fadeSeconds, setFadeSeconds] = useState(1)   // clip menu fade length, kept for the session
   const [hoverKf, setHoverKf] = useState<KfHit | null>(null)
@@ -2571,6 +2560,8 @@ export function TimelineCanvas({
         toolSlot,
       )}
 
+      {/* The open menu (one at a time): Esc and a press outside close it (useDismiss) */}
+      <div ref={menusRef} style={{ display: 'contents' }}>
       {contextMenu && (() => {
         const { trackIdx: ti, autoIdx: ai, kfIdx: ki } = contextMenu
         const auto = autoAt(ti, ai)
@@ -2712,7 +2703,7 @@ export function TimelineCanvas({
             <div className="ctx-hint">now at {framesToSmpte(tempo.downbeatF, fps)} · {tempo.bpm} BPM {tempo.beatsPerBar}/4</div>
             <button className="ctx-btn" title="The exact frame clicked (not snapped)" onClick={() => set(rulerMenu.raw)}>Set bar 1 here <span className="ctx-dim mono">{framesToSmpte(rulerMenu.raw, fps)}</span></button>
             <button className="ctx-btn" onClick={() => set(frameStore.get())}>Set bar 1 at playhead</button>
-            <div className="ctx-row">
+            <div className="ctx-row wrap">
               <label>Nudge</label>
               <div className="ctx-seg">
                 <button className="ctx-seg-btn" title="Bar 1 one beat earlier" onClick={() => nudge(-beatF)}>−beat</button>
@@ -2869,9 +2860,10 @@ export function TimelineCanvas({
             </>
           })()}
           <div className="ctx-divider" />
-          <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Cancel</button>
+          <button className="ctx-btn dim" onClick={() => setClipColorPicker(null)}>Close</button>
         </div>
       )}
+      </div>
     </div>
   )
 }
