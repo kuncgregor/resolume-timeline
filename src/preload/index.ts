@@ -110,6 +110,8 @@ const api = {
 
   sendLtcFrame: (ltcAbsFrame: number) => ipcRenderer.send('ltc:frame', ltcAbsFrame),
   sendLtcStop: () => ipcRenderer.send('ltc:stop'),
+  sendLtcTc: (tc: string, input: 'a' | 'b') => ipcRenderer.send('ltc:tc', tc, input),
+  onLtcTc: on<{ tc: string; input: 'a' | 'b' }>('ltc:tc'),
 
   onTick: (cb: (state: EngineState) => void) => {
     const h = (_: unknown, s: EngineState) => cb(s)

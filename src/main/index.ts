@@ -59,6 +59,7 @@ for (const [channel, method] of Object.entries(ENGINE_CHANNELS)) {
 // LTC timecode from the renderer's audio decoder (fire and forget, at frame rate)
 ipcMain.on('ltc:frame', (_e, ltcAbsFrame: number) => { host.methods.sendLtcFrame(ltcAbsFrame) })
 ipcMain.on('ltc:stop', () => { host.methods.sendLtcStop() })
+ipcMain.on('ltc:tc', (_e, tc: string, input: string) => { host.methods.ltcTcPublish(tc, input) })
 
 // ── IPC: files (native dialogs) ───────────────────────────────────────────────
 

@@ -212,6 +212,8 @@ if (!w.timeline) {
 
     sendLtcFrame: (ltcAbsFrame: number) => { rpc('sendLtcFrame', ltcAbsFrame).catch(() => {}) },
     sendLtcStop: () => { rpc('sendLtcStop').catch(() => {}) },
+    sendLtcTc: (tc: string, input: string) => { rpc('ltcTcPublish', tc, input).catch(() => {}) },
+    onLtcTc: on('ltc:tc'),
 
     onTick: on('engine:tick'),
     onResolumeStatus: on('resolume:status'),

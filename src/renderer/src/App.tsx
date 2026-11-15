@@ -1058,7 +1058,9 @@ export default function App() {
     let followedTo: string | null = null, followedAt = 0
     decoder.onFrame = (_abs, hh, mm, ss, ff) => {
       const pad = (n: number) => String(n).padStart(2, '0')
-      ltcTcStore.set(`${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`)
+      const tc = `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`
+      ltcTcStore.set(tc)
+      api.sendLtcTc?.(tc, ltcInputRef.current)
       setLtcActive(true)
       const f = fpsRef.current
       const ltcFps = f > 30 ? f / 2 : f

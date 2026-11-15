@@ -211,6 +211,12 @@ export class EngineHost {
     arenaRecPublish: (state: unknown) => { this.arenaRec = state; this.emit('arena:rec', state); return null },
     arenaRecGet: () => this.arenaRec,
     clockPublish: (status: unknown) => { this.clockStatus = status; this.emit('clock:status', status); return null },
+    // The incoming LTC as the window decodes it, every frame (also when it isn't this
+    // timeline's): the mini window and tablets show which timecode is coming in
+    ltcTcPublish: (tc: string, input: string) => {
+      if (typeof tc === 'string' && tc.length <= 16) this.emit('ltc:tc', { tc, input: input === 'b' ? 'b' : 'a' })
+      return null
+    },
     clockGet: () => this.clockStatus,
     // A tablet / phone asks the app window to do what only it can ('arenaRec', 'play' armed)
     remoteCommand: (cmd: string, from?: string) => { this.emit('remote:cmd', { cmd, from: from ?? null }); return null },

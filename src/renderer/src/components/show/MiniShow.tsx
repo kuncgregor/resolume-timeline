@@ -128,7 +128,7 @@ export function MiniShow() {
         <div className="mini-next"><span className="mini-tag next">NEXT</span>{entryName(next)}</div>
       </div>
 
-      {show ? <Position show={show} /> : <div className="mini-pos"><div className="mini-bar">BREAK</div></div>}
+      {show ? <Position show={show} clock={clock} /> : <div className="mini-pos"><div className="mini-bar">BREAK</div></div>}
       {show ? <SectionBar show={show} /> : <div className="mini-section"><div className="mini-sec-row"><span className="mini-sec-now">GO starts {entryName(next)}</span></div></div>}
       {show && <Remaining show={show} playing={playing} />}
       {show && <Coming show={show} max={vertical ? 16 : 1} sections={vertical} />}
@@ -177,15 +177,34 @@ export function MiniShow() {
   )
 }
 
-function Position({ show }: { show: Show }) {
+function Position({ show, clock }: { show: Show; clock: ClockStatus | null }) {
   const frame = useFrame()
   const tempo = tempoOf(show)
-  const model = showModelOf(show)
   const tc = framesToSmpte(frame + smpteToFrames(show.clock.offset || '00:00:00:00', show.frameRate), show.frameRate)
+  const input = show.clock.source === 'ltc-b' ? 'B' : ['ltc', 'ltc-a'].includes(show.clock.source) ? 'A' : null
   return (
     <div className="mini-pos">
       <div className="mini-bar mono">{tempo ? `BAR ${formatBarBeat(frameToBarBeat(frame, tempo), 2)}` : tc}</div>
-      {tempo && <div className="mini-tc mono">{tc}</div>}
+      {input ? <LtcIn input={input} clock={clock} /> : tempo && <div className="mini-tc mono">{tc}</div>}
+    </div>
+  )
+}
+
+/** An LTC timeline: the timecode coming in on its input, and whether it drives this timeline
+ *  (green), belongs to another one (amber) or isn't there (red). */
+function LtcIn({ input, clock }: { input: 'A' | 'B'; clock: ClockStatus | null }) {
+  const [tc, setTc] = useState<{ tc: string; at: number } | null>(null)
+  useEffect(() => api.onLtcTc?.((p: { tc: string; input: 'a' | 'b' }) => {
+    if (p.input.toUpperCase() === input) setTc({ tc: p.tc, at: performance.now() })
+  }), [input])
+  useFrameEvery(250)   // the "no signal" state also comes from silence
+  const live = !!tc && !!clock?.ltcActive && performance.now() - tc.at < 1000
+  const state = !live ? 'none' : clock?.ltcNotHere ? 'away' : 'here'
+  return (
+    <div className={`mini-tc mini-ltc ${state} mono`} title={state === 'here' ? `LTC ${input} drives this timeline`
+      : state === 'away' ? `LTC ${input} is coming in, but it is another timeline's timecode: this one doesn't run`
+      : `No LTC on input ${input}`}>
+      <span className="mini-ltc-tag">LTC {input}</span>{live ? tc!.tc : 'no signal'}{state === 'away' ? ' · not here' : ''}
     </div>
   )
 }

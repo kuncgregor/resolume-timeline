@@ -162,3 +162,13 @@ html.mini-window body { -webkit-user-select: none; user-select: none; }
 .mini-menu-note { color: var(--text-dim); font-size: var(--fs-meta); white-space: nowrap; }
 .mini-menu-close.done { background: var(--live-deep); color: var(--live); }
 .mini-menu-close { flex-shrink: 0; white-space: nowrap; height: 28px; padding: 0 10px; background: var(--bg-control); color: var(--text-hi); font-size: var(--fs-ui); font-weight: 700; }
+
+/* The incoming LTC of an LTC timeline: what drives it (green), another timeline's (amber), none (red) */
+.mini-ltc { display: flex; align-items: baseline; gap: 0.5em; }
+.mini-ltc-tag { font-family: var(--font-ui, inherit); font-weight: 700; letter-spacing: 0.06em; font-size: 0.85em; padding: 0 0.35em; border-radius: 2px; }
+.mini-ltc.here { color: var(--text); }
+.mini-ltc.here .mini-ltc-tag { background: var(--live); color: var(--text-on-live); }
+.mini-ltc.away { color: var(--loop); }
+.mini-ltc.away .mini-ltc-tag { background: var(--loop); color: var(--text-on-live); }
+.mini-ltc.none { color: var(--danger); }
+.mini-ltc.none .mini-ltc-tag { border: 1px solid var(--danger); }
